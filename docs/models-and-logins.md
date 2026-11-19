@@ -293,6 +293,19 @@ request makes everything after it new, so azazel keeps what changes out of the p
   pays out of its usage window, not by the token, and a cache that outlives a pause saves sending the whole
   conversation again.
 
+### The cache clock
+
+The `cache` segment of the [status line](tui.md#status-line) and the web status bar count down the time until the
+provider drops the cache (`4:12`, then `cold`). A request that reads the cache starts it again. The lifetime is
+what the provider's usage reports when it does: Anthropic says how many tokens were written with the 5-minute
+and with the 1-hour lifetime, and the clock takes the longer one that was used. When the usage says nothing it is
+5 minutes, or an hour on a Claude subscription login. It counts from when the request was sent, not from when its
+answer ended. `get_state` carries it as `cache_left_secs` and `cache_ttl_secs` ([RPC](rpc.md#commands)).
+
+With `[cache] suggest_handoff_at` set (for example `200000`), a context past that size gets one notice per answered
+request when a minute is left: `/handoff` and `/compact` read the cache while it is warm, and once it has run out
+the next request sends the whole conversation again. The notice makes no request, and nothing is sent differently.
+
 Editing `AGENTS.md`, connecting an MCP server, changing the model or the thinking level, and compaction do
 change the prefix; the next request pays for it once.
 

@@ -244,6 +244,20 @@ fn claude_version(model_id: &str) -> Option<(u32, u32)> {
     Some((major, parts.next().flatten().unwrap_or(0)))
 }
 
+/// How long what a request wrote to the cache is kept, from the `cache_creation` part of its
+/// usage: an hour when any of it was written with the longer lifetime, five minutes when only
+/// the shorter one was used, `None` when nothing was written.
+pub fn cache_ttl_secs(creation: &Value) -> Option<u64> {
+    let count = |key: &str| creation.get(key).and_then(Value::as_u64).unwrap_or(0);
+    if count("ephemeral_1h_input_tokens") > 0 {
+        Some(3600)
+    } else if count("ephemeral_5m_input_tokens") > 0 {
+        Some(300)
+    } else {
+        None
+    }
+}
+
 /// Whether requests made with `auth` have their prompt cached for an hour: a Claude subscription
 /// login. Copilot's Messages route takes a GitHub login, which is billed otherwise.
 pub fn caches_for_an_hour(provider: &ProviderConfig, auth: &Auth) -> bool {
@@ -949,6 +963,9 @@ impl MessagesDecoder {
         }
         if let Some(tokens) = count("cache_creation_input_tokens") {
             self.usage.cache_write = tokens;
+        }
+        if let Some(ttl) = usage.get("cache_creation").and_then(cache_ttl_secs) {
+            self.usage.cache_ttl_secs = Some(ttl);
         }
         let thinking = usage
             .get("output_tokens_details")

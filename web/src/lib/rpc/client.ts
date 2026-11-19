@@ -53,6 +53,9 @@ export class CommandError extends Error {
 	}
 }
 
+/** The `code` of a command that failed because the socket went away: the host may have carried on. */
+export const DISCONNECTED = 'disconnected';
+
 export function backoffMs(n: number, random: () => number = Math.random): number {
 	const base = Math.min(15_000, 500 * 2 ** n);
 	return Math.round(base * (0.75 + random() * 0.5));
@@ -135,7 +138,7 @@ export class RpcClient {
 		const s = this.socket;
 		this.socket = null;
 		this.ready = false;
-		this.failPending('Connection reset');
+		this.failPending('Connection reset', DISCONNECTED);
 		s?.close(4000, 'reset');
 		this.clearTimer();
 		this.connect();
@@ -157,8 +160,8 @@ export class RpcClient {
 		this.timer = null;
 	}
 
-	private failPending(why: string) {
-		for (const p of this.pending.values()) p.reject(new CommandError(why));
+	private failPending(why: string, code?: string) {
+		for (const p of this.pending.values()) p.reject(new CommandError(why, code));
 		this.pending.clear();
 	}
 
@@ -227,7 +230,7 @@ export class RpcClient {
 		if (socket !== this.socket) return;
 		this.socket = null;
 		this.ready = false;
-		this.failPending('Connection lost');
+		this.failPending('Connection lost', DISCONNECTED);
 		if (this.stopped) return;
 		if (code === 4401) return this.set('unauthorized', reason);
 		if (code === 4404) return this.set('missing', reason);

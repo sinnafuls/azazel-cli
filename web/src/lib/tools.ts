@@ -78,6 +78,39 @@ export function parseDiff(diff: string): DiffLine[] {
 		});
 }
 
+/** A line of a diff with the number it has in its file, when the diff says where its hunks start. */
+export type DiffRow = DiffLine & { n?: number };
+
+/**
+ * Numbers the lines of a diff: added and unchanged lines by their place in the new file, removed
+ * lines by their place in the old one. A hunk without a position (`@@ @@`, the preview of an edit
+ * that has not run) leaves its lines unnumbered.
+ */
+export function numberDiff(lines: DiffLine[]): DiffRow[] {
+	let before = NaN;
+	let after = NaN;
+	const num = (n: number) => (Number.isNaN(n) ? undefined : n);
+	return lines.map((l): DiffRow => {
+		switch (l.kind) {
+			case 'meta':
+				return l;
+			case 'hunk': {
+				const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(l.text);
+				before = m ? Number(m[1]) : NaN;
+				after = m ? Number(m[2]) : NaN;
+				return l;
+			}
+			case 'del':
+				return { ...l, n: num(before++) };
+			case 'add':
+				return { ...l, n: num(after++) };
+			default:
+				before++;
+				return { ...l, n: num(after++) };
+		}
+	});
+}
+
 /** What kind of work a tool does, for the words and the icon of its row. */
 export type ToolKind =
 	'command' | 'read' | 'create' | 'edit' | 'search' | 'web' | 'agents' | 'other';
@@ -148,4 +181,26 @@ export function diffStats(diff: string | undefined): { add: number; del: number 
 		add: ls.filter((l) => l.kind === 'add').length,
 		del: ls.filter((l) => l.kind === 'del').length
 	};
+}
+
+/** The name on a call's card: what ran it (`Bash`), or the file it worked on. */
+export function toolLabel(name: string, input: unknown): { text: string; path: boolean } {
+	const i = (input ?? {}) as Record<string, unknown>;
+	const path = str(i.path);
+	switch (toolKind(name)) {
+		case 'command':
+			return { text: 'Bash', path: false };
+		case 'read':
+		case 'create':
+		case 'edit':
+			return path ? { text: path, path: true } : { text: name, path: false };
+		case 'search':
+			return { text: 'Search', path: false };
+		case 'web':
+			return { text: 'Web', path: false };
+		case 'agents':
+			return { text: 'Agents', path: false };
+		default:
+			return { text: name, path: false };
+	}
 }

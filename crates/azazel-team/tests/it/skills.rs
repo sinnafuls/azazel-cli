@@ -132,6 +132,7 @@ impl Bench {
             max_result_bytes: 50_000,
             compaction: CompactionSettings::default(),
             posix_shell: shell.is_posix(),
+            routing: Default::default(),
         }));
         services.insert(team.clone());
 

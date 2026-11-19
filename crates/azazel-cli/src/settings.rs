@@ -73,6 +73,10 @@ struct Settings {
 /// setting that applies at once. The terminal UI registers it as a service.
 pub struct LiveSettings(pub Arc<ApplySetting>);
 
+/// Whether the terminal UI shows the model's thinking right now, which a key can change after
+/// the configuration was read. The terminal UI registers it as a service; `get_state` reports it.
+pub struct ShownThinking(pub std::sync::atomic::AtomicBool);
+
 /// Called with a setting's path (`editor.mode`) and its new value.
 pub type ApplySetting = dyn Fn(&str, &toml::Value) + Send + Sync;
 

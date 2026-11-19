@@ -24,8 +24,8 @@ use crate::hooks::{AgentHooks, Recovery, TranscriptSink};
 use crate::inspect::RequestRecord;
 use crate::repair::{self, Prepared};
 use crate::tool::{
-    ArtifactSink, Deferral, Offer, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolSettings, ToolSource,
-    UpdateSink, tool_spec,
+    ArtifactSink, Deferral, Offer, Services, ShapeCtx, ShapeRequest, Shaper, Timeout, Tool, ToolCtx,
+    ToolOutput, ToolSettings, ToolSource, UpdateSink, tool_spec,
 };
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
@@ -1576,6 +1576,39 @@ impl Core {
         self.gate
             .after(&self.info, tool.as_ref(), call_id, &mut output)
             .await;
+        if !output.is_error {
+            let in_context = |id: &str| self.in_context(id);
+            tool.shape(
+                &input,
+                &mut output,
+                &ShapeCtx {
+                    agent_id: &self.info.id,
+                    call_id,
+                    in_context: &in_context,
+                },
+            );
+        }
+        if !output.is_error
+            && let Some(shaper) = self.services.get::<Shaper>()
+        {
+            let last_user = self.last_user_text();
+            shaper
+                .0
+                .shape(
+                    ShapeRequest {
+                        agent: &self.info,
+                        call_id,
+                        name,
+                        input: &input,
+                        last_user: last_user.as_deref(),
+                        cwd: &self.cwd,
+                        services: &self.services,
+                        cancel,
+                    },
+                    &mut output,
+                )
+                .await;
+        }
         self.limit_output(call_id, &mut output);
         if settings.cache_reads && tool.repeatable(&input) {
             self.answer_repeat(call_id, name, &input, &mut output);
@@ -1629,6 +1662,30 @@ impl Core {
                 request: self.requests,
             },
         );
+    }
+
+    /// The text of the last message the user sent, as far as the context still has it.
+    fn last_user_text(&self) -> Option<String> {
+        self.entries.iter().rev().find_map(|entry| {
+            if entry.summary || entry.message.role != Role::User {
+                return None;
+            }
+            let text: Vec<&str> = entry
+                .message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    Block::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            (!text.is_empty()).then(|| {
+                text.join(
+                    "
+",
+                )
+            })
+        })
     }
 
     /// Whether the result of call `call_id` is in the context with its content: not elided, not

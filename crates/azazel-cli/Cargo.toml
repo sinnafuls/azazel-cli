@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
+authors.workspace = true
+homepage.workspace = true
 
 [lints]
 workspace = true
@@ -146,6 +148,8 @@ process-wrap = { workspace = true, optional = true }
 
 [build-dependencies]
 flate2.workspace = true
+# Compiles the Windows resource (icon, file details); does nothing for other targets.
+embed-resource.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
@@ -154,6 +158,8 @@ assert_cmd.workspace = true
 azazel-cli = { path = ".", features = ["test-support", "diagrams", "remote"] }
 agent-client-protocol.workspace = true
 dunce.workspace = true
+# A terminal for the tests of what the interactive UI does before it draws.
+portable-pty.workspace = true
 rmcp.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true

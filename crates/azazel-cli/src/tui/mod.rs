@@ -426,6 +426,8 @@ pub struct Tui {
     predictor: ghost::Predictor,
     files: Option<Vec<String>>,
     busy: bool,
+    /// The session in which `/handoff` was offered for `[session] handoff_at`.
+    handoff_offered: Option<String>,
     busy_since: Instant,
     /// How fast the lead writes, for the status line.
     rate: rate::Rate,
@@ -456,6 +458,9 @@ pub struct Tui {
     quit: bool,
     /// The UI ends for azazel to start again on this session (`/restart`).
     restarting: bool,
+    /// The session pickers list the sessions of every folder of the project, not only those
+    /// started in the launch folder (`ctrl+f` in the picker).
+    all_folders: bool,
     /// The session went away under the UI.
     ended: bool,
 }
@@ -591,6 +596,13 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
                     });
                 },
             ))));
+        local
+            .app
+            .registry
+            .services
+            .insert(Arc::new(crate::settings::ShownThinking(
+                env.config.tui.show_thinking.into(),
+            )));
         let models_tx = internal_tx.clone();
         local
             .app
@@ -702,6 +714,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         predictor: Default::default(),
         files: None,
         busy: false,
+        handoff_offered: None,
         busy_since: Instant::now(),
         rate: rate::Rate::default(),
         show_thinking: tui_config.show_thinking,
@@ -722,6 +735,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         voice: voice::Voice::default(),
         quit: false,
         restarting: false,
+        all_folders: false,
         ended: false,
     };
     tui.term_changes = tui.terminal_changes();
@@ -931,6 +945,7 @@ impl Tui {
             let loop_deadline = self.loop_deadline();
             let resize_deadline = self.resize.deadline();
             let cache_deadline = self.cache_deadline();
+            let suggest_deadline = self.suggest_deadline();
             let status_deadline = self.status_deadline();
             let strip_deadline = self.strip_deadline();
             tokio::select! {
@@ -973,6 +988,8 @@ impl Tui {
                 _ = wake_at(resize_deadline) => {}
                 // The lead's prompt cache has gone unread for as long as it is kept.
                 _ = wake_at(cache_deadline) => self.cache_tick(),
+                // The cache is about to run out under a large context.
+                _ = wake_at(suggest_deadline) => self.suggest_tick(),
                 // The clock of the status line moved on, or its program may run again.
                 _ = wake_at(status_deadline) => {}
                 // The models the cycling keys step through have been shown long enough.
@@ -1466,6 +1483,37 @@ impl Tui {
         if let Some(chain) = self.restore_chain.take() {
             self.backend.set_chain(chain);
         }
+        self.offer_handoff();
+    }
+
+    /// Shows or hides the model's thinking, and tells `get_state` what the terminal shows now.
+    fn set_show_thinking(&mut self, on: bool) {
+        self.show_thinking = on;
+        if let Some(local) = self.backend.local()
+            && let Some(shown) = local
+                .app
+                .registry
+                .services
+                .get::<crate::settings::ShownThinking>()
+        {
+            shown.0.store(on, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Past `[session] handoff_at` context tokens, says once per session that `/handoff` can
+    /// start a fresh one from a brief. Makes no request.
+    fn offer_handoff(&mut self) {
+        let limit = self.env.config.session.handoff_at;
+        let tokens = self.backend.status().context_tokens;
+        let id = self.session.id();
+        if limit == 0 || tokens < limit || self.handoff_offered.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        self.handoff_offered = Some(id);
+        self.info(&format!(
+            "the context holds {} tokens: /handoff starts a fresh session from a written brief, and costs least while the prompt cache is warm",
+            format_tokens(tokens)
+        ));
     }
 
     /// Brings what the UI reads of the session up to date with the session itself.
@@ -1934,7 +1982,7 @@ impl Tui {
             }
             Some("toggle_tool_output") => self.toggle_tool_output(),
             Some("toggle_thinking") => {
-                self.show_thinking = !self.show_thinking;
+                self.set_show_thinking(!self.show_thinking);
                 self.notice = Some(format!(
                     "thinking: {}",
                     if self.show_thinking { "shown" } else { "hidden" }

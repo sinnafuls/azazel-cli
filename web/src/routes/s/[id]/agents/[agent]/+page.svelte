@@ -1,4 +1,5 @@
 <script lang="ts">
+	// One sub-agent: its transcript, and a box to message it.
 	import { page } from '$app/state';
 	import { getSession } from '$lib/context';
 	import { app } from '$lib/app.svelte';
@@ -8,6 +9,7 @@
 	import Transcript from '$lib/components/Transcript.svelte';
 	import StateDot from '$lib/components/StateDot.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import * as InputGroup from '$lib/components/ui/input-group';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
 
 	const session = getSession();
@@ -58,20 +60,16 @@
 	}
 </script>
 
-<div class="bg-inset flex shrink-0 items-center gap-2 border-b px-1.5 py-1 lg:px-3">
-	<a href="/s/{encodeURIComponent(session.id)}" class="btn btn-quiet gap-1.5 px-2.5 text-xs"
-		><ArrowLeft class="size-4" /> Lead</a
+<div class="flex h-10 shrink-0 items-center gap-2 border-b px-4" data-agent-bar>
+	<Button variant="ghost" size="sm" class="-ml-2" href="/s/{encodeURIComponent(session.id)}"
+		><ArrowLeft /> Lead</Button
 	>
-	<div class="min-w-0 flex-1">
-		<div class="flex items-center gap-2">
-			<StateDot state={member?.state ?? 'idle'} /><span
-				class="truncate font-mono text-xs font-medium">{agent}</span
-			><span class="text-muted-foreground shrink-0 text-xs">{member?.state ?? 'gone'}</span>
-		</div>
-		{#if member?.activity}<p class="text-muted-foreground truncate pl-[18px] text-xs">
-				{member.activity}
-			</p>{/if}
-	</div>
+	<StateDot state={member?.state ?? 'idle'} />
+	<span class="truncate font-mono text-xs font-medium">{agent}</span>
+	<span class="shrink-0 text-xs text-muted-foreground">{member?.state ?? 'gone'}</span>
+	{#if member?.activity}
+		<span class="min-w-0 flex-1 truncate text-xs text-muted-foreground">· {member.activity}</span>
+	{/if}
 </div>
 
 <Transcript
@@ -84,19 +82,25 @@
 {#if app.canControl}
 	<!-- The same box as the lead's composer, on the same column. -->
 	<form
-		class="shrink-0 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-5"
+		class="shrink-0 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-4"
 		onsubmit={(e) => (e.preventDefault(), send())}
 	>
-		<div class="col">
-			<div class="composer flex items-center gap-1 p-1.5">
-				<input
-					class="placeholder:text-faint h-11 min-w-0 flex-1 bg-transparent px-2.5 text-[15px] outline-none fine:h-9"
+		<div class="mx-auto w-full max-w-3xl px-4 md:px-6">
+			<InputGroup.Root>
+				<InputGroup.Input
 					placeholder="Message {agent}…"
 					aria-label="Message {agent}"
 					bind:value={text}
 				/>
-				<Button type="submit" disabled={sending || !text.trim()}>Send</Button>
-			</div>
+				<InputGroup.Addon align="inline-end">
+					<InputGroup.Button
+						type="submit"
+						variant="default"
+						size="sm"
+						disabled={sending || !text.trim()}>Send</InputGroup.Button
+					>
+				</InputGroup.Addon>
+			</InputGroup.Root>
 		</div>
 	</form>
 {/if}

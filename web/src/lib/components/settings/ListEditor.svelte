@@ -1,10 +1,9 @@
-<script lang="ts" module>
-	let count = 0;
-</script>
-
 <script lang="ts">
-	// A short list of strings (rules, a chain of models, hosts): each with a remove button, and a
-	// field that adds one on Enter. Read-only when `disabled`.
+	// A short list of strings (rules, a chain of models, hosts): each a Badge with a remove Button
+	// beside it, and an Input that adds one on Enter. Read-only when `disabled`.
+	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
 	import X from '@lucide/svelte/icons/x';
 
 	let {
@@ -23,7 +22,7 @@
 		suggestions?: string[];
 	} = $props();
 
-	const listId = `list-ed-${++count}`;
+	const listId = $props.id();
 	let draft = $state('');
 	function add() {
 		const v = draft.trim();
@@ -32,27 +31,30 @@
 	}
 </script>
 
-<div class="min-w-0">
-	<ul class="flex flex-wrap gap-1.5" aria-label={label}>
+<div class="grid min-w-0 gap-2">
+	<ul class="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1" aria-label={label}>
 		{#each items as it, i (it)}
-			<li class="tag max-w-full font-mono {disabled ? '' : 'pr-0.5'}">
-				<span class="truncate">{it}</span>
+			<li class="flex max-w-full min-w-0 items-center gap-0.5">
+				<Badge variant="secondary" class="min-w-0 shrink justify-start font-mono font-normal">
+					<span class="truncate">{it}</span>
+				</Badge>
 				{#if !disabled}
-					<button
-						type="button"
-						class="hover:bg-active grid size-4 shrink-0 place-items-center rounded-full"
+					<Button
+						variant="ghost"
+						size="icon-xs"
+						class="shrink-0 text-muted-foreground"
 						aria-label="Remove {it}"
-						onclick={() => onchange?.(items.filter((_, j) => j !== i))}><X class="size-3" /></button
+						onclick={() => onchange?.(items.filter((_, j) => j !== i))}><X /></Button
 					>
 				{/if}
 			</li>
 		{:else}
-			<li class="text-muted-foreground text-xs leading-[1.375rem]">None</li>
+			<li class="text-xs text-muted-foreground">None</li>
 		{/each}
 	</ul>
 	{#if !disabled}
-		<input
-			class="field mt-2 h-8 font-mono text-[13px]"
+		<Input
+			class="font-mono text-xs md:text-xs"
 			bind:value={draft}
 			{placeholder}
 			aria-label="Add to {label}"

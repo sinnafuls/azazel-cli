@@ -1,5 +1,6 @@
 <script lang="ts">
-	// The message box. `/` at the start opens the command menu, `@` a list of agents and files.
+	// The message box, an InputGroup: the text on top, and under it the attach button, the session's
+	// model, thinking and mode, then Stop and Send. `/` at the start opens the command menu, `@` a list of agents and files.
 	// While the agent works a message either steers it or waits in the queue, and Stop is held.
 	import type { Session } from '$lib/session/session.svelte';
 	import type { Image } from '$lib/protocol';
@@ -10,6 +11,7 @@
 	import { viewport } from '$lib/media.svelte';
 	import { toasts } from '$lib/toasts.svelte';
 	import { sessions } from '$lib/sessions.svelte';
+	import { resume } from '$lib/resume.svelte';
 	import { isMac } from '$lib/shortcuts';
 	import {
 		filterSlash,
@@ -22,8 +24,17 @@
 		unknownSlash,
 		type SlashEntry
 	} from '$lib/slash';
+	import { cn } from '$lib/utils';
+	import { Button } from '$lib/components/ui/button';
+	import * as InputGroup from '$lib/components/ui/input-group';
+	import * as Command from '$lib/components/ui/command';
+	import * as Item from '$lib/components/ui/item';
+	import { Kbd } from '$lib/components/ui/kbd';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import Square from '@lucide/svelte/icons/square';
+	import StatusBar from './StatusBar.svelte';
+	import Segmented from './Segmented.svelte';
+	import Tip from './Tip.svelte';
 	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
 	import Pencil from '@lucide/svelte/icons/pencil';
@@ -38,7 +49,7 @@
 	let followUp = $state(false);
 	let images = $state<(Image & { preview: string })[]>([]);
 	let sending = $state(false);
-	let ta = $state<HTMLTextAreaElement>();
+	let ta = $state<HTMLTextAreaElement | null>(null);
 	let fileInput = $state<HTMLInputElement>();
 	let mentionIdx = $state(0);
 
@@ -56,7 +67,6 @@
 	const groups = $derived(groupSlash(matches));
 	const slashOpen = $derived(query !== null && dismissed !== text);
 	let slashIdx = $state(0);
-	let slashList = $state<HTMLDivElement>();
 	$effect(() => {
 		if (query !== null) void session.loadCommands().catch(() => {});
 	});
@@ -65,8 +75,8 @@
 		slashIdx = 0;
 	});
 	$effect(() => {
-		void slashIdx;
-		slashList?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+		const name = matches[slashIdx]?.name;
+		if (name) document.getElementById(`slash-${name}`)?.scrollIntoView({ block: 'nearest' });
 	});
 
 	/** Enter runs a command that needs nothing more; anything else is completed for its arguments. */
@@ -113,6 +123,21 @@
 					toasts.push('Forked: this session continues in a copy.', 'success');
 					void sessions.refresh();
 					break;
+				case 'handoff': {
+					// Writing the brief takes a while: say so until it is done, and let it be cancelled.
+					const wait = toasts.loading('Writing the hand-off brief…', {
+						label: 'Cancel',
+						onClick: () => void session.abort().catch(fail)
+					});
+					try {
+						await session.handoff(args);
+					} finally {
+						toasts.dismiss(wait);
+					}
+					toasts.push('Handed off: this is a new session that starts from the brief.', 'success');
+					void sessions.refresh();
+					break;
+				}
 				case 'new':
 					await session.newSession();
 					void sessions.refresh();
@@ -148,6 +173,11 @@
 					break;
 				case 'rewind':
 					ui.rewind = {};
+					break;
+				case 'resume':
+					if (!resume.available)
+						throw new Error('Continuing an earlier session needs a control link.');
+					resume.show();
 					break;
 			}
 		} catch (err) {
@@ -351,10 +381,15 @@
 		setTimeout(() => (hint = false), 2200);
 	}
 
+	const sendHint = $derived(
+		enterSends
+			? 'Enter sends, Shift+Enter adds a line'
+			: `Enter adds a line, ${mac ? '⌘' : 'Ctrl'}+Enter sends`
+	);
 	const label = $derived(busy ? (followUp ? 'Queue follow-up' : 'Steer') : 'Send');
 	const placeholder = $derived(
 		!canControl
-			? 'View link: you can watch but not send.'
+			? 'View link: you can watch but not send'
 			: busy
 				? followUp
 					? 'Queue something for when it is done…'
@@ -364,6 +399,10 @@
 	const activeId = $derived(
 		slashOpen && matches[slashIdx] ? `slash-${matches[slashIdx].name}` : undefined
 	);
+	// The `/` and `@` lists are a Command above the box. Not a Popover: the caret stays in the
+	// message, which is the combobox that owns the list, and a popover would take the focus.
+	const floating =
+		'absolute inset-x-0 bottom-full z-20 mb-2 h-auto! rounded-lg! shadow-md ring-1 ring-foreground/10';
 </script>
 
 <form
@@ -374,152 +413,132 @@
 	}}
 	data-composer
 >
-	<div class="col relative">
-		{#if slashOpen}
-			<div
-				bind:this={slashList}
-				id="slash-menu"
-				class="pop scroll-thin absolute inset-x-4 bottom-full z-20 mb-2 max-h-[min(20rem,48dvh)] overflow-y-auto md:inset-x-8"
-				role="listbox"
-				aria-label="Commands"
-				data-slash-menu
-			>
-				{#each groups as g (g.group)}
-					<div role="group" aria-labelledby="slash-g-{g.group}">
-						<div class="pop-label" id="slash-g-{g.group}">{g.group}</div>
-						{#each g.items as e, j (e.name)}
-							{@const i = g.start + j}
-							<!-- svelte-ignore a11y_click_events_have_key_events -->
-							<div
-								id="slash-{e.name}"
-								role="option"
-								tabindex="-1"
-								aria-selected={i === slashIdx}
-								class="pop-item cursor-pointer"
-								onpointermove={() => (slashIdx = i)}
-								onmousedown={(ev) => ev.preventDefault()}
-								onclick={() => pick(i)}
-							>
-								<span class="shrink-0 font-mono text-[13px]"
-									><span class="text-foreground">{slashLabel(e)}</span>{#if e.args}<span
-											class="text-faint">{` ${e.args}`}</span
-										>{/if}</span
-								>
-								<span class="text-muted-foreground min-w-0 flex-1 truncate text-right"
-									>{e.description}</span
-								>
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="text-muted-foreground px-2 py-3" role="presentation">
-						{session.commands.length || query
-							? `No command matches /${query}. Enter sends it as a message.`
-							: 'Loading commands…'}
-					</p>
-				{/each}
-			</div>
-		{/if}
-
-		{#if mention}
-			<ul class="pop mb-2 overflow-hidden" role="listbox" aria-label="Mentions">
-				{#each mention.items as it, i (it.kind + it.label)}
-					<li role="option" aria-selected={i === mentionIdx}>
-						<button
-							type="button"
-							class="pop-item font-mono"
-							data-active={i === mentionIdx}
-							onmousedown={(e) => {
-								e.preventDefault();
-								applyMention(i);
-							}}
-						>
-							<span class="text-faint w-10 shrink-0 text-xs">{it.kind}</span><span
-								class="min-w-0 flex-1 truncate">{it.label}</span
-							>{#if i === mentionIdx}<span class="kbd hidden fine:inline-grid" aria-hidden="true"
-									>↵</span
-								>{/if}
-						</button>
-					</li>
-				{/each}
-			</ul>
-		{/if}
-
+	<div class="mx-auto w-full max-w-3xl px-4 md:px-6">
 		{#if queued.length}
-			<ul class="mb-2 space-y-1" aria-label="Queued messages" data-queue>
+			<Item.Group class="mb-2 gap-1" aria-label="Queued messages" data-queue>
 				{#each queued as q, i (i)}
-					<li
-						class="bg-card text-ink-2 flex items-center gap-2 rounded-xl px-3 py-1.5 text-[13px] shadow-[inset_0_0_0_1px_var(--border)]"
-					>
-						<Clock class="text-muted-foreground size-3.5 shrink-0" />
-						<span class="min-w-0 flex-1 truncate">{q.text}</span>
-						<span class="text-muted-foreground shrink-0 text-xs"
-							>{q.kind === 'steer' ? 'next step' : 'when it is done'}</span
+					<Item.Root variant="outline" size="xs" class="flex-nowrap" role="listitem">
+						<Item.Media variant="icon" class="text-muted-foreground"><Clock /></Item.Media>
+						<Item.Content class="min-w-0">
+							<Item.Title class="block w-full truncate font-normal">{q.text}</Item.Title>
+						</Item.Content>
+						<Item.Actions class="shrink-0 text-xs text-muted-foreground"
+							>{q.kind === 'steer' ? 'next step' : 'when it is done'}</Item.Actions
 						>
-					</li>
+					</Item.Root>
 				{/each}
-			</ul>
+			</Item.Group>
 		{/if}
 
 		{#if images.length}
-			<ul class="no-scrollbar mb-2 flex gap-3 overflow-x-auto pt-2.5 pr-2.5 pl-0.5">
+			<ul class="mb-2 flex gap-3 overflow-x-auto pt-2 pr-2">
 				{#each images as im, i (i)}
-					<li class="relative shrink-0 animate-enter">
+					<li class="relative shrink-0">
 						<img
 							src={im.preview}
 							alt="Attached {i + 1}"
-							class="bg-inset border-border-strong size-16 rounded-xl border object-cover"
+							class="size-16 rounded-lg border object-cover"
 						/>
-						<button
-							type="button"
-							class="bg-overlay border-input text-ink-2 hover:text-foreground absolute -top-2 -right-2 grid size-6 place-items-center rounded-full border transition-colors duration-100 before:absolute before:-inset-2.5"
+						<Button
+							variant="secondary"
+							size="icon-xs"
+							class="absolute -top-2 -right-2 ring-1 ring-foreground/10"
 							aria-label="Remove image {i + 1}"
-							onclick={() => (images = images.filter((_, j) => j !== i))}
-							><X class="size-3" /></button
+							onclick={() => (images = images.filter((_, j) => j !== i))}><X /></Button
 						>
 					</li>
 				{/each}
 			</ul>
 		{/if}
 
-		<div class="composer">
-			{#if editing}
-				<div
-					class="text-muted-foreground flex items-center gap-2 border-b py-1.5 pr-2 pl-4 text-xs"
-					data-editing
-				>
-					<Pencil class="size-3.5 shrink-0" />
-					<span class="min-w-0 flex-1"
-						>Editing your last prompt. Sending replaces it and what followed.</span
-					>
-					<button type="button" class="icon-btn" aria-label="Cancel editing" onclick={cancelEdit}
-						><X class="size-3.5" /></button
-					>
-				</div>
-			{/if}
-			<div class="flex items-end gap-1 p-1.5">
-				<input
-					bind:this={fileInput}
-					type="file"
-					accept="image/*"
-					multiple
-					hidden
-					onchange={(e) => {
-						// A copy: clearing the input empties its live list while the images are still being read.
-						void addFiles([...(e.currentTarget.files ?? [])]);
-						e.currentTarget.value = '';
+		<div class="relative">
+			{#if slashOpen}
+				<Command.Root
+					shouldFilter={false}
+					value={matches[slashIdx]?.name ?? ''}
+					onValueChange={(v) => {
+						const i = matches.findIndex((m) => m.name === v);
+						if (i >= 0) slashIdx = i;
 					}}
-				/>
-				<button
-					type="button"
-					class="round quiet"
-					aria-label="Attach an image"
-					title="Attach an image"
-					disabled={!canControl}
-					onclick={() => fileInput?.click()}><Plus class="size-[18px]" /></button
+					class={floating}
+					onmousedown={(e) => e.preventDefault()}
+					data-slash-menu
 				>
-				<textarea
-					bind:this={ta}
+					<Command.List
+						id="slash-menu"
+						aria-label="Commands"
+						class="scroll-thin max-h-[min(20rem,48dvh)]"
+					>
+						{#each groups as g (g.group)}
+							<Command.Group heading={g.group}>
+								{#each g.items as e, j (e.name)}
+									<Command.Item
+										id="slash-{e.name}"
+										value={e.name}
+										onSelect={() => pick(g.start + j)}
+									>
+										<span class="shrink-0 font-mono text-xs"
+											>{slashLabel(e)}{#if e.args}<span class="text-muted-foreground"
+													>{` ${e.args}`}</span
+												>{/if}</span
+										>
+										<span class="min-w-0 flex-1 truncate text-right text-muted-foreground"
+											>{e.description}</span
+										>
+									</Command.Item>
+								{/each}
+							</Command.Group>
+						{:else}
+							<!-- Not Command.Empty: the list is filtered here, so the component cannot tell. -->
+							<p class="px-2 py-3 text-sm text-muted-foreground" role="presentation">
+								{session.commands.length || query
+									? `No command matches /${query}. Enter sends it as a message.`
+									: 'Loading commands…'}
+							</p>
+						{/each}
+					</Command.List>
+				</Command.Root>
+			{:else if mention}
+				<Command.Root
+					shouldFilter={false}
+					value={mention.items[mentionIdx]
+						? `${mention.items[mentionIdx].kind}:${mention.items[mentionIdx].label}`
+						: ''}
+					onValueChange={(v) => {
+						const i = mention.items.findIndex((m) => `${m.kind}:${m.label}` === v);
+						if (i >= 0) mentionIdx = i;
+					}}
+					class={floating}
+					onmousedown={(e) => e.preventDefault()}
+				>
+					<Command.List aria-label="Mentions">
+						{#each mention.items as it, i (it.kind + it.label)}
+							<Command.Item value="{it.kind}:{it.label}" onSelect={() => applyMention(i)}>
+								<span class="w-10 shrink-0 text-xs text-muted-foreground">{it.kind}</span>
+								<span class="min-w-0 flex-1 truncate font-mono text-xs">{it.label}</span>
+								{#if i === mentionIdx}
+									<Kbd class="pointer-coarse:hidden" aria-hidden="true">↵</Kbd>
+								{/if}
+							</Command.Item>
+						{/each}
+					</Command.List>
+				</Command.Root>
+			{/if}
+
+			<InputGroup.Root>
+				{#if editing}
+					<InputGroup.Addon align="block-start" class="border-b text-xs font-normal" data-editing>
+						<Pencil class="size-3.5" />
+						<span class="min-w-0 flex-1"
+							>Editing your last prompt. Sending replaces it and what followed.</span
+						>
+						<InputGroup.Button size="icon-xs" aria-label="Cancel editing" onclick={cancelEdit}
+							><X /></InputGroup.Button
+						>
+					</InputGroup.Addon>
+				{/if}
+				<InputGroup.Textarea
+					bind:ref={ta}
 					bind:value={text}
 					{onkeydown}
 					onpaste={(e) => {
@@ -531,7 +550,7 @@
 							void addFiles(files);
 						}
 					}}
-					rows="1"
+					rows={1}
 					{placeholder}
 					aria-label="Message"
 					aria-haspopup="listbox"
@@ -542,43 +561,78 @@
 					role="combobox"
 					disabled={!canControl}
 					enterkeyhint={enterSends ? 'send' : 'enter'}
-					class="placeholder:text-faint max-h-[200px] min-h-9 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[7px] text-base leading-[22px] outline-none md:text-[15px]"
-				></textarea>
-				{#if busy}
-					<button
-						type="button"
-						class="round stop"
-						class:holding
-						style="--hold: {HOLD_MS}ms"
-						aria-label="Stop the agent"
-						title="Hold to stop (or press Esc)"
+					class="scroll-thin max-h-50"
+				/>
+				<InputGroup.Addon align="block-end" class="gap-1">
+					<input
+						bind:this={fileInput}
+						type="file"
+						accept="image/*"
+						multiple
+						hidden
+						onchange={(e) => {
+							// A copy: clearing the input empties its live list while the images are still being read.
+							void addFiles([...(e.currentTarget.files ?? [])]);
+							e.currentTarget.value = '';
+						}}
+					/>
+					<Tip
+						text="Attach an image"
+						class="-ml-1 shrink-0"
+						aria-label="Attach an image"
 						disabled={!canControl}
-						onpointerdown={holdStart}
-						onpointerup={holdEnd}
-						onpointerleave={holdEnd}
-						onpointercancel={holdEnd}
-						oncontextmenu={(e) => e.preventDefault()}
-						onclick={(e) => {
-							// A keyboard or a screen reader activates it at once; a pointer holds.
-							if (e.detail === 0) void stop();
-						}}><Square class="size-3 fill-current" /></button
+						onclick={() => fileInput?.click()}><Plus /></Tip
 					>
-				{/if}
-				<button
-					type="submit"
-					class="round send"
-					aria-label={label}
-					title={label}
-					disabled={!canControl || sending || (!text.trim() && !images.length)}
-					><ArrowUp class="size-[18px]" /></button
-				>
-			</div>
+					<div class="min-w-0 flex-1"><StatusBar {session} {canControl} /></div>
+					{#if busy}
+						<!-- Held: the wash fills the button while the pointer is down, then the run stops. -->
+						<Tip
+							text="Hold to stop (or press Esc)"
+							variant="outline"
+							class={cn(
+								'relative shrink-0 touch-none overflow-hidden select-none',
+								holding && 'text-destructive'
+							)}
+							aria-label="Stop the agent"
+							data-holding={holding ? '' : undefined}
+							disabled={!canControl}
+							onpointerdown={holdStart}
+							onpointerup={holdEnd}
+							onpointerleave={holdEnd}
+							onpointercancel={holdEnd}
+							oncontextmenu={(e) => e.preventDefault()}
+							onclick={(e) => {
+								// A keyboard or a screen reader activates it at once; a pointer holds.
+								if (e.detail === 0) void stop();
+							}}
+						>
+							<span
+								class="pointer-events-none absolute inset-0 origin-bottom bg-destructive/25 transition-transform ease-linear {holding
+									? 'scale-y-100'
+									: 'scale-y-0'}"
+								style="transition-duration: {holding ? HOLD_MS : 120}ms"
+								aria-hidden="true"
+							></span>
+							<Square class="relative size-3 fill-current" />
+						</Tip>
+					{/if}
+					<Tip
+						type="submit"
+						text={label}
+						variant="default"
+						class="-mr-1 shrink-0"
+						aria-label={label}
+						disabled={!canControl || sending || (!text.trim() && !images.length)}><ArrowUp /></Tip
+					>
+				</InputGroup.Addon>
+			</InputGroup.Root>
 		</div>
 
-		{#if busy && canControl}
-			<div
-				class="text-muted-foreground mt-1.5 flex min-h-7 items-center justify-between gap-3 px-2 text-xs"
-			>
+		<!-- A row of fixed height: the stop hint and the steer/queue switch come and go inside it, so nothing moves. -->
+		<div
+			class="mt-1.5 flex min-h-8 items-center justify-between gap-3 px-1 text-xs text-muted-foreground"
+		>
+			{#if busy && canControl}
 				<span class="min-w-0 flex-1 truncate" role={hint ? 'status' : undefined}
 					>{hint
 						? 'Hold the button to stop, or press Esc.'
@@ -586,142 +640,19 @@
 							? 'Your message waits until the agent is done.'
 							: 'Your message reaches the agent before its next step.'}</span
 				>
-				<div class="mini-seg" role="radiogroup" aria-label="When to deliver">
-					<button
-						type="button"
-						role="radio"
-						aria-checked={!followUp}
-						onclick={() => (followUp = false)}>Steer</button
-					>
-					<button
-						type="button"
-						role="radio"
-						aria-checked={followUp}
-						aria-label="Follow-up"
-						onclick={() => (followUp = true)}>Queue</button
-					>
-				</div>
-			</div>
-		{/if}
+				<Segmented
+					class="w-auto shrink-0"
+					label="When to deliver"
+					value={followUp ? 'queue' : 'steer'}
+					onchange={(v) => (followUp = v === 'queue')}
+					options={[
+						{ value: 'steer', label: 'Steer' },
+						{ value: 'queue', label: 'Queue' }
+					]}
+				/>
+			{:else}
+				<span class="min-w-0 flex-1 truncate">{canControl ? sendHint : ''}</span>
+			{/if}
+		</div>
 	</div>
 </form>
-
-<style>
-	/* The round buttons inside the box: 32px with a fine pointer, 40 on touch. */
-	.round {
-		position: relative;
-		display: grid;
-		flex-shrink: 0;
-		place-items: center;
-		width: 2.25rem;
-		height: 2.25rem;
-		border-radius: 999px;
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out),
-			opacity var(--dur-fast) var(--ease-out),
-			transform var(--dur-press) var(--ease-out);
-	}
-	.round:active:not(:disabled) {
-		transform: scale(0.94);
-	}
-	.round:disabled {
-		opacity: 0.4;
-	}
-	.quiet {
-		color: var(--muted-foreground);
-	}
-	.send {
-		background: var(--primary);
-		color: var(--primary-foreground);
-	}
-	.stop {
-		color: var(--foreground);
-		box-shadow: inset 0 0 0 1.5px var(--input);
-		touch-action: none;
-		user-select: none;
-	}
-	/* The ring that fills while the button is held. */
-	.stop::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		border-radius: inherit;
-		background: conic-gradient(var(--destructive) var(--p, 0%), transparent 0);
-		mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), black calc(100% - 2px));
-		opacity: 0;
-	}
-	.stop.holding::before {
-		opacity: 1;
-		animation: hold-ring var(--hold) linear both;
-	}
-	.stop.holding {
-		color: var(--destructive);
-	}
-	@property --p {
-		syntax: '<percentage>';
-		inherits: false;
-		initial-value: 0%;
-	}
-	@keyframes hold-ring {
-		to {
-			--p: 100%;
-		}
-	}
-	@media (hover: hover) {
-		.quiet:hover:not(:disabled),
-		.stop:hover:not(:disabled) {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-		.send:hover:not(:disabled) {
-			background: var(--primary-hover);
-		}
-	}
-	@media (pointer: coarse) {
-		.round {
-			width: 2.5rem;
-			height: 2.5rem;
-		}
-		.round::after {
-			content: '';
-			position: absolute;
-			inset: -0.125rem;
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.stop.holding::before {
-			animation: none;
-			--p: 100%;
-		}
-	}
-
-	.mini-seg {
-		display: flex;
-		flex-shrink: 0;
-		gap: 2px;
-		padding: 2px;
-		border-radius: 999px;
-		box-shadow: inset 0 0 0 1px var(--border-strong);
-	}
-	.mini-seg > button {
-		min-height: 1.5rem;
-		padding: 0 0.625rem;
-		border-radius: 999px;
-		font-weight: 500;
-		color: var(--muted-foreground);
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out);
-	}
-	.mini-seg > button[aria-checked='true'] {
-		background: var(--active);
-		color: var(--foreground);
-	}
-	@media (pointer: coarse) {
-		.mini-seg > button {
-			min-height: 2.25rem;
-			padding: 0 0.875rem;
-		}
-	}
-</style>

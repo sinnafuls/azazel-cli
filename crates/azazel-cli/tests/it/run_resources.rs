@@ -547,3 +547,187 @@ async fn a_package_is_installed_from_npm_checked_used_and_updated() {
     assert!(ok && removed.trim_end() == "removed review-kit");
     assert!(!root.exists());
 }
+
+#[cfg(feature = "mcp")]
+mod digest {
+    use std::sync::LazyLock;
+
+    use super::*;
+
+    static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("mcp-echo"));
+
+    fn big_text() -> String {
+        (1..=600)
+            .map(|n| format!("record {n}: the quick brown fox jumps over the lazy dog"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// A run in which the lead makes `calls` with `[tools] digest = "smol"` and the `smol` role
+    /// answers from the script's `smol` queue.
+    fn digesting(sandbox: &Sandbox, calls_made: &[(&str, Value)], extra: &[&str]) -> Output {
+        let file = sandbox.write(
+            "servers.json",
+            &json!({ "mcpServers": { "echo": { "command": FIXTURE.as_path() } } }).to_string(),
+        );
+        let mut script = calls(calls_made);
+        script["smol"] =
+            json!([{ "reply": { "text": "NOTES: the records repeat one sentence (L1-L600)." } }]);
+        let mut args = vec![
+            "--no-mcp",
+            "--mcp-config",
+            file.as_str(),
+            "--set",
+            "tools.digest=smol",
+            "--set",
+            "roles.smol=[\"mock/smol\"]",
+        ];
+        args.extend_from_slice(extra);
+        sandbox.run(&script, &args)
+    }
+
+    fn asked_smol(sandbox: &Sandbox) -> usize {
+        std::fs::read_to_string(sandbox.path("requests.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| serde_json::from_str::<Value>(line).unwrap()["model"] == "smol")
+            .count()
+    }
+
+    #[test]
+    fn a_large_mcp_result_becomes_notes_and_the_full_text_is_saved() {
+        let sandbox = Sandbox::new();
+        let big = big_text();
+        let output = digesting(&sandbox, &[("mcp__echo__echo", json!({ "text": big }))], &[]);
+        succeeded(&output);
+        let results = sandbox.results();
+        assert_eq!(results.len(), 1, "{results:?}");
+        assert!(
+            results[0].contains("NOTES: the records repeat one sentence"),
+            "{}",
+            results[0]
+        );
+        assert!(results[0].contains("artifact://digest-t1"), "{}", results[0]);
+        assert!(results[0].len() < big.len() / 10);
+        assert_eq!(asked_smol(&sandbox), 1);
+        let saved = std::fs::read_dir(sandbox.path("home/projects"))
+            .unwrap()
+            .flatten()
+            .map(|project| project.path().join("artifacts/digest-t1.txt"))
+            .find(|path| path.is_file())
+            .expect("the full text is saved");
+        assert_eq!(std::fs::read_to_string(saved).unwrap(), big);
+    }
+
+    #[test]
+    fn a_small_result_a_code_read_and_a_run_with_digest_off_are_left_alone() {
+        let sandbox = Sandbox::new();
+        // Small: under the threshold.
+        succeeded(&digesting(
+            &sandbox,
+            &[("mcp__echo__echo", json!({ "text": "short" }))],
+            &[],
+        ));
+        assert_eq!(sandbox.results(), ["short"]);
+        assert_eq!(asked_smol(&sandbox), 0);
+
+        // Code: read as it is however large.
+        let code: String = (1..=1500).map(|n| format!("fn item_{n}() {{}}\n")).collect();
+        sandbox.write("project/src.rs", &code);
+        succeeded(&digesting(
+            &sandbox,
+            &[("read", json!({ "path": "src.rs" }))],
+            &[],
+        ));
+        let results = sandbox.results();
+        assert!(results[0].contains("fn item_1() {}") && results[0].contains("fn item_1500() {}"));
+        assert!(!results[0].contains("notes on this"));
+        assert_eq!(asked_smol(&sandbox), 0);
+
+        // Off: the default.
+        let file = sandbox.write(
+            "servers.json",
+            &json!({ "mcpServers": { "echo": { "command": FIXTURE.as_path() } } }).to_string(),
+        );
+        let big = big_text();
+        succeeded(&sandbox.run(
+            &calls(&[("mcp__echo__echo", json!({ "text": big }))]),
+            &["--no-mcp", "--mcp-config", &file],
+        ));
+        assert_eq!(sandbox.results(), [big]);
+    }
+
+    #[test]
+    fn a_failing_smol_request_leaves_the_result_as_it_was() {
+        let sandbox = Sandbox::new();
+        let file = sandbox.write(
+            "servers.json",
+            &json!({ "mcpServers": { "echo": { "command": FIXTURE.as_path() } } }).to_string(),
+        );
+        let big = big_text();
+        // No `smol` queue in the script: the request fails with "mock script exhausted".
+        succeeded(&sandbox.run(
+            &calls(&[("mcp__echo__echo", json!({ "text": big }))]),
+            &[
+                "--no-mcp",
+                "--mcp-config",
+                &file,
+                "--set",
+                "tools.digest=smol",
+                "--set",
+                "roles.smol=[\"mock/smol\"]",
+            ],
+        ));
+        assert_eq!(sandbox.results(), [big]);
+    }
+
+    #[test]
+    fn json_noise_is_dropped_from_a_large_mcp_result_by_default() {
+        let sandbox = Sandbox::new();
+        let file = sandbox.write(
+            "servers.json",
+            &json!({ "mcpServers": { "echo": { "command": FIXTURE.as_path() } } }).to_string(),
+        );
+        let items: Vec<Value> = (0..40)
+            .map(|n| {
+                json!({
+                    "number": n, "title": format!("issue {n}"),
+                    "node_id": format!("MDU6SXNzdWU{n}"),
+                    "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+                    "body": "text", "body_html": "<p>text</p>", "assignee": null
+                })
+            })
+            .collect();
+        let text = serde_json::to_string_pretty(&items).unwrap();
+        succeeded(&sandbox.run(
+            &calls(&[("mcp__echo__echo", json!({ "text": text }))]),
+            &["--no-mcp", "--mcp-config", &file],
+        ));
+        let slim = &sandbox.results()[0];
+        assert!(slim.contains("issue 39") && !slim.contains("avatar_url") && !slim.contains("body_html"));
+        // The result says fields were removed and where the whole of it is.
+        assert!(
+            slim.contains("were removed") && slim.contains("artifact://slim-t1"),
+            "{slim}"
+        );
+        let saved = std::fs::read_dir(sandbox.path("home/projects"))
+            .unwrap()
+            .flatten()
+            .map(|project| project.path().join("artifacts/slim-t1.txt"))
+            .find(|path| path.is_file())
+            .expect("the original is saved");
+        assert_eq!(std::fs::read_to_string(saved).unwrap(), text);
+        let off = sandbox.run(
+            &calls(&[("mcp__echo__echo", json!({ "text": text }))]),
+            &[
+                "--no-mcp",
+                "--mcp-config",
+                &file,
+                "--set",
+                "tools.slim_results=false",
+            ],
+        );
+        succeeded(&off);
+        assert_eq!(sandbox.results(), [text]);
+    }
+}

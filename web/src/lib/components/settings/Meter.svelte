@@ -1,5 +1,7 @@
 <script lang="ts">
-	// A bar with its label, its figure and a note beneath: a usage window, the context.
+	// A Progress with its label, its figure and a note beneath: a usage window, the context.
+	import { Progress } from '$lib/components/ui/progress';
+
 	let {
 		label,
 		value,
@@ -8,27 +10,23 @@
 		bad = false
 	}: { label: string; value: number; figure?: string; note?: string; bad?: boolean } = $props();
 	const pct = $derived(Math.max(0, Math.min(100, value)));
-	const tone = $derived(
-		bad || pct > 85 ? 'bg-destructive' : pct > 65 ? 'bg-ember' : 'bg-foreground'
+	// The fill: the accent, amber when it runs high, red when it is nearly full or refused.
+	const fill = $derived(
+		bad || pct > 85
+			? '[&>[data-slot=progress-indicator]]:bg-destructive'
+			: pct > 65
+				? '[&>[data-slot=progress-indicator]]:bg-warning'
+				: '[&>[data-slot=progress-indicator]]:bg-brand'
 	);
 </script>
 
-<div class="py-2.5">
+<div class="grid gap-1.5 py-2">
 	<div class="flex items-baseline justify-between gap-3">
-		<span class="min-w-0 truncate text-[13px] font-medium">{label}</span>
-		<span class="text-muted-foreground num shrink-0 text-xs"
+		<span class="min-w-0 truncate text-sm font-medium">{label}</span>
+		<span class="num shrink-0 text-xs text-muted-foreground"
 			>{figure ?? `${Math.round(pct)}% used`}</span
 		>
 	</div>
-	<div
-		class="bg-hover mt-2 h-1.5 overflow-hidden rounded-full shadow-[inset_0_0_0_1px_var(--border)]"
-		role="meter"
-		aria-valuenow={Math.round(pct)}
-		aria-valuemin="0"
-		aria-valuemax="100"
-		aria-label="{label} used"
-	>
-		<div class="h-full rounded-full {tone}" style="width: {Math.max(pct, 1.5)}%"></div>
-	</div>
-	{#if note}<p class="text-muted-foreground num mt-1.5 text-xs">{note}</p>{/if}
+	<Progress value={Math.round(pct)} max={100} aria-label="{label} used" class={fill} />
+	{#if note}<p class="num text-xs text-muted-foreground">{note}</p>{/if}
 </div>

@@ -134,6 +134,16 @@ describe('reconnect', () => {
 		await expect(h.client.send({ type: 'get_state' })).rejects.toThrow('Not connected');
 	});
 
+	it('marks a command lost with the socket as disconnected, so a caller can check what the host did', async () => {
+		const h = harness();
+		h.client.connect();
+		h.hello(h.sockets[0]);
+		h.accept(h.sockets[0]);
+		const p = h.client.send({ type: 'handoff' });
+		h.client.reset();
+		await expect(p).rejects.toMatchObject({ code: 'disconnected' });
+	});
+
 	it('does not retry when signed out or the session is gone, and resumes at once after 4408', () => {
 		const h = harness();
 		h.client.connect();

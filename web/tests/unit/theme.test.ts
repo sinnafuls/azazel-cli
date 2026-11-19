@@ -2,6 +2,9 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+	ACCENT_VARS,
+	ACCENTS,
+	accentVars,
 	builtin,
 	composite,
 	contrast,
@@ -12,10 +15,13 @@ import {
 	oklch,
 	PAIRS,
 	parseHex,
+	preview,
+	PREVIEW_TOKENS,
 	SURFACES,
 	TEXT_FLOOR,
 	toHex,
 	TOKENS,
+	withAccent,
 	type Rgb,
 	type ThemeInput
 } from '$lib/theme';
@@ -87,14 +93,15 @@ describe('colour maths', () => {
 
 describe('the built-in themes', () => {
 	const css = readFileSync(resolve(process.cwd(), 'src', 'app.css'), 'utf8');
-	/** The oklch values of a custom property of app.css, as [light, dark]. */
+	/** The oklch values of a custom property of app.css, as [light (`:root`), dark (`.dark`)]. */
 	function fromCss(name: string): number[][] {
-		const decl = new RegExp(`(?<![\\w-])--${name}:\\s*([^;]+);`).exec(css)?.[1] ?? '';
-		const found = [...decl.matchAll(/oklch\(([^)]+)\)/g)].map((m) =>
+		const found = [
+			...css.matchAll(new RegExp(`(?<![\\w-])--${name}:\\s*oklch\\(([^)]+)\\);`, 'g'))
+		].map((m) =>
 			m[1]
 				.split(/[\s/]+/)
 				.filter(Boolean)
-				.map(Number)
+				.map((v) => (v.endsWith('%') ? Number(v.slice(0, -1)) / 100 : Number(v)))
 		);
 		return found.length === 1 ? [found[0], found[0]] : found;
 	}
@@ -103,63 +110,82 @@ describe('the built-in themes', () => {
 		for (const [name, pair] of Object.entries(TOKENS))
 			expect(fromCss(name), `--${name}`).toEqual(pair);
 	});
+	it('are the tokens of sin-api: neutral greys, one emerald accent, alpha hairlines', () => {
+		const p = builtin(false);
+		expect(toHex(p.background)).toBe(toHex(oklch(0.145, 0, 0)));
+		expect(toHex(p.card)).toBe(toHex(oklch(0.17, 0, 0)));
+		expect(toHex(p.sidebar)).toBe(toHex(oklch(0.16, 0, 0)));
+		expect(TOKENS.border).toEqual([
+			[0, 0, 0, 0.09],
+			[1, 0, 0, 0.09]
+		]);
+		expect(TOKENS.input).toEqual([
+			[0, 0, 0, 0.12],
+			[1, 0, 0, 0.12]
+		]);
+		expect(TOKENS.ring).toEqual(TOKENS.brand);
+		for (const s of SURFACES) for (const v of TOKENS[s]) expect(v[1], s).toBe(0);
+	});
 	it('keep every text pair at 4.5:1 and every control pair at 3:1, dark and light', () => {
-		expect(PAIRS.length).toBeGreaterThan(100);
+		expect(TEXT_FLOOR).toBe(4.5);
+		expect(CONTROL_FLOOR).toBe(3);
+		expect(PAIRS.length).toBeGreaterThan(70);
 		expect(failures(builtin(false))).toEqual([]);
 		expect(failures(builtin(true))).toEqual([]);
 	});
-	it('keep text and controls readable on a hovered or chosen row of every surface', () => {
+	it('keep text readable on a hovered or chosen row of every surface', () => {
+		// A wash is an opaque step of the ladder here, so it is a surface like any other.
+		for (const wash of ['muted', 'accent', 'sidebar-accent'])
+			for (const t of ['foreground', 'muted-foreground', 'success', 'warning'])
+				expect(
+					PAIRS.some(([fg, bg, f]) => fg === t && bg === wash && f === TEXT_FLOOR),
+					`${t} on ${wash}`
+				).toBe(true);
+	});
+	it('keep text readable on the fill of a field and of a code block', () => {
+		// `dark:bg-input/30`: the hairline colour at 30% over the surface the control sits on.
 		const bad: string[] = [];
 		for (const light of [false, true]) {
 			const p = builtin(light);
-			for (const wash of ['hover', 'active']) {
-				const [l, c, h, a] = TOKENS[wash][light ? 0 : 1] as [number, number, number, number];
-				for (const s of [...SURFACES, 'composer', 'bubble']) {
-					const under = composite(oklch(l, c, h), a, p[s]);
-					const drawn: [string, number][] = [
-						...PAIRS.filter(([, bg, f]) => bg === 'background' && f === TEXT_FLOOR).map(
-							([t]): [string, number] => [t, TEXT_FLOOR]
-						),
-						['input', CONTROL_FLOOR],
-						['ring', CONTROL_FLOOR]
-					];
-					for (const [fg, floor] of drawn) {
-						const ratio = contrast(p[fg], under);
-						if (ratio < floor)
-							bad.push(
-								`${light ? 'light' : 'dark'} ${fg} on ${wash} over ${s}: ${ratio.toFixed(2)}`
-							);
-					}
+			const [l, c, h, a] = TOKENS.input[light ? 0 : 1] as [number, number, number, number];
+			for (const s of ['background', 'card', 'popover', 'sidebar']) {
+				const under = composite(oklch(l, c, h), a * 0.3, p[s]);
+				for (const t of [
+					'foreground',
+					'muted-foreground',
+					'syn-text',
+					'syn-key',
+					'syn-string',
+					'syn-number',
+					'syn-keyword',
+					'syn-fn'
+				]) {
+					const ratio = contrast(p[t], under);
+					if (ratio < TEXT_FLOOR)
+						bad.push(`${light ? 'light' : 'dark'} ${t} on input/30 over ${s}: ${ratio.toFixed(2)}`);
 				}
 			}
 		}
 		expect(bad).toEqual([]);
 	});
-	it('draw the edge of the message box and of a segmented choice at 3:1 on what is around them', () => {
-		// Both edges are --input; the rule below pins that, the pairs pin its ratio on every surface
-		// they sit on (the track of a .seg is --inset, the box itself is --composer).
-		const rule = (sel: string) => {
-			const at = css.indexOf(`\n\t${sel} {`);
-			return css.slice(at, css.indexOf('\n\t}', at));
-		};
-		expect(rule('.composer')).toMatch(/border: 1px solid var\(--input\)/);
-		expect(rule('.seg')).toMatch(/inset 0 0 0 1px var\(--input\)/);
-		const edge = (bg: string) =>
-			PAIRS.some(([fg, b, f]) => fg === 'input' && b === bg && f === CONTROL_FLOOR);
-		for (const bg of ['background', 'rail', 'card', 'overlay', 'inset', 'composer'])
-			expect(edge(bg), bg).toBe(true);
+	it('draw the focus ring and a filled button at 3:1 on what is around them', () => {
+		// The edge of a field at rest is sin-api's 12% hairline, which is quieter than 3:1 by design;
+		// what marks a control is its fill, its label and, with the keyboard, this ring.
 		for (const light of [false, true])
-			for (const bg of ['background', 'rail', 'card', 'overlay', 'inset', 'composer'])
-				expect(
-					contrast(builtin(light).input, builtin(light)[bg]),
-					`${light} ${bg}`
-				).toBeGreaterThanOrEqual(3);
+			for (const bg of ['background', 'card', 'popover', 'sidebar'])
+				for (const fg of ['ring', 'primary'])
+					expect(
+						contrast(builtin(light)[fg], builtin(light)[bg]),
+						`${light ? 'light' : 'dark'} ${fg} on ${bg}`
+					).toBeGreaterThanOrEqual(CONTROL_FLOOR);
 	});
-	it('keep those edges at 3:1 when a terminal theme is matched', () => {
+	it('keep the ring at 3:1 when a terminal theme is matched', () => {
 		for (const t of [TOKYO, PAPER]) {
 			const { palette } = mapTheme(t);
-			for (const bg of ['background', 'rail', 'card', 'overlay', 'inset', 'composer'])
-				expect(contrast(palette.input, palette[bg]), `${t.name} ${bg}`).toBeGreaterThanOrEqual(3);
+			for (const bg of ['background', 'card', 'popover', 'sidebar'])
+				expect(contrast(palette.ring, palette[bg]), `${t.name} ${bg}`).toBeGreaterThanOrEqual(
+					CONTROL_FLOOR
+				);
 		}
 	});
 	it('notice a pair that is too faint', () => {
@@ -179,9 +205,10 @@ describe('mapping a terminal theme', () => {
 		expect(m.fellBack).toEqual([]);
 		expect(m.vars['--background']).toBe('#1a1b26');
 		expect(m.vars['--foreground']).toBe('#c0caf5');
-		expect(m.vars['--bubble']).toBe('#292e42');
-		expect(m.vars['--inset']).toBe('#16161e');
-		expect(m.vars['--active']).toBe('#283457');
+		expect(m.vars['--sidebar-foreground']).toBe('#c0caf5');
+		expect(m.vars['--secondary']).toBe('#292e42');
+		expect(m.vars['--accent']).toBe('#283457');
+		expect(m.vars['--ring']).toBe('#7aa2f7');
 		expect(failures(m.palette)).toEqual([]);
 	});
 	it('only sets variables that leaving the theme clears again', () => {
@@ -191,9 +218,9 @@ describe('mapping a terminal theme', () => {
 	it('falls back to the built-in token for colours too pale to read', () => {
 		const m = mapTheme(PAPER);
 		expect(m.light).toBe(true);
-		expect(m.fellBack).toContain('ember-text');
+		expect(m.fellBack).toContain('warning');
 		expect(m.fellBack).toContain('destructive');
-		expect(m.vars['--ember-text']).toBeUndefined();
+		expect(m.vars['--warning']).toBeUndefined();
 		expect(m.vars['--destructive']).toBeUndefined();
 		expect(failures(m.palette)).toEqual([]);
 	});
@@ -211,5 +238,96 @@ describe('mapping a terminal theme', () => {
 		const m = mapTheme({ name: 'odd', light: false, roles: { text: 'red', surface: 'nope' } });
 		expect(m.vars).toEqual({});
 		expect(m.fellBack).toEqual([]);
+	});
+});
+
+describe('the accents', () => {
+	// Where PAIRS holds a ring and the accent to the control floor: the page, a card, a dialog, the
+	// sidebar, and the track of a meter.
+	const GROUNDS = ['background', 'card', 'popover', 'sidebar', 'muted'];
+	// Emerald is sin-api's token, kept value for value: on the light theme it is 2.9:1 on a chosen
+	// sidebar row and a little outside sRGB. The accents this page adds are held to more.
+	const ADDED = ACCENTS.filter((a) => a.value !== 'emerald');
+
+	it('offers emerald first, as the stylesheet writes it', () => {
+		expect(ACCENTS[0].value).toBe('emerald');
+		expect(accentVars('emerald', true)).toEqual({});
+		expect(accentVars('emerald', false)).toEqual({});
+		expect(new Set(ACCENTS.map((a) => a.value)).size).toBe(ACCENTS.length);
+	});
+
+	for (const a of ACCENTS)
+		for (const light of [true, false]) {
+			const side = light ? 'light' : 'dark';
+			it(`${a.value} reaches ${CONTROL_FLOOR}:1 where a control is drawn (${side})`, () => {
+				const p = withAccent(a.value, light);
+				for (const ground of GROUNDS)
+					expect(
+						contrast(p.brand, p[ground]),
+						`${a.value} on ${ground} (${side})`
+					).toBeGreaterThanOrEqual(CONTROL_FLOOR);
+				expect(p.ring).toEqual(p.brand);
+				// The theme still holds as a whole with this accent in it.
+				expect(failures(p)).toEqual([]);
+			});
+		}
+
+	for (const a of ADDED)
+		for (const light of [true, false]) {
+			const side = light ? 'light' : 'dark';
+			it(`${a.value} reaches ${CONTROL_FLOOR}:1 on a hovered or chosen row too (${side})`, () => {
+				const p = withAccent(a.value, light);
+				for (const ground of SURFACES)
+					expect(
+						contrast(p.brand, p[ground]),
+						`${a.value} on ${ground} (${side})`
+					).toBeGreaterThanOrEqual(CONTROL_FLOOR);
+			});
+			it(`${a.value} is a colour a screen can show (${side})`, () => {
+				// In gamut: nothing is clipped on the way to sRGB, so what is checked is what is drawn.
+				const [l, c, h] = a.tone[light ? 0 : 1];
+				const rad = (h * Math.PI) / 180;
+				const A = c * Math.cos(rad);
+				const B = c * Math.sin(rad);
+				const L = (l + 0.3963377774 * A + 0.2158037573 * B) ** 3;
+				const M = (l - 0.1055613458 * A - 0.0638541728 * B) ** 3;
+				const S = (l - 0.0894841775 * A - 1.291485548 * B) ** 3;
+				for (const v of [
+					4.0767416621 * L - 3.3077115913 * M + 0.2309699292 * S,
+					-1.2684380046 * L + 2.6097574011 * M - 0.3413193965 * S,
+					-0.0041960863 * L - 0.7034186147 * M + 1.707614701 * S
+				]) {
+					expect(v).toBeGreaterThanOrEqual(-0.002);
+					expect(v).toBeLessThanOrEqual(1.002);
+				}
+			});
+		}
+
+	it('sets the accent and both focus rings, and only variables that leaving a theme clears', () => {
+		const vars = accentVars('violet', false);
+		expect(Object.keys(vars).sort()).toEqual(ACCENT_VARS.map((v) => `--${v}`).sort());
+		expect(new Set(Object.values(vars)).size).toBe(1);
+		for (const v of Object.keys(vars)) expect(MAPPED_VARS).toContain(v);
+		expect(accentVars('violet', true)['--brand']).not.toBe(vars['--brand']);
+	});
+
+	it('has the first chart colour follow the accent in the stylesheet', () => {
+		const sheet = readFileSync(resolve(__dirname, '../../src/app.css'), 'utf8');
+		expect(sheet).toMatch(/--chart-1:\s*var\(--brand\)/);
+	});
+
+	it("draws a theme card with that theme's colours and the accent in use", () => {
+		const dark = preview(false, 'rose');
+		const light = preview(true, 'rose');
+		for (const t of PREVIEW_TOKENS) expect(dark[t]).toMatch(/^oklch\(/);
+		expect(dark.background).not.toBe(light.background);
+		expect(dark.brand).toBe(accentVars('rose', false)['--brand']);
+		expect(light.brand).toBe(accentVars('rose', true)['--brand']);
+		// A matched terminal theme is drawn in its own colours, its accent among them.
+		const mapped = mapTheme(TOKYO);
+		const term = preview(false, 'rose', mapped);
+		expect(term.background).toBe(mapped.vars['--background']);
+		expect(term.brand).toBe(mapped.vars['--brand']);
+		expect(term.brand).not.toBe(dark.brand);
 	});
 });

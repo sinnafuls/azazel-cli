@@ -60,7 +60,10 @@ describe('the / menu', () => {
 	});
 	it('searches descriptions only for a real word', () => {
 		expect(names('summ')).toEqual(['compact']);
-		expect(names('su')).toEqual([]);
+		// Three letters that start a word of a description ("…a written brief", "Write the
+		// session…") and no name.
+		expect(names('wri')).toEqual(['handoff', 'export']);
+		expect(names('wr')).toEqual([]);
 	});
 
 	it('reads a typed line as a known command with its arguments', () => {

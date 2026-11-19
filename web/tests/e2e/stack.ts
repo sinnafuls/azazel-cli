@@ -44,8 +44,10 @@ export class Stack {
 	pair = '';
 	port = 0;
 	sessionId = '';
+	/** Offers the sessions started from now on the tool `test_wait`, a call that takes as long as it is told to. */
+	mockTools = false;
 
-	private azazel(args: string[]) {
+	private azazel(args: string[], cwd = this.project) {
 		return [
 			'--set',
 			'session.auto_name=false',
@@ -53,7 +55,7 @@ export class Stack {
 			'--set',
 			'notify.desktop="off"',
 			'--cwd',
-			join(this.dir, 'project'),
+			cwd,
 			...args
 		];
 	}
@@ -62,18 +64,66 @@ export class Stack {
 		return {
 			...process.env,
 			AZAZEL_HOME: join(this.dir, 'home'),
-			AZAZEL_MOCK_SCRIPT: join(this.dir, 'script.json')
+			AZAZEL_MOCK_SCRIPT: join(this.dir, 'script.json'),
+			...(this.mockTools ? { AZAZEL_MOCK_TOOLS: '1' } : {})
 		};
 	}
 
-	private run(args: string[]) {
-		const out = spawnSync(binary, this.azazel(args), { env: this.env(), encoding: 'utf8' });
+	private run(args: string[], cwd = this.project) {
+		const out = spawnSync(binary, this.azazel(args, cwd), { env: this.env(), encoding: 'utf8' });
 		if (out.status !== 0) throw new Error(`azazel ${args.join(' ')}: ${out.stdout}${out.stderr}`);
 		return out.stdout;
 	}
 
-	/** Starts the session (in `mode`: `manual` waits for approvals) and the server, with `remote` added to its arguments. */
-	async start(mode: 'manual' | 'auto', failure = false, remote: string[] = []) {
+	/** The state `azazel ps` reports for every session of this home. */
+	private states(): Map<string, string> {
+		return new Map(
+			this.run(['ps', '--json'])
+				.split('\n')
+				.filter((l) => l.startsWith('{'))
+				.map((l) => JSON.parse(l) as { id: string; state: string })
+				.map((r) => [r.id, r.state])
+		);
+	}
+
+	/** Waits until every session of `ids` is in the state named for it. */
+	async until(ids: Record<string, string>) {
+		const deadline = Date.now() + 30_000;
+		for (;;) {
+			const now = this.states();
+			if (Object.entries(ids).every(([id, state]) => now.get(id) === state)) return;
+			if (Date.now() > deadline)
+				throw new Error(`sessions never were ${JSON.stringify(ids)}: ${JSON.stringify([...now])}`);
+			await new Promise((r) => setTimeout(r, 100));
+		}
+	}
+
+	/**
+	 * Starts one more scripted session and returns its id, without waiting for it (see `until`).
+	 * Every session reads the script from its first step, so `script` is what this one is answered
+	 * with. `cwd` is a folder of this stack's directory, made when it is missing.
+	 */
+	session(prompt: string, script: unknown, mode: 'manual' | 'auto' = 'auto', cwd = this.project) {
+		mkdirSync(join(cwd, '.git'), { recursive: true });
+		writeFileSync(join(this.dir, 'script.json'), JSON.stringify(script));
+		return this.run(['--mode', mode, 'bg', prompt], cwd).trim();
+	}
+
+	/** Ends a session: it stays on disk as an earlier session. */
+	end(id: string) {
+		this.run(['kill', id]);
+	}
+
+	/**
+	 * Starts the session (in `mode`: `manual` waits for approvals) and the server, with `remote` added
+	 * to its arguments. `script` answers the session in place of tests/fixtures/scripts/web_session.json.
+	 */
+	async start(
+		mode: 'manual' | 'auto',
+		failure = false,
+		remote: string[] = [],
+		script: unknown = null
+	) {
 		if (!existsSync(binary))
 			throw new Error(`${binary} is missing: build it with --features test-support,remote`);
 		// A file left over from an earlier run would make `write` fail while the script still claims it worked.
@@ -99,18 +149,9 @@ export class Stack {
 				})
 			);
 		}
+		if (script) writeFileSync(join(this.dir, 'script.json'), JSON.stringify(script));
 		this.sessionId = this.run(['--mode', mode, 'bg', 'create hello']).trim();
-		const wanted = mode === 'manual' ? 'waiting for you' : 'idle';
-		const deadline = Date.now() + 30_000;
-		for (;;) {
-			const rows = this.run(['ps', '--json'])
-				.split('\n')
-				.filter((l) => l.startsWith('{'))
-				.map((l) => JSON.parse(l));
-			if (rows.some((r) => r.id === this.sessionId && r.state === wanted)) break;
-			if (Date.now() > deadline) throw new Error(`session ${this.sessionId} never was ${wanted}`);
-			await new Promise((r) => setTimeout(r, 100));
-		}
+		await this.until({ [this.sessionId]: mode === 'manual' ? 'waiting for you' : 'idle' });
 		this.child = spawn(binary, this.azazel(['remote', '--port', '0', '--json', ...remote]), {
 			env: this.env(),
 			stdio: ['pipe', 'pipe', 'pipe']
@@ -168,6 +209,11 @@ export class Stack {
 		return line.slice(line.indexOf('http'));
 	}
 
+	/** Ends the session the stack started with: it stays on disk as an earlier session. */
+	endSession() {
+		this.end(this.sessionId);
+	}
+
 	async stop() {
 		if (this.child) {
 			this.child.stdin!.write('q\n');
@@ -175,11 +221,7 @@ export class Stack {
 		}
 		// The session it started with, and every one a browser started.
 		try {
-			const rows = this.run(['ps', '--json'])
-				.split('\n')
-				.filter((l) => l.startsWith('{'))
-				.map((l) => JSON.parse(l) as { id: string });
-			for (const id of new Set([this.sessionId, ...rows.map((r) => r.id)]))
+			for (const id of new Set([this.sessionId, ...this.states().keys()]))
 				spawnSync(binary, this.azazel(['kill', id]), { env: this.env() });
 		} catch {
 			// Already gone.

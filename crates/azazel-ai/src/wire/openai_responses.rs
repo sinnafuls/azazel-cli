@@ -512,6 +512,7 @@ fn parse_usage(usage: &Value) -> Usage {
         cache_write,
         reasoning: count("/output_tokens_details/reasoning_tokens"),
         cost_usd: None,
+        cache_ttl_secs: None,
     }
 }
 

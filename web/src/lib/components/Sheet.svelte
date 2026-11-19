@@ -1,12 +1,13 @@
-<script lang="ts" module>
-	let count = 0;
-</script>
-
 <script lang="ts">
-	// A native <dialog>: focus is trapped, Escape works, the scrim is free. On a phone it is a bottom
-	// sheet with a grab handle that you can swipe down to dismiss; on a wide screen a `docked` sheet
-	// sits in the flow above the composer so the transcript stays readable while you decide.
+	// A titled surface for one task, made of the stock parts. On a wide screen it is a Dialog; on a
+	// phone a Drawer from the bottom that is swiped down to close. A `docked` sheet on a wide screen
+	// is a Card in the reading column above the composer, so the transcript stays readable while you
+	// decide. The close button is always at the top right; a step back is at the top left.
 	import type { Snippet } from 'svelte';
+	import * as Dialog from '$lib/components/ui/dialog';
+	import * as Drawer from '$lib/components/ui/drawer';
+	import * as Card from '$lib/components/ui/card';
+	import { Button } from '$lib/components/ui/button';
 	import { viewport } from '$lib/media.svelte';
 	import StateDot from './StateDot.svelte';
 	import X from '@lucide/svelte/icons/x';
@@ -25,7 +26,8 @@
 		children,
 		footer,
 		actions,
-		class: className
+		class: className,
+		...rest
 	}: {
 		open: boolean;
 		title: string;
@@ -35,171 +37,139 @@
 		/** Marks the sheet with the accent: it is waiting for you. */
 		attention?: boolean;
 		onclose?: () => void;
-		/** Shows a back button instead of the close button: the sheet is a step into something. */
+		/** Shows a back button on the left: the sheet is a step into something. */
 		onback?: () => void;
 		children: Snippet;
+		/** Buttons, laid out by the footer: stacked on a phone, in a row at the right otherwise. */
 		footer?: Snippet;
-		/** Buttons on the right of the title. */
+		/** Buttons left of the close button. */
 		actions?: Snippet;
 		class?: string;
+		[k: `data-${string}`]: string | boolean | undefined;
 	} = $props();
 
-	// Several sheets can be open at once (a picker over a docked request): each names its own title.
-	const titleId = `sheet-title-${++count}`;
+	const inline = $derived(docked && viewport.wide);
+	const closable = $derived(dismissible && !!onclose);
+	function change(v: boolean) {
+		if (!v && closable) onclose?.();
+	}
 
-	let el = $state<HTMLDialogElement>();
-	let heading = $state<HTMLHeadingElement>();
-	const modal = $derived(!(docked && viewport.wide));
-
+	// A docked request is not a modal, so nothing takes the focus for it: do it, or a keyboard and a
+	// screen reader user would not know it is there.
+	let dockedHead = $state<HTMLElement | null>(null);
 	$effect(() => {
-		const d = el;
-		if (!d) return;
-		if (open && !d.open) {
-			if (modal) d.showModal();
-			else d.show();
-			heading?.focus({ preventScroll: true });
-		} else if (!open && d.open) d.close();
+		if (inline && open) dockedHead?.focus({ preventScroll: true });
 	});
-
-	// Swipe down on the handle area to dismiss.
-	let dragY = $state(0);
-	let startY = $state<number | null>(null);
-	function down(e: PointerEvent) {
-		if (!dismissible || !onclose || !modal) return;
-		startY = e.clientY;
-		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-	}
-	function move(e: PointerEvent) {
-		if (startY !== null) dragY = Math.max(0, e.clientY - startY);
-	}
-	function up() {
-		if (startY === null) return;
-		const far = dragY > 90;
-		startY = null;
-		dragY = 0;
-		if (far) onclose?.();
-	}
+	const uid = $props.id();
 </script>
 
-<dialog
-	bind:this={el}
-	class={cn(
-		'sheet text-foreground m-0 w-full max-w-none overflow-hidden p-0',
-		modal
-			? 'float mt-auto max-h-[90dvh] rounded-t-[28px] border-x-0 border-b-0 md:m-auto md:max-h-[82dvh] md:max-w-lg md:rounded-[24px] md:border'
-			: 'surface-2 relative mx-auto mb-3 max-h-[56dvh] w-[calc(100%-2rem)] max-w-[43rem] rounded-[24px] md:w-[calc(100%-4rem)]',
-		className
-	)}
-	data-attention={attention && !modal ? '' : undefined}
-	style:transform={dragY ? `translateY(${dragY}px)` : undefined}
-	style:transition={startY === null ? 'transform 200ms var(--ease-out)' : 'none'}
-	aria-labelledby={titleId}
-	oncancel={(e) => {
-		if (!dismissible) e.preventDefault();
-		else onclose?.();
-	}}
->
-	{#if open}
-		<div class="flex flex-col" style="max-height: inherit">
-			{#if modal}
-				<div
-					class="grid shrink-0 touch-none place-items-center pt-2 pb-0.5 md:hidden"
-					onpointerdown={down}
-					onpointermove={move}
-					onpointerup={up}
-					onpointercancel={up}
-					role="presentation"
-				>
-					<span class="bg-input/50 h-[5px] w-10 rounded-full" aria-hidden="true"></span>
-				</div>
-			{/if}
-			<header
-				class="grid shrink-0 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 px-3 pt-2 pb-3 md:px-4 md:pt-4 fine:grid-cols-[2.25rem_minmax(0,1fr)_2.25rem]"
-			>
-				<div class="flex justify-start">
-					{#if onback}
-						<button type="button" class="btn btn-round btn-icon" aria-label="Back" onclick={onback}>
-							<ChevronLeft class="size-[18px]" />
-						</button>
-					{:else if dismissible && onclose}
-						<button
-							type="button"
-							class="btn btn-round btn-icon"
-							aria-label="Close"
-							onclick={onclose}
-						>
-							<X class="size-[18px]" />
-						</button>
-					{:else if attention}
-						<StateDot state="waiting for you" class="ml-2" />
-					{/if}
-				</div>
-				<div class="min-w-0 text-center">
-					<h2
-						id={titleId}
-						bind:this={heading}
-						tabindex="-1"
-						class="truncate text-[17px] leading-6 font-semibold tracking-[-0.02em] outline-none"
-					>
-						{title}
-					</h2>
-					{#if subtitle}<p class="text-muted-foreground mt-0.5 truncate text-xs">{subtitle}</p>{/if}
-				</div>
-				<div class="flex justify-end">
-					{#if actions}{@render actions()}{/if}
-				</div>
-			</header>
-			<div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 pb-5 md:px-5">
-				{@render children()}
-			</div>
-			{#if footer}
-				<footer
-					class="bg-inset/60 shrink-0 border-t px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-5"
-				>
-					{@render footer()}
-				</footer>
+<!-- One row: the title's line is as tall as the buttons beside it, so their centres are the same. -->
+{#snippet head(kind: 'card' | 'dialog' | 'drawer')}
+	<div class="flex shrink-0 items-start gap-2 px-4 pt-4 pb-3" data-slot="sheet-head">
+		{#if onback}
+			<Button variant="ghost" size="icon-sm" class="-ml-1.5" aria-label="Back" onclick={onback}>
+				<ChevronLeft />
+			</Button>
+		{:else if attention}
+			<span class="grid h-7 shrink-0 place-items-center"><StateDot state="waiting for you" /></span>
+		{/if}
+		<div class="min-w-0 flex-1">
+			{#if kind === 'dialog'}
+				<Dialog.Title class="truncate leading-7">{title}</Dialog.Title>
+				{#if subtitle}<Dialog.Description class="truncate text-xs">{subtitle}</Dialog.Description
+					>{/if}
+			{:else if kind === 'drawer'}
+				<Drawer.Title class="truncate leading-7">{title}</Drawer.Title>
+				{#if subtitle}<Drawer.Description class="truncate text-xs">{subtitle}</Drawer.Description
+					>{/if}
 			{:else}
-				<div class="h-[env(safe-area-inset-bottom)] shrink-0"></div>
+				<Card.Title
+					bind:ref={dockedHead}
+					id="{uid}-title"
+					role="heading"
+					aria-level={2}
+					tabindex={-1}
+					class="truncate leading-7 outline-none"
+				>
+					{title}
+				</Card.Title>
+				{#if subtitle}<Card.Description class="truncate text-xs">{subtitle}</Card.Description>{/if}
 			{/if}
 		</div>
-	{/if}
-</dialog>
+		{#if actions}{@render actions()}{/if}
+		{#if closable}
+			<Button variant="ghost" size="icon-sm" class="-mr-1.5" aria-label="Close" onclick={onclose}>
+				<X />
+			</Button>
+		{/if}
+	</div>
+{/snippet}
 
-<style>
-	/* The scrim is the same in both themes: a custom property does not reach ::backdrop everywhere. */
-	dialog::backdrop {
-		background: oklch(0.1 0.004 260 / 0.56);
-		animation: fade-in 200ms cubic-bezier(0.22, 1, 0.36, 1);
-	}
-	dialog[open]:modal {
-		animation: sheet-in var(--dur-slow) var(--ease-out);
-	}
-	dialog[open]:not(:modal) {
-		animation: enter var(--dur-slow) var(--ease-out);
-	}
-	/* A docked request that waits for you: the accent holds its edge, solid so it reads at 3:1. */
-	dialog[data-attention] {
-		border-color: var(--ring);
-		box-shadow:
-			0 0 0 3px color-mix(in oklab, var(--ember) 16%, transparent),
-			var(--elev-2),
-			var(--highlight);
-	}
-	@keyframes sheet-in {
-		from {
-			transform: translateY(40px);
-			opacity: 0;
-		}
-	}
-	@keyframes dialog-in {
-		from {
-			transform: translateY(8px) scale(0.98);
-			opacity: 0;
-		}
-	}
-	@media (min-width: 768px) {
-		dialog[open]:modal {
-			animation: dialog-in 200ms var(--ease-out);
-		}
-	}
-</style>
+{#snippet body()}
+	<div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-slot="sheet-body">
+		{@render children()}
+	</div>
+{/snippet}
+
+{#if inline}
+	{#if open}
+		<Card.Root
+			role="group"
+			aria-labelledby="{uid}-title"
+			class={cn(
+				'mx-auto mb-3 max-h-[56dvh] w-full gap-0 py-0 duration-200 animate-in fade-in-0 slide-in-from-bottom-2',
+				attention && 'ring-ring/60',
+				className
+			)}
+			data-attention={attention ? '' : undefined}
+			{...rest}
+		>
+			{@render head('card')}
+			{@render body()}
+			{#if footer}
+				<Card.Footer class="shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end"
+					>{@render footer()}</Card.Footer
+				>
+			{/if}
+			<!-- The focus move names the request; this line says it waits for an answer. -->
+			<p class="sr-only" role="status">
+				{attention ? `${title}. Waiting for your answer.` : title}
+			</p>
+		</Card.Root>
+	{/if}
+{:else if viewport.wide}
+	<Dialog.Root {open} onOpenChange={change}>
+		<Dialog.Content
+			showCloseButton={false}
+			interactOutsideBehavior={closable ? 'close' : 'ignore'}
+			escapeKeydownBehavior={closable ? 'close' : 'ignore'}
+			class={cn(
+				'flex max-h-[min(82dvh,48rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg',
+				className
+			)}
+			{...rest}
+		>
+			{@render head('dialog')}
+			{@render body()}
+			{#if footer}
+				<Dialog.Footer class="mx-0 mb-0 shrink-0">{@render footer()}</Dialog.Footer>
+			{/if}
+		</Dialog.Content>
+	</Dialog.Root>
+{:else}
+	<Drawer.Root {open} onOpenChange={change} dismissible={closable} shouldScaleBackground={false}>
+		<Drawer.Content
+			class={cn('data-[vaul-drawer-direction=bottom]:max-h-[90dvh]', className)}
+			{...rest}
+		>
+			{@render head('drawer')}
+			{@render body()}
+			{#if footer}
+				<Drawer.Footer
+					class="shrink-0 flex-col-reverse border-t bg-muted/50 pb-[max(1rem,env(safe-area-inset-bottom))]"
+					>{@render footer()}</Drawer.Footer
+				>
+			{/if}
+		</Drawer.Content>
+	</Drawer.Root>
+{/if}

@@ -28,6 +28,16 @@ export function splitModel(model: string): { provider: string; id: string } {
 		: { provider: '', id: model };
 }
 
+/**
+ * A model id without what only routes it: an organisation path (`meta-llama/`), a vendor prefix
+ * (`anthropic.`, `us.anthropic.`), a version or date suffix (`-v1:0`, `-20250514`).
+ */
+export function shortModel(id: string): string {
+	const last = id.slice(id.lastIndexOf('/') + 1);
+	const noVendor = last.replace(/^(?:[a-z]{2}\.)?[a-z0-9-]+\.(?=[a-z])/i, '');
+	return noVendor.replace(/-v\d+(?::\d+)?$/, '').replace(/-\d{8}$/, '') || id;
+}
+
 /** The roles that resolve to a usable model, matching `query` by name or by that model. */
 export function pickableRoles(roles: Roles | null | undefined, query: string): RoleRow[] {
 	const q = query.trim().toLowerCase();

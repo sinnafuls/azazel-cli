@@ -1584,6 +1584,26 @@ const server = Bun.serve<WsData>({
 						}
 			);
 		}
+		if (p === '/api/history' && req.method === 'POST') {
+			if (access !== 'control')
+				return j({ error: 'A view device cannot list earlier sessions.' }, { status: 403 });
+			const { query } = (await req.json().catch(() => ({}))) as { query?: string };
+			const q = query?.toLowerCase() ?? '';
+			return j({
+				sessions: scenarios
+					.filter((s) => !q || `${s.name ?? ''} ${s.cwd}`.toLowerCase().includes(q))
+					.map((s, i) => ({
+						id: `saved-${s.id}`,
+						name: s.name,
+						cwd: s.cwd,
+						created: s.started,
+						updated: s.started,
+						first_prompt: s.name,
+						messages: 4 + i * 3,
+						running: i === 0 ? s.id : null
+					}))
+			});
+		}
 		if (p === '/api/sessions' && req.method === 'POST') {
 			if (access !== 'control')
 				return j({ error: 'A view device cannot start sessions.' }, { status: 403 });

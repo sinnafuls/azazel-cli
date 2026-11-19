@@ -216,6 +216,15 @@ fn dist() -> Result<()> {
     if let Some(triple) = &target {
         build.args(["--target", triple]);
     }
+    // An archive for Windows must carry the icon and file details: a failed resource compile is
+    // an error here, where an ordinary build only warns.
+    let for_windows = match &target {
+        Some(triple) => triple.contains("windows"),
+        None => cfg!(windows),
+    };
+    if for_windows {
+        build.env("AZAZEL_REQUIRE_RESOURCE", "1");
+    }
     let built = build.current_dir(&root).status().context("could not run cargo")?;
     if !built.success() {
         bail!("the release build failed");

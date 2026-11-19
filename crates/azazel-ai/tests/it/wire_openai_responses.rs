@@ -484,6 +484,7 @@ fn usage_separates_cache_reads_and_writes_from_input() {
             cache_write: 300,
             reasoning: 20,
             cost_usd: None,
+            cache_ttl_secs: None,
         }
     );
 }

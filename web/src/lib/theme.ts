@@ -93,177 +93,175 @@ export function mix(a: Rgb, b: Rgb, t: number): Rgb {
 /** `[l, c, h]` or `[l, c, h, alpha]`, as `src/app.css` writes them. */
 export type Lch = [number, number, number] | [number, number, number, number];
 
+const grey = (light: number, dark: number): [Lch, Lch] => [
+	[light, 0, 0],
+	[dark, 0, 0]
+];
+
 /**
- * The opaque and alpha tokens of `src/app.css` that the contrast check needs, as [light, dark].
- * tests/unit/theme.test.ts reads app.css and fails when these and the stylesheet differ.
+ * The tokens of `src/app.css` that the contrast check needs, as [light (`:root`), dark (`.dark`)].
+ * They are sin-api's, plus `success` and `warning`. tests/unit/theme.test.ts reads app.css and
+ * fails when these and the stylesheet differ.
  */
 export const TOKENS: Record<string, [Lch, Lch]> = {
-	rail: [
-		[0.97, 0, 0],
-		[0.16, 0, 0]
-	],
-	background: [
-		[1, 0, 0],
-		[0.2, 0, 0]
-	],
-	card: [
-		[0.98, 0, 0],
-		[0.235, 0, 0]
-	],
-	raised: [
-		[0.945, 0, 0],
-		[0.27, 0, 0]
-	],
-	overlay: [
-		[1, 0, 0],
-		[0.27, 0, 0]
-	],
-	inset: [
-		[0.965, 0, 0],
-		[0.165, 0, 0]
-	],
-	field: [
-		[1, 0, 0],
-		[0.18, 0, 0]
-	],
-	composer: [
-		[1, 0, 0],
-		[0.235, 0, 0]
-	],
-	bubble: [
-		[0.945, 0, 0],
-		[0.27, 0, 0]
-	],
-	'bubble-foreground': [
-		[0.2, 0, 0],
-		[0.95, 0, 0]
-	],
-	hover: [
-		[0, 0, 0, 0.05],
-		[1, 0, 0, 0.06]
-	],
-	active: [
-		[0, 0, 0, 0.08],
-		[1, 0, 0, 0.1]
+	background: grey(0.985, 0.145),
+	card: grey(1, 0.17),
+	popover: grey(1, 0.17),
+	sidebar: grey(0.97, 0.16),
+	muted: grey(0.96, 0.21),
+	secondary: grey(0.96, 0.21),
+	accent: grey(0.94, 0.24),
+	'sidebar-accent': grey(0.93, 0.22),
+	foreground: grey(0.145, 0.96),
+	'secondary-foreground': grey(0.145, 0.96),
+	'muted-foreground': grey(0.5, 0.66),
+	primary: grey(0.145, 0.96),
+	'primary-foreground': grey(0.985, 0.145),
+	border: [
+		[0, 0, 0, 0.09],
+		[1, 0, 0, 0.09]
 	],
 	input: [
-		[0.58, 0, 0],
-		[0.63, 0, 0]
+		[0, 0, 0, 0.12],
+		[1, 0, 0, 0.12]
 	],
-	foreground: [
-		[0.2, 0, 0],
-		[0.95, 0, 0]
-	],
-	'ink-2': [
-		[0.33, 0, 0],
-		[0.86, 0, 0]
-	],
-	'muted-foreground': [
-		[0.43, 0, 0],
-		[0.77, 0, 0]
-	],
-	faint: [
-		[0.47, 0, 0],
-		[0.74, 0, 0]
-	],
-	primary: [
-		[0.2, 0, 0],
-		[0.96, 0, 0]
-	],
-	'primary-hover': [
-		[0.32, 0, 0],
-		[0.86, 0, 0]
-	],
-	'primary-foreground': [
-		[0.985, 0, 0],
-		[0.18, 0, 0]
-	],
-	'accent-text': [
-		[0.45, 0.16, 255],
-		[0.8, 0.1, 250]
+	brand: [
+		[0.6, 0.15, 162],
+		[0.7, 0.15, 162]
 	],
 	ring: [
-		[0.5, 0.18, 255],
-		[0.74, 0.13, 250]
-	],
-	ember: [
-		[0.62, 0.14, 60],
-		[0.8, 0.13, 75]
-	],
-	'ember-foreground': [
-		[0.2, 0.04, 60],
-		[0.2, 0.04, 60]
-	],
-	'ember-text': [
-		[0.45, 0.1, 60],
-		[0.84, 0.11, 80]
-	],
-	info: [
-		[0.46, 0.16, 255],
-		[0.78, 0.11, 250]
+		[0.6, 0.15, 162],
+		[0.7, 0.15, 162]
 	],
 	success: [
-		[0.45, 0.12, 155],
-		[0.8, 0.14, 155]
+		[0.5, 0.12, 162],
+		[0.7, 0.15, 162]
+	],
+	warning: [
+		[0.5, 0.11, 70],
+		[0.8, 0.13, 80]
 	],
 	destructive: [
-		[0.48, 0.19, 25],
-		[0.76, 0.14, 22]
+		[0.58, 0.22, 27],
+		[0.64, 0.21, 25]
 	],
-	'destructive-foreground': [
-		[0.99, 0, 0],
-		[0.16, 0.03, 22]
-	],
-	alarm: [
-		[0.5, 0.2, 27],
-		[0.5, 0.2, 27]
-	],
-	'alarm-foreground': [
-		[0.99, 0, 0],
-		[0.99, 0, 0]
-	],
-	'diff-add': [
-		[0.955, 0.04, 155],
-		[0.27, 0.04, 155]
-	],
-	'diff-del': [
-		[0.96, 0.028, 22],
-		[0.27, 0.045, 22]
-	],
-	'diff-add-fg': [
-		[0.38, 0.11, 155],
-		[0.86, 0.11, 155]
-	],
-	'diff-del-fg': [
-		[0.44, 0.15, 22],
-		[0.86, 0.09, 22]
-	],
+	'syn-text': grey(0.3, 0.86),
 	'syn-key': [
-		[0.45, 0.1, 300],
-		[0.82, 0.09, 300]
+		[0.5, 0.12, 162],
+		[0.78, 0.12, 162]
+	],
+	'syn-string': [
+		[0.5, 0.09, 70],
+		[0.84, 0.08, 85]
+	],
+	'syn-number': [
+		[0.54, 0.14, 40],
+		[0.8, 0.11, 50]
+	],
+	'syn-keyword': [
+		[0.5, 0.13, 255],
+		[0.78, 0.09, 250]
+	],
+	'syn-fn': [
+		[0.46, 0.1, 220],
+		[0.84, 0.07, 210]
 	]
-};
-
-/** Tokens that only point at another one. */
-const ALIASES: Record<string, string> = {
-	thinking: 'muted-foreground',
-	bash: 'ink-2',
-	'mode-plan': 'info',
-	'mode-edits': 'success',
-	'mode-auto': 'ember-text'
 };
 
 export type Palette = Record<string, Rgb>;
 
-/** The built-in theme as opaque colours; the alpha washes are left out (see `TOKENS`). */
+/** The built-in theme as opaque colours; the alpha hairlines are left out (see `TOKENS`). */
 export function builtin(light: boolean): Palette {
 	const out: Palette = {};
 	for (const [name, pair] of Object.entries(TOKENS)) {
 		const v = pair[light ? 0 : 1];
 		if (v.length === 3) out[name] = oklch(v[0], v[1], v[2]);
 	}
-	for (const [name, of] of Object.entries(ALIASES)) out[name] = out[of];
 	return out;
+}
+
+// --- the accent --------------------------------------------------------------------------------
+
+/**
+ * The accents Settings > General offers, as [light, dark]. Each is drawn as a focus ring, a meter
+ * fill and the mark of what is running, so each reaches 3:1 on every surface those sit on
+ * (tests/unit/theme.test.ts). Emerald is the one `src/app.css` writes out; the others are set on
+ * the root over it.
+ */
+export const ACCENTS = [
+	{ value: 'emerald', label: 'Emerald', tone: TOKENS.brand },
+	{
+		value: 'blue',
+		label: 'Blue',
+		tone: [
+			[0.56, 0.19, 258],
+			[0.7, 0.15, 255]
+		]
+	},
+	{
+		value: 'violet',
+		label: 'Violet',
+		tone: [
+			[0.56, 0.21, 295],
+			[0.72, 0.15, 295]
+		]
+	},
+	{
+		value: 'rose',
+		label: 'Rose',
+		tone: [
+			[0.58, 0.2, 12],
+			[0.72, 0.16, 12]
+		]
+	},
+	{
+		value: 'orange',
+		label: 'Orange',
+		tone: [
+			[0.6, 0.16, 45],
+			[0.75, 0.15, 55]
+		]
+	},
+	{
+		value: 'amber',
+		label: 'Amber',
+		tone: [
+			[0.58, 0.12, 78],
+			[0.8, 0.14, 85]
+		]
+	},
+	// The text colour itself: black on the light ground, white on the dark one.
+	{ value: 'neutral', label: 'Neutral', tone: TOKENS.primary }
+] as const satisfies readonly { value: string; label: string; tone: readonly [Lch, Lch] }[];
+export type Accent = (typeof ACCENTS)[number]['value'];
+export const DEFAULT_ACCENT: Accent = 'emerald';
+
+/** The variables an accent sets: the accent itself and the focus rings. All are in `MAPPED_VARS`. */
+export const ACCENT_VARS = ['brand', 'ring', 'sidebar-ring'];
+
+/** A token as CSS writes it. */
+export const css = (v: Lch | readonly number[]): string =>
+	`oklch(${v[0]} ${v[1]} ${v[2]}${v.length === 4 ? ` / ${v[3]}` : ''})`;
+
+const toneOf = (accent: Accent, light: boolean): Lch =>
+	(ACCENTS.find((a) => a.value === accent) ?? ACCENTS[0]).tone[light ? 0 : 1] as Lch;
+
+/** The accent as a CSS colour, in the light or the dark theme. */
+export const accentColor = (accent: Accent, light: boolean): string => css(toneOf(accent, light));
+
+/** What to set on the root for an accent; nothing for the default, which the stylesheet holds. */
+export function accentVars(accent: Accent, light: boolean): Record<string, string> {
+	if (accent === DEFAULT_ACCENT) return {};
+	const value = accentColor(accent, light);
+	return Object.fromEntries(ACCENT_VARS.map((v) => [`--${v}`, value]));
+}
+
+/** The built-in theme with an accent, as opaque colours, for the contrast check. */
+export function withAccent(accent: Accent, light: boolean): Palette {
+	const [l, c, h] = toneOf(accent, light);
+	const p = builtin(light);
+	p.brand = p.ring = oklch(l, c, h);
+	return p;
 }
 
 // --- what has to be readable -------------------------------------------------------------------
@@ -271,61 +269,46 @@ export function builtin(light: boolean): Palette {
 export const TEXT_FLOOR = 4.5;
 export const CONTROL_FLOOR = 3;
 
-/** The surfaces running text and glyphs sit on. */
-export const SURFACES = ['background', 'rail', 'card', 'raised', 'overlay', 'inset', 'field'];
+/**
+ * The surfaces running text and glyphs sit on. A hovered or chosen row is one of them too: in this
+ * system a wash is an opaque step (`muted`, `accent`, `sidebar-accent`), not an alpha layer.
+ */
+export const SURFACES = [
+	'background',
+	'card',
+	'popover',
+	'sidebar',
+	'muted',
+	'secondary',
+	'accent',
+	'sidebar-accent'
+];
+/** Where red is written as words: the page, a card, a dialog. Not on a wash (see the components). */
+const PLAIN = ['background', 'card', 'popover'];
+
+const on = (fgs: string[], bgs: string[], floor: number) =>
+	fgs.flatMap((t) => bgs.map((s): [string, string, number] => [t, s, floor]));
 
 /** Every pair the page relies on: `[what is drawn, what it is drawn on, the floor]`. */
 export const PAIRS: [string, string, number][] = [
-	...[
-		'foreground',
-		'ink-2',
-		'muted-foreground',
-		'faint',
-		'accent-text',
-		'info',
-		'success',
-		'destructive',
-		'ember-text',
-		'thinking',
-		'bash',
-		'mode-plan',
-		'mode-edits',
-		'mode-auto',
-		'syn-key'
-	].flatMap((t) => SURFACES.map((s): [string, string, number] => [t, s, TEXT_FLOOR])),
-	['foreground', 'composer', TEXT_FLOOR],
-	['faint', 'composer', TEXT_FLOOR],
-	['bubble-foreground', 'bubble', TEXT_FLOOR],
+	...on(['foreground', 'muted-foreground', 'success', 'warning'], SURFACES, TEXT_FLOOR),
+	...on(['destructive'], PLAIN, TEXT_FLOOR),
+	['secondary-foreground', 'secondary', TEXT_FLOOR],
 	['primary-foreground', 'primary', TEXT_FLOOR],
-	['primary-foreground', 'primary-hover', TEXT_FLOOR],
-	['destructive-foreground', 'destructive', TEXT_FLOOR],
-	['ember-foreground', 'ember', TEXT_FLOOR],
-	['alarm-foreground', 'alarm', TEXT_FLOOR],
-	['diff-add-fg', 'diff-add', TEXT_FLOOR],
-	['diff-del-fg', 'diff-del', TEXT_FLOOR],
-	['foreground', 'diff-add', TEXT_FLOOR],
-	['foreground', 'diff-del', TEXT_FLOOR],
-	// controls: an edge, a filled button against the page, the focus ring, a status mark
-	...['background', 'rail', 'card', 'overlay', 'inset', 'field', 'composer'].map(
-		(s): [string, string, number] => ['input', s, CONTROL_FLOOR]
+	// code is drawn on the page and on a card
+	...on(
+		['syn-text', 'syn-key', 'syn-string', 'syn-number', 'syn-keyword', 'syn-fn'],
+		['background', 'card'],
+		TEXT_FLOOR
 	),
-	...['background', 'rail', 'card', 'overlay', 'composer'].map((s): [string, string, number] => [
-		'ring',
-		s,
+	// controls: the focus ring, a filled button against the page, a status mark, a meter on its track
+	...on(['ring', 'primary'], ['background', 'card', 'popover', 'sidebar'], CONTROL_FLOOR),
+	...on(
+		['success', 'warning', 'destructive'],
+		['background', 'card', 'popover', 'sidebar', 'sidebar-accent'],
 		CONTROL_FLOOR
-	]),
-	...['background', 'rail', 'card', 'overlay'].map((s): [string, string, number] => [
-		'primary',
-		s,
-		CONTROL_FLOOR
-	]),
-	...['background', 'rail', 'overlay'].flatMap((s) =>
-		['ember', 'info', 'success', 'destructive'].map((m): [string, string, number] => [
-			m,
-			s,
-			CONTROL_FLOOR
-		])
-	)
+	),
+	...on(['brand'], ['background', 'card', 'muted'], CONTROL_FLOOR)
 ];
 
 /** The pairs of `p` under their floor. */
@@ -340,37 +323,48 @@ export function failures(p: Palette): { fg: string; bg: string; ratio: number; f
 
 // --- the mapping ------------------------------------------------------------------------------
 
-/** How far each surface sits from the canvas in lightness (OKLab), [light, dark]. */
+/** How far each surface sits from the page in lightness (OKLab), [light, dark]: sin-api's ladder. */
 const LADDER: Record<string, [number, number]> = {
-	rail: [-0.03, -0.04],
-	card: [-0.02, 0.035],
-	raised: [-0.055, 0.07],
-	overlay: [0, 0.07],
-	field: [0, -0.02],
-	composer: [0, 0.035]
+	card: [0.015, 0.025],
+	popover: [0.015, 0.025],
+	sidebar: [-0.015, 0.015],
+	muted: [-0.025, 0.065],
+	secondary: [-0.025, 0.065],
+	accent: [-0.045, 0.095],
+	'sidebar-accent': [-0.055, 0.075]
 };
 
-/** Terminal role -> the variables it sets. */
+/**
+ * Terminal role -> the variables it sets. Roles the page has no token for (code_bg, the diff
+ * colours, thinking, bash, the mode colours) are not mapped: a diff line is a tint of
+ * `success` or `destructive`, a code block sits on the page.
+ */
 const ROLE_VARS: Record<string, string[]> = {
-	text: ['foreground'],
-	muted: ['muted-foreground', 'faint'],
-	accent: ['accent-text', 'ring'],
+	text: ['foreground', 'secondary-foreground', 'primary'],
+	muted: ['muted-foreground'],
+	accent: ['brand', 'ring'],
 	success: ['success'],
-	warning: ['ember', 'ember-text'],
+	warning: ['warning'],
 	error: ['destructive'],
-	border: ['input'],
-	code_bg: ['inset'],
-	diff_add: ['diff-add-fg'],
-	diff_del: ['diff-del-fg'],
-	diff_add_bg: ['diff-add'],
-	diff_del_bg: ['diff-del'],
-	user_bg: ['bubble'],
-	user_text: ['bubble-foreground'],
-	thinking: ['thinking'],
-	bash: ['bash'],
-	mode_plan: ['mode-plan', 'info'],
-	mode_edits: ['mode-edits'],
-	mode_auto: ['mode-auto']
+	// the person's own message
+	user_bg: ['secondary'],
+	user_text: ['secondary-foreground'],
+	// a hovered or chosen row
+	selected_bg: ['accent', 'sidebar-accent']
+};
+
+/** Variables that hold the same colour as another: sin-api writes each out, so each is set. */
+const FOLLOWERS: Record<string, string[]> = {
+	foreground: [
+		'card-foreground',
+		'popover-foreground',
+		'accent-foreground',
+		'sidebar-foreground',
+		'sidebar-accent-foreground'
+	],
+	primary: ['sidebar-primary'],
+	'primary-foreground': ['sidebar-primary-foreground'],
+	ring: ['sidebar-ring']
 };
 
 export interface Mapped {
@@ -406,13 +400,7 @@ export function mapTheme(theme: ThemeInput | null | undefined): Mapped {
 		const c = parseHex(theme.roles[role]);
 		if (c) for (const v of vars) wanted[v] = c;
 	}
-	const text = wanted.foreground;
-	if (text && wanted.background) {
-		wanted['ink-2'] = mix(text, wanted.background, 0.14);
-		wanted.primary = text;
-		wanted['primary-hover'] = mix(text, wanted.background, 0.16);
-		wanted['primary-foreground'] = wanted.background;
-	}
+	if (wanted.foreground && wanted.background) wanted['primary-foreground'] = wanted.background;
 
 	// Start from everything asked for, then give up one variable at a time until every pair holds:
 	// of a failing pair, the side drawn (the text, the edge) goes first, its surface second.
@@ -433,25 +421,18 @@ export function mapTheme(theme: ThemeInput | null | undefined): Mapped {
 	if (failures(p).length) return { vars: {}, fellBack: Object.keys(wanted), light, palette: base };
 
 	const vars: Record<string, string> = {};
-	for (const name of Object.keys(wanted))
-		if (!fellBack.has(name)) vars[`--${name}`] = toHex(p[name]);
-
-	// Washes and hairlines have no floor of their own: they follow the terminal when it names them.
-	const selected = parseHex(theme.roles.selected_bg);
-	const fg = p.foreground;
-	if (selected && SURFACES.every((s) => contrast(fg, selected) >= TEXT_FLOOR || !p[s])) {
-		if (contrast(fg, selected) >= TEXT_FLOOR && contrast(p['muted-foreground'], selected) >= 4.5) {
-			vars['--active'] = toHex(selected);
-			vars['--hover'] = `${toHex(selected)}99`;
-		}
+	for (const name of Object.keys(wanted)) {
+		if (fellBack.has(name)) continue;
+		for (const v of [name, ...(FOLLOWERS[name] ?? [])]) vars[`--${v}`] = toHex(p[name]);
 	}
+
+	// Hairlines have no floor of their own: they follow the terminal when it names them.
 	const hairline = parseHex(theme.roles.border_muted);
 	if (hairline) {
-		vars['--border-strong'] = `${toHex(hairline)}cc`;
 		vars['--border'] = `${toHex(hairline)}73`;
+		vars['--sidebar-border'] = `${toHex(hairline)}73`;
+		vars['--input'] = `${toHex(hairline)}99`;
 	}
-	const backdrop = parseHex(theme.roles.backdrop);
-	if (backdrop) vars['--scrim'] = `${toHex(shift(backdrop, light ? 0 : -0.25))}99`;
 
 	return { vars, fellBack: [...fellBack].sort(), light, palette: p };
 }
@@ -460,16 +441,44 @@ export function mapTheme(theme: ThemeInput | null | undefined): Mapped {
 export const MAPPED_VARS: string[] = [
 	...new Set([
 		'background',
+		'primary-foreground',
 		...Object.keys(LADDER),
 		...Object.values(ROLE_VARS).flat(),
-		'ink-2',
-		'primary',
-		'primary-hover',
-		'primary-foreground',
-		'active',
-		'hover',
+		...Object.values(FOLLOWERS).flat(),
 		'border',
-		'border-strong',
-		'scrim'
+		'sidebar-border',
+		'input'
 	])
 ].map((n) => `--${n}`);
+
+// --- a small picture of a theme ------------------------------------------------------------------
+
+/** The colours the theme cards of Settings > General draw their miniature page with. */
+export const PREVIEW_TOKENS = [
+	'background',
+	'sidebar',
+	'sidebar-accent',
+	'card',
+	'secondary',
+	'foreground',
+	'muted-foreground',
+	'border',
+	'brand'
+] as const;
+export type Preview = Record<(typeof PREVIEW_TOKENS)[number], string>;
+
+/**
+ * A theme as CSS colours: the built-in light or dark one with the accent in use, or what
+ * "Match terminal" made of the terminal's theme (which brings its own accent).
+ */
+export function preview(light: boolean, accent: Accent, mapped?: Mapped | null): Preview {
+	const out = {} as Preview;
+	const side = mapped ? mapped.light : light;
+	for (const name of PREVIEW_TOKENS) out[name] = css(TOKENS[name][side ? 0 : 1]);
+	if (!mapped) return { ...out, brand: accentColor(accent, light) };
+	for (const name of PREVIEW_TOKENS) {
+		const set = mapped.vars[`--${name}`];
+		if (set) out[name] = set;
+	}
+	return out;
+}

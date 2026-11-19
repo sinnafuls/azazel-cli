@@ -114,6 +114,23 @@ impl Client {
         self.until(|line| line["type"] == "response" && line["id"] == id)
     }
 
+    /// Sends a command without waiting for its response; returns its id.
+    fn send(&mut self, mut command: Value) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        command["id"] = id.into();
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{command}").unwrap();
+        stdin.flush().unwrap();
+        id
+    }
+
+    /// The response to a command sent with [`Client::send`].
+    fn response(&self, id: u64) -> Value {
+        self.until(|line| line["type"] == "response" && line["id"] == id)
+            .1
+    }
+
     /// The data of a command that must succeed.
     fn ok(&mut self, command: Value) -> Value {
         let (_, response) = self.ask(command.clone());
@@ -1096,4 +1113,152 @@ fn a_named_prompt_sent_again_starts_nothing_and_says_where_its_run_stands() {
     assert_eq!(fresh.get("duplicate"), None, "{fresh}");
     client.until(|line| line["type"] == "idle" || line["type"] == "failed");
     assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn a_handoff_continues_in_a_new_session_that_starts_from_the_masked_brief() {
+    let brief = "## Requests\n- add the clock (done)\n\n## Next steps\nship it, key sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";
+    let mut client = Client::start(&replies(&["the clock is in", brief]), &[]);
+    let first = client.state(json!({ "type": "get_state" }));
+    assert!(
+        client
+            .error(json!({ "type": "handoff" }))
+            .contains("nothing to hand off")
+    );
+    client.prompt("add the clock");
+
+    let handed = client.ok(json!({ "type": "handoff", "focus": "the clock" }));
+    assert_eq!(handed["from"], first.session_id);
+    let now = client.state(json!({ "type": "get_state" }));
+    assert_eq!(handed["session_id"], now.session_id);
+    assert_ne!(now.session_id, first.session_id);
+
+    // The model was asked once, with the structure of the brief and the focus.
+    let requests = client.requests();
+    assert_eq!(requests.len(), 2);
+    let asked = requests[1]["messages"].as_array().unwrap().last().unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        asked.contains("Errors already solved") && asked.ends_with("Put the weight on: the clock"),
+        "{asked}"
+    );
+
+    // The new session holds the brief, with the secret masked, and no reply.
+    let messages = client.messages();
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, "user");
+    assert!(messages[0].1.contains("## Next steps"), "{}", messages[0].1);
+    assert!(
+        !messages[0].1.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
+        "{}",
+        messages[0].1
+    );
+    // The draft made first is only for a request that fails.
+    assert!(!find_draft(client.dir.path(), &first.session_id));
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn a_handoff_is_refused_while_the_lead_works() {
+    let script = json!({ "lead": [
+        { "delay_ms": 3000, "reply": { "text": "the slow answer" } }
+    ] });
+    let mut client = Client::start(&script, &[]);
+    client.ok(json!({ "type": "prompt", "text": "think hard" }));
+    client.until(|line| line["type"] == "message_start");
+    let refused = client.error(json!({ "type": "handoff" }));
+    assert!(refused.contains("the lead is working"), "{refused}");
+    client.ok(json!({ "type": "abort" }));
+    client.until(|line| line["type"] == "idle" || line["type"] == "failed");
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn nothing_changes_the_session_while_a_brief_is_written_and_abort_cancels_it() {
+    let script = json!({ "lead": [
+        { "reply": { "text": "the clock is in" } },
+        { "delay_ms": 30000, "reply": { "text": "a brief that comes too late" } }
+    ] });
+    let mut client = Client::start(&script, &[]);
+    let first = client.state(json!({ "type": "get_state" }));
+    client.prompt("add the clock");
+
+    let handoff = client.send(json!({ "type": "handoff" }));
+    // The brief is being written: the request to the model is on its way.
+    let state = loop {
+        let state = client.state(json!({ "type": "get_state" }));
+        if state.busy && client.requests().len() == 2 {
+            break state;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(state.session_id, first.session_id);
+    for command in [
+        json!({ "type": "prompt", "text": "one more thing" }),
+        json!({ "type": "steer", "text": "and this" }),
+        json!({ "type": "follow_up", "text": "and that" }),
+        json!({ "type": "handoff" }),
+    ] {
+        let refused = client.error(command.clone());
+        assert!(
+            refused.contains("hand-off") || refused.contains("hand the work off"),
+            "{command}: {refused}"
+        );
+    }
+
+    client.ok(json!({ "type": "abort" }));
+    let cancelled = client.response(handoff);
+    assert_eq!(cancelled["success"], false, "{cancelled}");
+    // Nothing was handed off: the same session is open, idle, and takes a prompt again.
+    let after = client.state(json!({ "type": "get_state" }));
+    assert_eq!(after.session_id, first.session_id);
+    assert!(!after.busy);
+    assert_eq!(client.messages().len(), 2);
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn a_handoff_whose_request_fails_leaves_the_draft_and_says_what_the_model_tried() {
+    let script = json!({ "lead": [
+        { "reply": { "text": "the clock is in" } },
+        { "events": [{ "type": "error", "error": { "kind": "invalid_request", "detail": "boom" } }] },
+        { "reply": { "tool_calls": [{ "id": "c1", "name": "read", "input": { "path": "a.txt" } }] } }
+    ] });
+    let mut client = Client::start(&script, &[]);
+    let first = client.state(json!({ "type": "get_state" }));
+    client.prompt("add the clock");
+
+    let failed = client.error(json!({ "type": "handoff" }));
+    assert!(
+        failed.contains("boom") && failed.contains("a draft brief is in"),
+        "{failed}"
+    );
+    assert!(find_draft(client.dir.path(), &first.session_id));
+
+    let tried = client.error(json!({ "type": "handoff" }));
+    assert!(tried.contains("tried to use read"), "{tried}");
+    // The session is as it was.
+    assert_eq!(
+        client.state(json!({ "type": "get_state" })).session_id,
+        first.session_id
+    );
+    assert_eq!(client.finish(), Some(0));
+}
+
+fn find_draft(root: &Path, id: &str) -> bool {
+    let name = format!("handoff-{id}.md");
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.file_name().is_some_and(|n| *n == *name) {
+                return true;
+            }
+        }
+    }
+    false
 }

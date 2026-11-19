@@ -396,7 +396,15 @@ If none is found, the tool returns `no Chromium-based browser found; set [browse
 [browser]
 path = ""          # empty: search as described above
 headless = true    # false shows the browser window
+screenshot_scale = 1.0   # 0.5 is recommended: about a quarter of the image tokens
+snapshot_diff = true     # a snapshot of an unchanged page sends only what changed
 ```
+
+### Screenshots and snapshots that cost less
+
+`screenshot_scale` (0.1 to 1, default `1.0`, which sends screenshots as they are) shrinks a screenshot of the viewport, the full page or one element before the model gets it, but never below 512 pixels on its long side. `0.5` is recommended: a 1280×800 window costs about 1334 image tokens at `1.0` and about 345 at `0.5`. The saved file stays full size. When the image is scaled, the result says so (`the image is 640x400, the window 1280x800 page pixels`) and `x` and `y` of `click`, `hover` and `scroll` are then read in pixels of that image and mapped to the page, until the next screenshot of the tab; `ref` and `selector` are not affected. `resize` ends that rule.
+
+`snapshot_diff` (default `true`) makes refs keep their numbers within a tab (a new element gets a number never given before) and sends a snapshot of the page the agent's last snapshot of that tab showed as `(unchanged …)` or as lines marked `+` (new), `-` (gone) and `~` (changed), with the same refs. Taken from a page of 40 products after one click, the second snapshot is about 760 tokens in full and about 60 as a diff. The whole snapshot is sent when the page is another one (URL or tab), when more than half of it changed, after eight changes in a row, and whenever an earlier snapshot the changes build on is no longer in the context (elided, compacted or a new session).
 
 The browser runs on its own profile directory, `~/.azazel/browser-profile`, so logins made there persist between sessions and your everyday profile is not touched. Only one process can use that profile at a time; a second session that tries to start a browser gets an error saying so.
 

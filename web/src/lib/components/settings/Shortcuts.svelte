@@ -1,31 +1,26 @@
 <script lang="ts">
 	import { COMPOSER_KEYS, isMac, keysOf, SHORTCUTS } from '$lib/shortcuts';
+	import * as Kbd from '$lib/components/ui/kbd';
+	import Section from './Section.svelte';
+	import Row from './Row.svelte';
 
 	const mac = isMac(typeof navigator === 'undefined' ? '' : navigator.platform);
 </script>
 
 {#snippet keys(combo: string)}
-	<span class="flex shrink-0 gap-1">
-		{#each keysOf(combo, mac) as k (k)}<kbd class="kbd">{k}</kbd>{/each}
-	</span>
+	<Kbd.Group class="shrink-0">
+		{#each keysOf(combo, mac) as k (k)}<Kbd.Root>{k}</Kbd.Root>{/each}
+	</Kbd.Group>
 {/snippet}
 
-<h3 class="set-h">Anywhere</h3>
-<dl>
+<Section title="Anywhere">
 	{#each SHORTCUTS as s (s.id)}
-		<div class="set-row">
-			<dt class="set-label">{s.label}</dt>
-			<dd>{@render keys(s.combo)}</dd>
-		</div>
+		<Row label={s.label}>{@render keys(s.combo)}</Row>
 	{/each}
-</dl>
+</Section>
 
-<h3 class="set-h">In the message box</h3>
-<dl>
+<Section title="In the message box">
 	{#each COMPOSER_KEYS as [combo, label] (combo)}
-		<div class="set-row">
-			<dt class="set-label">{label}</dt>
-			<dd>{@render keys(combo)}</dd>
-		</div>
+		<Row {label}>{@render keys(combo)}</Row>
 	{/each}
-</dl>
+</Section>

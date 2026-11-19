@@ -240,7 +240,10 @@ impl CommandHandler for AgentsCommand {
     async fn run(&self, _: &str, ctx: &ExtCtx) -> CommandOutcome {
         let mut out = String::from("Agents:\n");
         match team(&ctx.services) {
-            Ok(team) => out.push_str(&roster_table(&team.list())),
+            Ok(team) => {
+                out.push_str(&roster_table(&team.list()));
+                out.push_str(&crate::routing::agent_lines(&team.routing()));
+            }
             Err(why) => out.push_str(&format!("{why}\n")),
         }
         out.push_str("\nDefinitions:\n");

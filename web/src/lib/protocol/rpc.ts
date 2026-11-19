@@ -161,6 +161,10 @@ export type Request1 =
 			question: string;
 	  }
 	| {
+			type: 'handoff';
+			focus?: string | null;
+	  }
+	| {
 			type: 'list_models';
 			all?: boolean;
 	  }
@@ -581,6 +585,7 @@ export interface Rpc {
 	ShellResult?: ShellResult;
 	Exported?: Exported;
 	BtwAnswer?: BtwAnswer;
+	Handoff?: Handoff;
 	CommandResult?: CommandResult;
 	Attached?: Attached;
 	Snapshot?: Snapshot1;
@@ -823,6 +828,22 @@ export interface State {
 	 * `continue_run` can go on with it.
 	 */
 	interrupted?: string | null;
+	/**
+	 * Whether the terminal shows the model's thinking (`tui.show_thinking`), so that a client
+	 * can follow it.
+	 */
+	show_thinking?: boolean;
+	/**
+	 * Seconds until the provider drops the lead's prompt cache, when nothing reads it first;
+	 * `0` once it has run out. Absent while the lead works, and when the cache is too small
+	 * to matter. Counted from the moment the state was made: a client that shows a clock
+	 * starts it when the answer arrives.
+	 */
+	cache_left_secs?: number | null;
+	/**
+	 * How long the provider keeps the cache, in seconds, with `cache_left_secs`.
+	 */
+	cache_ttl_secs?: number | null;
 }
 /**
  * Totals of the lead.
@@ -1146,6 +1167,19 @@ export interface BtwAnswer {
 	 * Tools the model tried to use anyway; those calls were dropped.
 	 */
 	dropped_tools?: string[];
+}
+/**
+ * The data of `handoff`.
+ */
+export interface Handoff {
+	/**
+	 * The session that is open now, which continues the work.
+	 */
+	session_id: string;
+	/**
+	 * The session the work was handed off from.
+	 */
+	from: string;
 }
 /**
  * The data of `attach`.

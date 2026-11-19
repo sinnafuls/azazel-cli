@@ -198,6 +198,32 @@ pub struct SessionSummary {
     pub archived: bool,
 }
 
+impl SessionSummary {
+    /// Whether the session was started in `folder`: its header's `cwd` and `folder` are the
+    /// same directory.
+    pub fn worked_in(&self, folder: &Path) -> bool {
+        !self.cwd.is_empty()
+            && crate::paths::canonical(Path::new(&self.cwd)) == crate::paths::canonical(folder)
+    }
+}
+
+/// The sessions that were started in `folder` (the launch folder, not the project root), in
+/// their order. A project's sessions are kept together whichever folder of it they began in;
+/// each header records its folder, and this is the part a launch in `folder` sees.
+pub fn in_folder(sessions: Vec<SessionSummary>, folder: &Path) -> Vec<SessionSummary> {
+    let folder = crate::paths::canonical(folder);
+    // Sessions mostly share a few folders: resolve each recorded one once.
+    let mut known: HashMap<String, bool> = HashMap::new();
+    sessions
+        .into_iter()
+        .filter(|session| {
+            *known.entry(session.cwd.clone()).or_insert_with(|| {
+                !session.cwd.is_empty() && crate::paths::canonical(Path::new(&session.cwd)) == folder
+            })
+        })
+        .collect()
+}
+
 /// A sub-agent that ran in a session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentRun {

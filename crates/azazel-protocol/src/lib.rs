@@ -255,6 +255,14 @@ pub enum Command {
     /// Asks a question on the side, without interrupting the lead. The answer arrives as
     /// `btw_delta` frames and then, whole, in the response as [`BtwAnswer`].
     Btw { question: String },
+    /// Hands the work to a new session: keeps a draft brief made without a model, has the model
+    /// write a structured brief (one request, to the lead's model), and switches to a new session
+    /// whose first message is that brief. `focus` says what the brief should weigh. Answers with
+    /// [`Handoff`] when the new session is open; refused while the lead works.
+    Handoff {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        focus: Option<String>,
+    },
     /// The models of the providers there is a credential for; with `all`, of every provider,
     /// each row saying whether it can be used. A provider whose list was asked for this
     /// session (`refresh_models`) has its rows from that answer, the others from the
@@ -900,6 +908,19 @@ pub struct State {
     /// `continue_run` can go on with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupted: Option<String>,
+    /// Whether the terminal shows the model's thinking (`tui.show_thinking`), so that a client
+    /// can follow it.
+    #[serde(default)]
+    pub show_thinking: bool,
+    /// Seconds until the provider drops the lead's prompt cache, when nothing reads it first;
+    /// `0` once it has run out. Absent while the lead works, and when the cache is too small
+    /// to matter. Counted from the moment the state was made: a client that shows a clock
+    /// starts it when the answer arrives.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_left_secs: Option<u64>,
+    /// How long the provider keeps the cache, in seconds, with `cache_left_secs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
 }
 
 /// A primary agent: a persona the lead can be.
@@ -1189,6 +1210,15 @@ pub struct BtwAnswer {
     /// Tools the model tried to use anyway; those calls were dropped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dropped_tools: Vec<String>,
+}
+
+/// The data of `handoff`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Handoff {
+    /// The session that is open now, which continues the work.
+    pub session_id: String,
+    /// The session the work was handed off from.
+    pub from: String,
 }
 
 /// The data of `get_session`: the session file's first line and its entries, as they are
@@ -1506,6 +1536,7 @@ pub fn schema() -> Value {
     generator.subschema_for::<ShellResult>();
     generator.subschema_for::<Exported>();
     generator.subschema_for::<BtwAnswer>();
+    generator.subschema_for::<Handoff>();
     generator.subschema_for::<CommandResult>();
     generator.subschema_for::<Attached>();
     generator.subschema_for::<RunState>();

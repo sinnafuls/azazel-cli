@@ -1,6 +1,6 @@
 // The HTTP half of the remote API (docs/remote.md): pairing, who am I, the session list, links,
-// and starting a session in a folder.
-import type { Folders, Me, NewSession, SessionInfo } from '$lib/protocol';
+// starting a session in a folder, and going on with an earlier one.
+import type { Folders, Me, NewSession, SavedSession, SessionInfo } from '$lib/protocol';
 
 /** A row of `GET /api/devices`: a short label, never a token. */
 export interface DeviceRow {
@@ -65,6 +65,14 @@ export const api = {
 	folders: (under?: string) =>
 		call<Folders>('/api/folders', { method: 'POST', body: JSON.stringify(under ? { under } : {}) }),
 	/** Starts a background session; it may wait while the computer is asked to allow it. */
+	/** Earlier sessions a browser may go on with, the most recent first; `query` narrows them. */
+	history: async (query?: string) =>
+		(
+			await call<{ sessions: SavedSession[] }>('/api/history', {
+				method: 'POST',
+				body: JSON.stringify(query?.trim() ? { query: query.trim() } : {})
+			})
+		).sessions,
 	start: async (body: NewSession) =>
 		(await call<{ id: string }>('/api/sessions', { method: 'POST', body: JSON.stringify(body) })).id
 };

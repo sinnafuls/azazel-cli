@@ -49,11 +49,14 @@ pub enum SkillsAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SessionsAction {
-    /// The sessions of this project, most recently used first
+    /// The sessions started in this folder, most recently used first
     List {
         /// Of every project
         #[arg(long)]
         all_projects: bool,
+        /// Of every folder of this project, not only this one
+        #[arg(long)]
+        all_folders: bool,
         /// Archived sessions too (those of `azazel -p --archived`)
         #[arg(long)]
         all: bool,
@@ -67,6 +70,9 @@ pub enum SessionsAction {
         /// In every project
         #[arg(long)]
         all_projects: bool,
+        /// In every folder of this project, not only this one
+        #[arg(long)]
+        all_folders: bool,
         /// One JSON object per matching line
         #[arg(long)]
         json: bool,

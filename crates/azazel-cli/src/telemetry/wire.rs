@@ -404,6 +404,7 @@ mod tests {
                 cache_write: 0,
                 reasoning: 0,
                 cost_usd: Some(0.25),
+                cache_ttl_secs: None,
             },
             stop: StopReason::ToolUse,
             response_id: None,

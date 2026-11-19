@@ -454,6 +454,9 @@ pub(super) struct StatusLine<'a> {
     pub account_email: Option<&'a str>,
     /// The share of the prompt tokens so far that the provider read from its cache, in percent.
     pub cache: Option<u64>,
+    /// The prompt cache's clock: the time left (`4:12`), or `cold`; none while a request is on
+    /// its way or the cache is too small to matter.
+    pub cache_clock: Option<String>,
     /// Agents at work beside the lead.
     pub agents: usize,
     pub goal: Option<&'a str>,
@@ -626,9 +629,19 @@ impl StatusLine<'_> {
                 }
                 _ => None,
             },
-            Name::Cache => self
-                .cache
-                .map(|share| Segment::new(Role::Muted, labelled(Glyph::Cache, &format!("{share}%")))),
+            Name::Cache => {
+                let text = match (self.cache, &self.cache_clock) {
+                    (Some(share), Some(clock)) => format!("{share}% {clock}"),
+                    (Some(share), None) => format!("{share}%"),
+                    (None, Some(clock)) => clock.clone(),
+                    (None, None) => return,
+                };
+                let role = match self.cache_clock.as_deref() {
+                    Some("cold") => Role::Warning,
+                    _ => Role::Muted,
+                };
+                Some(Segment::new(role, labelled(Glyph::Cache, &text)))
+            }
             Name::Agents => match self.agents {
                 0 => None,
                 1 => Some(Segment::new(Role::Accent, labelled(Glyph::Agents, "1 agent"))),
@@ -746,6 +759,7 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
         account: Some("work"),
         account_email: Some("j***@example.com"),
         cache: Some(87),
+        cache_clock: None,
         agents: 2,
         goal: Some("goal active"),
         todo: Some((2, 5)),
@@ -794,6 +808,7 @@ mod tests {
             account: None,
             account_email: None,
             cache: None,
+            cache_clock: None,
             agents: 2,
             goal: Some("goal active, attempt 1"),
             todo: None,

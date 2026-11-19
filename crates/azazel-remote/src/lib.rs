@@ -71,7 +71,9 @@ pub struct Conn {
 /// A session a browser asks to start.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NewSession {
-    /// The directory it works in; `~` stands for the home directory.
+    /// The directory it works in; `~` stands for the home directory. Not needed with `resume`,
+    /// which works where the earlier session did.
+    #[serde(default)]
     pub cwd: String,
     /// The first message; without one the session waits for the browser.
     #[serde(default)]
@@ -83,6 +85,27 @@ pub struct NewSession {
     /// session the first one started.
     #[serde(default)]
     pub request_id: Option<String>,
+    /// The id of an earlier session (one of `POST /api/history`) to go on with instead of
+    /// starting a new one. When a background session has it open already, that one is answered.
+    #[serde(default)]
+    pub resume: Option<String>,
+}
+
+/// An earlier session of this machine that a browser may go on with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedSession {
+    pub id: String,
+    pub name: Option<String>,
+    pub cwd: String,
+    /// RFC 3339.
+    pub created: String,
+    /// RFC 3339: the last time anything was said in it.
+    pub updated: String,
+    /// What was asked first, for telling sessions apart.
+    pub first_prompt: Option<String>,
+    pub messages: u64,
+    /// The id of the background session that has it open now, when one does.
+    pub running: Option<String>,
 }
 
 /// Why a session was not started.
@@ -148,6 +171,13 @@ pub trait Sessions: Send + Sync + 'static {
     async fn folders(&self, _under: Option<&str>) -> Result<Folders, StartError> {
         Err(StartError::Refused(
             "new sessions cannot be started from here".to_string(),
+        ))
+    }
+    /// Earlier sessions that may be gone on with, the most recently used first; `query` keeps
+    /// those that mention it.
+    async fn history(&self, _query: Option<&str>) -> Result<Vec<SavedSession>, StartError> {
+        Err(StartError::Refused(
+            "earlier sessions cannot be listed from here".to_string(),
         ))
     }
     /// Starts a session and answers with its id.

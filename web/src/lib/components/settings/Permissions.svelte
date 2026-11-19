@@ -7,9 +7,17 @@
 	import { toasts } from '$lib/toasts.svelte';
 	import { MODES } from '$lib/protocol';
 	import type { SaveTo, SettingChanged, SettingList } from '$lib/protocol';
+	import * as NativeSelect from '$lib/components/ui/native-select';
+	import * as RadioGroup from '$lib/components/ui/radio-group';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import * as Field from '$lib/components/ui/field';
+	import { Button } from '$lib/components/ui/button';
+	import { Label } from '$lib/components/ui/label';
 	import { Loaded } from './load.svelte';
 	import Unavailable from './Unavailable.svelte';
 	import ListEditor from './ListEditor.svelte';
+	import Section from './Section.svelte';
+	import Row from './Row.svelte';
 
 	const ABOUT: Record<string, string> = {
 		plan: 'Reads and writes a plan. Nothing else is changed.',
@@ -35,8 +43,8 @@
 	const rule = (path: string) => settings.data?.settings.find((r) => r.path === path);
 	const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
-	async function setMode(m: string) {
-		if (m === 'bypass' && !confirmBypass) {
+	async function setMode(m: string, confirmed = false) {
+		if (m === 'bypass' && !confirmed) {
 			confirmBypass = true;
 			return;
 		}
@@ -59,69 +67,55 @@
 	}
 </script>
 
-<h3 class="set-h" id="perm-mode">Mode of this session</h3>
-{#if !ui.session}
-	<p class="text-muted-foreground py-2 text-[13px]">Open a session to see and change its mode.</p>
-{:else}
-	<div role="radiogroup" aria-labelledby="perm-mode" class="space-y-1">
-		{#each modes as m (m)}
-			<button
-				type="button"
-				role="radio"
-				aria-checked={mode === m}
-				class="choice flex w-full items-baseline gap-3 px-3 py-2 text-left"
-				disabled={!app.canControl}
-				onclick={() => setMode(m)}
-			>
-				<span class="w-24 shrink-0 font-mono text-[13px] {m === 'bypass' ? 'text-destructive' : ''}"
-					>{m}</span
-				>
-				<span class="text-muted-foreground min-w-0 flex-1 text-xs leading-snug">{ABOUT[m]}</span>
-			</button>
-		{/each}
-	</div>
-	{#if confirmBypass}
-		<div class="bg-destructive/10 mt-2 rounded-xl p-3" role="alert">
-			<p class="text-[13px] leading-relaxed">
-				Bypass lifts every guard except deny rules and the push guard. Agents will edit files and
-				run commands without asking.
-			</p>
-			<div class="mt-2.5 flex gap-2">
-				<button type="button" class="btn btn-secondary" onclick={() => (confirmBypass = false)}
-					>Cancel</button
-				>
-				<button type="button" class="btn btn-destroy" onclick={() => setMode('bypass')}
-					>Use bypass</button
-				>
-			</div>
-		</div>
+<Section title="Mode of this session" id="perm-mode">
+	{#if !ui.session}
+		<p class="py-2 text-xs text-muted-foreground">Open a session to see and change its mode.</p>
+	{:else}
+		<!-- Bound through functions: the group shows the session's mode, never a choice that was not
+		     confirmed. -->
+		<RadioGroup.Root
+			aria-labelledby="perm-mode"
+			disabled={!app.canControl}
+			bind:value={() => mode ?? '', (m) => void setMode(m)}
+		>
+			{#each modes as m (m)}
+				<Field.Label for="perm-mode-{m}">
+					<Field.Field orientation="horizontal">
+						<RadioGroup.Item value={m} id="perm-mode-{m}" />
+						<Field.Content>
+							<Field.Title class="font-mono text-xs {m === 'bypass' ? 'text-destructive' : ''}"
+								>{m}</Field.Title
+							>
+							<Field.Description class="text-xs">{ABOUT[m]}</Field.Description>
+						</Field.Content>
+					</Field.Field>
+				</Field.Label>
+			{/each}
+		</RadioGroup.Root>
 	{/if}
-{/if}
+</Section>
 
-<div class="mt-6 mb-1.5 flex items-center justify-between gap-3">
-	<h3 class="text-muted-foreground text-xs font-medium">Rules</h3>
-	{#if settings.state === 'ready' && app.fullAccess}
-		<label class="text-muted-foreground flex items-center gap-2 text-xs">
-			Save for
-			<select class="select h-8" bind:value={scope} aria-label="Where rules are saved">
-				<option value="home">Every session</option>
-				<option value="project" disabled={!settings.data?.project}>This project</option>
-				<option value="session">This session</option>
-			</select>
-		</label>
-	{/if}
-</div>
-{#if settings.state !== 'ready'}
-	<Unavailable of={settings} what="rules" />
-{:else}
-	{#each RULES as [path, label, hint] (path)}
-		{@const r = rule(path)}
-		<div class="set-row stacks items-start!" data-rules={label.toLowerCase()}>
-			<div class="w-36 shrink-0 pt-0.5">
-				<p class="set-label">{label}</p>
-				<p class="set-hint">{hint}</p>
+<Section title="Rules">
+	{#snippet action()}
+		{#if settings.state === 'ready' && app.fullAccess}
+			<div class="flex shrink-0 items-center gap-2">
+				<Label for="perm-scope" class="text-xs font-normal text-muted-foreground">Save for</Label>
+				<NativeSelect.Root id="perm-scope" bind:value={scope} aria-label="Where rules are saved">
+					<NativeSelect.Option value="home">Every session</NativeSelect.Option>
+					<NativeSelect.Option value="project" disabled={!settings.data?.project}
+						>This project</NativeSelect.Option
+					>
+					<NativeSelect.Option value="session">This session</NativeSelect.Option>
+				</NativeSelect.Root>
 			</div>
-			<div class="min-w-0 flex-1">
+		{/if}
+	{/snippet}
+	{#if settings.state !== 'ready'}
+		<Unavailable of={settings} what="rules" />
+	{:else}
+		{#each RULES as [path, label, hint] (path)}
+			{@const r = rule(path)}
+			<Row {label} {hint} orientation="vertical" data-rules={label.toLowerCase()}>
 				<ListEditor
 					items={list(r?.value)}
 					label="{label} rules"
@@ -129,13 +123,29 @@
 					disabled={!app.fullAccess || !r}
 					onchange={(v) => setRule(path, v)}
 				/>
-			</div>
-		</div>
-	{/each}
-	{#if !app.fullAccess}
-		<p class="set-hint mt-2">
-			Rules can be read here. Changing them changes what agents may do on the computer, so it needs
-			full access.
-		</p>
+			</Row>
+		{/each}
+		{#if !app.fullAccess}
+			<p class="mt-2 text-xs leading-relaxed text-muted-foreground">
+				Rules can be read here. Changing them changes what agents may do on the computer, so it
+				needs full access.
+			</p>
+		{/if}
 	{/if}
-{/if}
+</Section>
+
+<AlertDialog.Root open={confirmBypass} onOpenChange={(v) => !v && (confirmBypass = false)}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Use bypass?</AlertDialog.Title>
+			<AlertDialog.Description>
+				Bypass lifts every guard except deny rules and the push guard. Agents will edit files and
+				run commands without asking.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<Button variant="destructive" onclick={() => setMode('bypass', true)}>Use bypass</Button>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

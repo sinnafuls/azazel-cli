@@ -678,6 +678,25 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "handoff"
+            },
+            "focus": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Hands the work to a new session: keeps a draft brief made without a model, has the model\nwrite a structured brief (one request, to the lead's model), and switches to a new session\nwhose first message is that brief. `focus` says what the brief should weigh. Answers with\n[`Handoff`] when the new session is open; refused while the lead works."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "list_models"
             },
             "all": {
@@ -2481,6 +2500,29 @@
             "null"
           ],
           "description": "Where the session's last run stopped, when the end of a process cut it short and\n`continue_run` can go on with it."
+        },
+        "show_thinking": {
+          "type": "boolean",
+          "description": "Whether the terminal shows the model's thinking (`tui.show_thinking`), so that a client\ncan follow it.",
+          "default": false
+        },
+        "cache_left_secs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Seconds until the provider drops the lead's prompt cache, when nothing reads it first;\n`0` once it has run out. Absent while the lead works, and when the cache is too small\nto matter. Counted from the moment the state was made: a client that shows a clock\nstarts it when the answer arrives."
+        },
+        "cache_ttl_secs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "How long the provider keeps the cache, in seconds, with `cache_left_secs`."
         }
       },
       "required": [
@@ -3150,6 +3192,24 @@
         "model"
       ],
       "description": "The data of `btw`."
+    },
+    "Handoff": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "The session that is open now, which continues the work."
+        },
+        "from": {
+          "type": "string",
+          "description": "The session the work was handed off from."
+        }
+      },
+      "required": [
+        "session_id",
+        "from"
+      ],
+      "description": "The data of `handoff`."
     },
     "CommandResult": {
       "oneOf": [

@@ -7,6 +7,12 @@
 	import { toasts } from '$lib/toasts.svelte';
 	import { ago } from '$lib/format';
 	import Sheet from './Sheet.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Skeleton } from '$lib/components/ui/skeleton';
+	import * as RadioGroup from '$lib/components/ui/radio-group';
+	import * as Field from '$lib/components/ui/field';
+	import * as Item from '$lib/components/ui/item';
+	import * as Empty from '$lib/components/ui/empty';
 
 	let { session }: { session: Session } = $props();
 
@@ -19,10 +25,11 @@
 		],
 		['code', 'Files only', 'Put the files back. The conversation stays.']
 	] as const;
+	type What = (typeof WHAT)[number][0];
 
 	let prompts = $state.raw<TreeEntry[] | null>(null);
 	let error = $state<string | null>(null);
-	let what = $state<(typeof WHAT)[number][0]>('both');
+	let what = $state<What>('both');
 	let busy = $state(false);
 	const open = $derived(ui.rewind !== null);
 	const chosen = $derived(ui.rewind?.entryId ?? null);
@@ -52,7 +59,13 @@
 			busy = false;
 		}
 	}
+	const uid = $props.id();
 </script>
+
+{#snippet actions()}
+	<Button variant="outline" onclick={() => (ui.rewind = null)}>Cancel</Button>
+	<Button disabled={busy} onclick={go}>Rewind</Button>
+{/snippet}
 
 <Sheet
 	{open}
@@ -60,58 +73,69 @@
 	subtitle={chosen ? 'Go back to before this prompt' : 'Choose the prompt to go back to'}
 	onclose={() => (ui.rewind = null)}
 	onback={chosen && prompts ? () => (ui.rewind = {}) : undefined}
+	footer={chosen ? actions : undefined}
 >
 	{#if chosen}
-		<div class="space-y-4">
+		<div class="grid gap-4">
 			{#if ui.rewind?.text}
 				<blockquote
-					class="bg-bubble text-bubble-foreground line-clamp-3 rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed"
+					class="line-clamp-3 rounded-xl bg-secondary px-3 py-2 text-sm leading-relaxed text-secondary-foreground"
 				>
 					{ui.rewind.text}
 				</blockquote>
 			{/if}
-			<div role="radiogroup" aria-label="What to restore" class="space-y-1">
+			<RadioGroup.Root
+				aria-label="What to restore"
+				value={what}
+				onValueChange={(v) => (what = v as What)}
+			>
 				{#each WHAT as [v, label, hint] (v)}
-					<button
-						type="button"
-						role="radio"
-						aria-checked={what === v}
-						class="choice"
-						onclick={() => (what = v)}
-					>
-						<span class="min-w-0 flex-1">
-							<span class="block text-sm font-medium">{label}</span>
-							<span class="text-muted-foreground mt-0.5 block text-xs leading-snug">{hint}</span>
-						</span>
-					</button>
+					<Field.Label for="{uid}-{v}">
+						<Field.Field orientation="horizontal">
+							<RadioGroup.Item value={v} id="{uid}-{v}" />
+							<Field.Content>
+								<Field.Title>{label}</Field.Title>
+								<Field.Description class="text-xs">{hint}</Field.Description>
+							</Field.Content>
+						</Field.Field>
+					</Field.Label>
 				{/each}
-			</div>
-			<div class="flex justify-end gap-2">
-				<button type="button" class="btn btn-secondary" onclick={() => (ui.rewind = null)}
-					>Cancel</button
-				>
-				<button type="button" class="btn btn-primary" disabled={busy} onclick={go}>Rewind</button>
-			</div>
+			</RadioGroup.Root>
 		</div>
 	{:else if error}
-		<p class="text-muted-foreground py-6 text-sm">Rewind is not available from this device.</p>
+		<Empty.Root class="p-6">
+			<Empty.Description>Rewind is not available from this device.</Empty.Description>
+		</Empty.Root>
 	{:else if !prompts}
-		<p class="shimmer py-6 text-sm">Reading the session</p>
+		<div class="grid gap-2" role="status" aria-label="Reading the session">
+			{#each [0, 1, 2] as i (i)}<Skeleton class="h-8 w-full" />{/each}
+		</div>
 	{:else if !prompts.length}
-		<p class="text-muted-foreground py-6 text-sm">There is no earlier prompt to go back to.</p>
+		<Empty.Root class="p-6">
+			<Empty.Description>There is no earlier prompt to go back to.</Empty.Description>
+		</Empty.Root>
 	{:else}
-		<ul class="-mx-2" aria-label="Prompts">
+		<ul class="-mx-2.5 grid gap-0.5" aria-label="Prompts">
 			{#each prompts as p (p.id)}
 				<li>
-					<button
-						type="button"
-						class="opt"
-						onclick={() => (ui.rewind = { entryId: p.id, text: p.text ?? '' })}
-					>
-						<span class="min-w-0 flex-1 truncate">{p.text}</span>
-						{#if p.timestamp}<span class="text-faint num shrink-0 text-xs">{ago(p.timestamp)}</span
-							>{/if}
-					</button>
+					<Item.Root size="xs" class="w-full flex-nowrap text-left hover:bg-muted">
+						{#snippet child({ props })}
+							<button
+								type="button"
+								{...props}
+								onclick={() => (ui.rewind = { entryId: p.id, text: p.text ?? '' })}
+							>
+								<Item.Content class="min-w-0">
+									<Item.Title class="block w-full truncate font-normal">{p.text}</Item.Title>
+								</Item.Content>
+								{#if p.timestamp}
+									<Item.Actions class="num shrink-0 text-xs text-muted-foreground"
+										>{ago(p.timestamp)}</Item.Actions
+									>
+								{/if}
+							</button>
+						{/snippet}
+					</Item.Root>
 				</li>
 			{/each}
 		</ul>

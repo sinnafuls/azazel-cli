@@ -750,6 +750,21 @@ fn typed(line: &str, asked: &mut VecDeque<Asked>) -> Typed {
 /// `azazel attach <id>`: the background session in the full UI, or with `--plain` (and where
 /// there is no terminal) as lines.
 pub async fn attach(cli: &Cli, paths: Paths, wanted: &str) -> u8 {
+    attach_with(cli, paths, wanted, None).await
+}
+
+/// Plain `azazel` whose session runs in the background: goes to it like `azazel attach`, with
+/// `first` sent as the first message. `None` when that session has ended since the caller looked
+/// (nothing was printed or opened), so that the caller can open it normally.
+pub async fn attach_if_running(cli: &Cli, paths: Paths, wanted: &str, first: Option<String>) -> Option<u8> {
+    if running::find(&paths.home, wanted).is_err() {
+        return None;
+    }
+    eprintln!("azazel: this session is running in the background; attaching to {wanted}");
+    Some(attach_with(cli, paths, wanted, first).await)
+}
+
+async fn attach_with(cli: &Cli, paths: Paths, wanted: &str, first: Option<String>) -> u8 {
     let entry = match find_running(cli, &paths, wanted).await {
         Ok(entry) => entry,
         Err(e) => {
@@ -775,7 +790,7 @@ pub async fn attach(cli: &Cli, paths: Paths, wanted: &str) -> u8 {
         Err(e) => Err(format!("{e:#}")),
     };
     match opened {
-        Ok((remote, env)) => crate::tui::run_remote(remote, env, None).await,
+        Ok((remote, env)) => crate::tui::run_remote(remote, env, first).await,
         Err(e) => {
             eprintln!("azazel: {e}");
             EXIT_FAILED

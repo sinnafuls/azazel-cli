@@ -43,8 +43,9 @@ restarts.
 
 The page shows what the lead says as text and what it does as quiet rows: tool calls that follow one another are one
 row that says what they did (`Created a file, ran 2 commands`), with a spinner while one runs and the last lines of a
-command that is still running beneath it. The row opens a sheet with the calls on a timeline; each call opens in full,
-with its command or input, the change it made and its output, and a button that copies each.
+command that is still running beneath it. The row opens in place, on a phone as on a desktop, into one card per call:
+its command or input, the change it made with line numbers, and its output in a block that scrolls by itself once it
+is longer than about twenty lines, with a button that copies each. A call that failed says `Failed` on its row.
 
 ## The model picker
 
@@ -74,6 +75,15 @@ A folder whose project is not trusted could run commands through its configurati
   trusted…`. `y` and Enter start it, trusting the folder for that session only; anything else, two minutes without an
   answer, or no terminal at all (its input closed) refuse it, and the browser says why. The questions come one at a
   time.
+
+A browser can also continue an earlier session instead of starting a new one: `/resume` in the message box, **Resume…**
+in the sidebar, **Or continue an earlier session…** in the New chat sheet, or **Continue** on a session that has ended
+open a searchable list of the earlier sessions in the folders the browser may look into (those of `[remote] folders`, or
+any folder with `[remote] allow_bypass` or `[remote] full_access`) and of the sessions it started itself (name or first
+message, secrets hidden unless `[remote] redact` is off, folder,
+when it was last used, number of messages; the project on screen first). Picking one starts a background session on it,
+in the folder it worked in, and opens it; when a background session has it open already, that one is opened. It needs
+control access, like New chat, and the same rules decide about the folder.
 
 Trusting a folder for good is done on the computer, by running azazel in it once. `/remote`, which shares the session
 of a terminal, does not start other sessions.
@@ -268,6 +278,26 @@ A folder that does not exist or a `cwd` that is not a whole path is `400`; a fol
 the terminal, a view device or a refused mode `403`; more than 10 starts a minute from one device `429`; a session that
 could not start `500`. Each says why in `error`.
 
+#### `POST /api/sessions` with `resume` (continue)
+
+Request: `{"resume": "<session id>", "prompt": "…", "mode": "auto", "request_id": "…"}`, with an `id` from
+`/api/history` (the start of one, 8 characters or more, is enough when only one listed session has it). `cwd` is not
+needed: the session works in its own folder. A session outside the folders a browser may look into, that the server did not start,
+is answered as an id that does not exist, whether or not a background session has it open. The mode is the one asked for
+or the configured one, never one the earlier session was left in. The answer is `{"id": "<session id>"}` of the new background session, or of
+the one that has the earlier session open already; two requests for the same session at once start one. An id that matches
+no session, no allowed session or several is `400`. A path is never
+accepted. The other answers are those of a start.
+
+#### `POST /api/history`
+
+Request: `{}` for the earlier sessions, most recently used first (at most 100), or `{"query": "<words>"}` for those whose
+name, folder or conversation mention the words.
+
+Answer `200`: `{"sessions": [...]}`, each with `id`, `name`, `cwd`, `created`, `updated` (RFC 3339), `first_prompt`,
+`messages` and `running` (the id of the background session that has it open, or `null`). Only sessions in folders a browser may look
+into, and those this server started, are listed; `name` and `first_prompt` have secrets hidden when `remote.redact` is on. A view device gets `403`.
+
 #### `POST /api/links`
 
 Request: `{"access": "view" | "control"}`. A device with view access can make only view links (`403` otherwise).
@@ -364,6 +394,8 @@ The server checks every command before it reaches the session; this is the polic
 |---|---|
 | **view** | `attach`, `get_state`, `get_messages`, `get_agent_messages`, `get_tree`, `get_usage`, `get_theme`, `get_context`, `get_cost`, `list_models`, `list_roles`, `list_commands`. Frames arrive as for any client; a view client shows requests as "waiting for an answer" and cannot answer them. |
 | **control** | Everything, except the commands in the next table. |
+
+A control device may send `handoff` (and the page's `/handoff`), which asks the model for a brief and switches the page to the new session; a view device may not. `get_state` carries the prompt cache's clock, which the status bar shows.
 
 Without `remote.full_access` a control device may not send:
 

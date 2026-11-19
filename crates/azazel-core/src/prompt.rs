@@ -190,14 +190,24 @@ pub struct Environment {
 #[async_trait]
 impl SystemPartProvider for Environment {
     async fn render(&self, _: &AgentInfo) -> Option<String> {
-        Some(format!(
-            "# Environment\n- OS: {} ({})\n- Shell: {}\n- Working directory: {}\n- Project root: {}",
+        let mut text = format!(
+            "# Environment\n- OS: {} ({})\n- Shell: {}\n- Working directory: {}",
             std::env::consts::OS,
             std::env::consts::ARCH,
             self.shell,
             self.cwd.display(),
-            self.project_root.display(),
-        ))
+        );
+        if self.project_root == self.cwd {
+            text.push_str(&format!("\n- Project root: {}", self.project_root.display()));
+        } else {
+            // Started in a folder of the project: files there are the work; the rest of the project
+            // is read freely but changes outside the working directory are asked about.
+            text.push_str(&format!(
+                "\n- Project root: {} (the working directory is a folder inside it; changes outside the working directory need the user's approval)",
+                self.project_root.display()
+            ));
+        }
+        Some(text)
     }
 }
 

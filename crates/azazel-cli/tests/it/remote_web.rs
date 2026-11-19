@@ -43,6 +43,11 @@ impl Sandbox {
     }
 
     fn azazel(&self, args: &[&str]) -> Command {
+        self.azazel_in(&self.dir.path().join("project"), args)
+    }
+
+    /// `azazel` working in `cwd`.
+    fn azazel_in(&self, cwd: &Path, args: &[&str]) -> Command {
         let mut command = Command::new(assert_cmd::cargo::cargo_bin("azazel"));
         command
             .env("AZAZEL_HOME", self.home())
@@ -50,10 +55,29 @@ impl Sandbox {
             .args(["--set", "session.auto_name=false", "--no-memory"])
             .args(["--set", "notify.desktop=\"off\""])
             .arg("--cwd")
-            .arg(self.dir.path().join("project"))
+            .arg(cwd)
             .args(args)
             .stdin(Stdio::null());
         command
+    }
+
+    fn ok_at(&self, cwd: &Path, args: &[&str]) -> String {
+        let output = self.azazel_in(cwd, args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// The rows of `azazel ps --json`.
+    fn running(&self) -> Vec<Value> {
+        self.ok(&["ps", "--json"])
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .collect()
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -734,4 +758,252 @@ async fn with_bypass_allowed_a_browser_starts_anywhere_without_a_question() {
     assert_eq!(status, 200, "{started}");
     let listed = sandbox.ok(&["ps", "--json"]);
     assert!(listed.contains(started["id"].as_str().unwrap()), "{listed}");
+}
+
+/// A browser lists the earlier sessions of the machine and goes on with one in the background; asking
+/// again for a session that is open already answers the one that has it.
+#[tokio::test]
+async fn a_browser_goes_on_with_an_earlier_session_in_the_background() {
+    let sandbox = Sandbox::new();
+    // An earlier session of the project, run in print mode and over.
+    sandbox.ok(&["-p", "--mode", "auto", "create hello"]);
+    let mut remote = sandbox.remote(&["--set", "remote.allow_bypass=true"], &[]);
+    let base = remote.base();
+    let token = remote.pair_with(&remote.secret()).await;
+
+    let (status, listed) = post(&base, &token, "/api/history", json!({})).await;
+    assert_eq!(status, 200, "{listed}");
+    let earlier = listed["sessions"].as_array().unwrap();
+    assert_eq!(earlier.len(), 1, "{listed}");
+    assert_eq!(earlier[0]["first_prompt"], "create hello");
+    assert!(earlier[0]["running"].is_null());
+    let session = earlier[0]["id"].as_str().unwrap().to_string();
+    let (_, none) = post(&base, &token, "/api/history", json!({ "query": "no such words" })).await;
+    assert_eq!(none["sessions"].as_array().unwrap().len(), 0, "{none}");
+    let (_, found) = post(&base, &token, "/api/history", json!({ "query": "hello" })).await;
+    assert_eq!(found["sessions"].as_array().unwrap().len(), 1, "{found}");
+
+    let (status, resumed) = post(&base, &token, "/api/sessions", json!({ "resume": session })).await;
+    assert_eq!(status, 200, "{resumed}");
+    let host = resumed["id"].as_str().unwrap().to_string();
+    sandbox.wait_for_state(&host, "idle");
+    // It is the saved session that runs: no second file, and the list says where it is open.
+    assert_eq!(
+        std::fs::read_dir(sandbox.home().join("projects"))
+            .unwrap()
+            .flatten()
+            .flat_map(|project| std::fs::read_dir(project.path().join("sessions"))
+                .unwrap()
+                .flatten())
+            .filter(|file| file.path().extension().is_some_and(|ext| ext == "jsonl"))
+            .count(),
+        1
+    );
+    let (_, listed) = post(&base, &token, "/api/history", json!({})).await;
+    assert_eq!(listed["sessions"][0]["running"], host.as_str(), "{listed}");
+    let (status, again) = post(&base, &token, "/api/sessions", json!({ "resume": session })).await;
+    assert_eq!(
+        (status, again["id"].as_str()),
+        (200, Some(host.as_str())),
+        "{again}"
+    );
+    let (status, missing) = post(
+        &base,
+        &token,
+        "/api/sessions",
+        json!({ "resume": "nonexistent-id" }),
+    )
+    .await;
+    assert_eq!(status, 400, "{missing}");
+}
+
+/// A session a browser started goes on after `q`, as one of `azazel bg` does, and the server says
+/// which and how to reach it.
+#[tokio::test]
+async fn quitting_names_the_sessions_browsers_started_that_still_run() {
+    let sandbox = Sandbox::new();
+    let anywhere = azazel_core::paths::canonical(&sandbox.dir.path().join("anywhere"));
+    std::fs::create_dir_all(&anywhere).unwrap();
+    let mut remote = sandbox.remote(&["--set", "remote.allow_bypass=true"], &[]);
+    let base = remote.base();
+    let token = remote.pair_with(&remote.secret()).await;
+    let (status, started) = post(&base, &token, "/api/sessions", json!({ "cwd": anywhere })).await;
+    assert_eq!(status, 200, "{started}");
+    let id = started["id"].as_str().unwrap().to_string();
+
+    assert!(remote.quit().success());
+    let said = remote.said("azazel attach <id>").join("\n");
+    assert!(
+        said.contains("1 session started from the browser is still running"),
+        "{said}"
+    );
+    assert!(said.contains(&id), "{said}");
+    // It is still there to attach to.
+    sandbox.wait_for_state(&id, "idle");
+}
+
+/// Trusts the project of the sandbox, so that the terminal is not asked about it.
+fn trust_project(sandbox: &Sandbox) {
+    let project = azazel_core::paths::canonical(&sandbox.dir.path().join("project"));
+    azazel_core::TrustStore::new(sandbox.home().join("trust.json"))
+        .set(&project, true)
+        .unwrap();
+}
+
+/// The session id of the background session `host`, from `azazel ps`.
+fn session_of(sandbox: &Sandbox, host: &str) -> String {
+    sandbox
+        .running()
+        .into_iter()
+        .find(|row| row["id"] == host)
+        .and_then(|row| row["session_id"].as_str().map(str::to_string))
+        .unwrap_or_else(|| panic!("{host} is not listed"))
+}
+
+/// `[remote] folders` limits the earlier sessions a browser sees and goes on with. A session
+/// that a background session has open in a folder outside them is answered exactly as an id that
+/// does not exist, so that the answer cannot be used to find ids or running sessions.
+#[tokio::test]
+async fn earlier_sessions_outside_the_folders_are_neither_listed_nor_resumed_nor_found() {
+    let sandbox = Sandbox::new();
+    trust_project(&sandbox);
+    let project = azazel_core::paths::canonical(&sandbox.dir.path().join("project"));
+    let other = sandbox.dir.path().join("other");
+    std::fs::create_dir_all(other.join(".git")).unwrap();
+    // One earlier session inside the folders, and one in a folder outside them that a
+    // background session has open now.
+    sandbox.ok(&["-p", "--mode", "auto", "create hello"]);
+    let outside = sandbox
+        .ok_at(&other, &["--mode", "auto", "bg", "create hello"])
+        .trim()
+        .to_string();
+    sandbox.wait_for_state(&outside, "idle");
+    let hidden = session_of(&sandbox, &outside);
+    let folders = format!("remote.folders=['{}']", project.display());
+    let mut remote = sandbox.remote(&["--set", &folders], &[]);
+    let base = remote.base();
+    let token = remote.pair_with(&remote.secret()).await;
+
+    let (status, listed) = post(&base, &token, "/api/history", json!({})).await;
+    assert_eq!(status, 200, "{listed}");
+    let rows = listed["sessions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{listed}");
+    assert!(rows.iter().all(|row| row["id"] != hidden.as_str()), "{listed}");
+    let (_, found) = post(&base, &token, "/api/history", json!({ "query": "other" })).await;
+    assert_eq!(found["sessions"].as_array().unwrap().len(), 0, "{found}");
+
+    let refuse = |id: String| {
+        let (base, token) = (base.clone(), token.clone());
+        async move { post(&base, &token, "/api/sessions", json!({ "resume": id })).await }
+    };
+    let unknown = "0123456789abcdef-no-such-session";
+    let (status, said) = refuse(unknown.into()).await;
+    assert_eq!(status, 400, "{said}");
+    assert_eq!(said["error"], format!("there is no earlier session {unknown}"));
+    // Ids start alike when sessions are made together: a prefix only the hidden one has.
+    let inside = rows[0]["id"].as_str().unwrap().to_string();
+    let apart = (8..=hidden.len())
+        .find(|n| !inside.starts_with(&hidden[..*n]))
+        .unwrap();
+    for wanted in [hidden.clone(), hidden[..apart].to_string()] {
+        let (status, said) = refuse(wanted.clone()).await;
+        assert_eq!(status, 400, "{said}");
+        assert_eq!(said["error"], format!("there is no earlier session {wanted}"));
+    }
+    // Nothing was started: the one host is the one that was there.
+    assert_eq!(sandbox.running().len(), 1);
+
+    // The session inside the folders is found by the start of its id, and by no shorter one.
+    let (status, said) = refuse(inside[..7].to_string()).await;
+    assert_eq!(status, 400, "{said}");
+    let (status, started) = refuse(inside[..8].to_string()).await;
+    assert_eq!(status, 200, "{started}");
+    sandbox.wait_for_state(started["id"].as_str().unwrap(), "idle");
+}
+
+/// What is typed in an earlier session may hold a secret: the list hides it as the frames do.
+#[tokio::test]
+async fn the_list_of_earlier_sessions_hides_secrets_unless_redaction_is_off() {
+    let sandbox = Sandbox::new();
+    let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
+    sandbox.ok(&["-p", "--mode", "auto", &format!("create hello with {key}")]);
+    let project = azazel_core::paths::canonical(&sandbox.dir.path().join("project"));
+    let folders = format!("remote.folders=['{}']", project.display());
+    let first_prompt = |on: bool| {
+        let sandbox = &sandbox;
+        let folders = &folders;
+        async move {
+            let redact = format!("remote.redact={on}");
+            let mut remote = sandbox.remote(&["--set", folders, "--set", &redact], &[]);
+            let token = remote.pair_with(&remote.secret()).await;
+            let (status, listed) = post(&remote.base(), &token, "/api/history", json!({})).await;
+            assert_eq!(status, 200, "{listed}");
+            listed["sessions"][0]["first_prompt"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let hidden = first_prompt(true).await;
+    assert!(!hidden.contains(key) && hidden.contains("redacted"), "{hidden}");
+    assert!(first_prompt(false).await.contains(key));
+}
+
+/// Two requests to go on with one session start one background session between them, and a
+/// mode the session once recorded does not come back: a browser gets the mode it asks for or the
+/// configured one, and `bypass` only where the server allows it.
+#[tokio::test]
+async fn going_on_with_a_session_twice_at_once_starts_one_host_and_never_restores_bypass() {
+    let sandbox = Sandbox::new();
+    trust_project(&sandbox);
+    sandbox.ok(&["-p", "--mode", "auto", "create hello"]);
+    let project = azazel_core::paths::canonical(&sandbox.dir.path().join("project"));
+    // The session once was in bypass.
+    let file = std::fs::read_dir(sandbox.home().join("projects"))
+        .unwrap()
+        .flatten()
+        .flat_map(|project| {
+            std::fs::read_dir(project.path().join("sessions"))
+                .unwrap()
+                .flatten()
+        })
+        .map(|file| file.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .unwrap();
+    let mut text = std::fs::read_to_string(&file).unwrap();
+    let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    let entry = json!({
+        "type": "mode_change", "mode": "bypass", "id": "zz-bypass",
+        "parentId": last["id"], "timestamp": last["timestamp"],
+    });
+    text.push_str(&format!("{entry}\n"));
+    std::fs::write(&file, text).unwrap();
+
+    let folders = format!("remote.folders=['{}']", project.display());
+    let mut remote = sandbox.remote(&["--set", &folders], &[]);
+    let base = remote.base();
+    let token = remote.pair_with(&remote.secret()).await;
+    let (_, listed) = post(&base, &token, "/api/history", json!({})).await;
+    let session = listed["sessions"][0]["id"].as_str().unwrap().to_string();
+
+    // Bypass asked for is refused, and nothing is started.
+    let (status, said) = post(
+        &base,
+        &token,
+        "/api/sessions",
+        json!({ "resume": session, "mode": "bypass" }),
+    )
+    .await;
+    assert_eq!(status, 403, "{said}");
+    assert!(sandbox.running().is_empty());
+
+    let go = || post(&base, &token, "/api/sessions", json!({ "resume": session }));
+    let ((first, one), (second, two)) = tokio::join!(go(), go());
+    assert_eq!((first, second), (200, 200), "{one} {two}");
+    assert_eq!(one["id"], two["id"], "{one} {two}");
+    let host = one["id"].as_str().unwrap();
+    sandbox.wait_for_state(host, "idle");
+    let rows = sandbox.running();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_ne!(rows[0]["mode"], "bypass", "{rows:?}");
 }

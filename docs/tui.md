@@ -405,7 +405,7 @@ branch outside a repository, no cost on a subscription) is left out.
 | `rate` | the lead has streamed a reply since your last prompt | `↯ 78 tok/s`: how fast the lead writes, in output tokens per second; see below |
 | `cost` | the lead answers with an API key and the model's prices are known | Money spent in this session: `$0.42`, `$12.4`. In the warning colour from `limits.warn_cost_usd` on |
 | `usage` | the lead answers on a subscription you signed in to | `◔ 61% 5h`: the fullest usage window of the account in use that counts the lead's model (`7d-fable` for a window of one model family) and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
-| `cache` | the provider has counted prompt tokens | `≋ 87%`: the share of this session's prompt tokens that were read from the provider's cache |
+| `cache` | the provider has counted prompt tokens | `≋ 87% 4:12`: the share of this session's prompt tokens that were read from the provider's cache, and the time left until the provider drops it (`cold` once it has; nothing while the lead works). The clock changes once a second, and only while the segment is shown; see [prompt cache](models-and-logins.md#prompt-cache) |
 | `agents` | sub-agents are active | `⇶ 2 agents`: how many are queued, working or waiting for approval |
 | `goal` | a goal is open | `⚑ goal …`: the goal's state and the attempt number; see [goals](goals.md) |
 | `todo` | the lead has a todo list | `☑ 2/5`: items done and items in all; in the colour of success once all are done |

@@ -182,6 +182,7 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64, reasoning: 
         cache_write,
         reasoning,
         cost_usd: None,
+        cache_ttl_secs: None,
     }
 }
 
@@ -1853,4 +1854,29 @@ fn consecutive_requests_keep_the_cached_prefix_byte_for_byte() {
             )]));
         }
     }
+}
+
+#[test]
+fn the_cache_lifetime_is_read_from_the_usage_when_the_api_reports_it() {
+    let lifetime = |creation: Value| {
+        let mut start = message_start();
+        start["message"]["usage"]["cache_creation_input_tokens"] = json!(5000);
+        start["message"]["usage"]["cache_creation"] = creation;
+        let events = decode(&sse(&[start, message_delta("end_turn"), message_stop()]));
+        done(&events).meta.as_ref().unwrap().usage.cache_ttl_secs
+    };
+    assert_eq!(
+        lifetime(json!({"ephemeral_5m_input_tokens": 5000, "ephemeral_1h_input_tokens": 0})),
+        Some(300)
+    );
+    assert_eq!(
+        lifetime(json!({"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 5000})),
+        Some(3600)
+    );
+    // Nothing written: the API says nothing about how long a cache lives.
+    assert_eq!(
+        lifetime(json!({"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0})),
+        None
+    );
+    assert_eq!(lifetime(Value::Null), None);
 }

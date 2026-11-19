@@ -342,6 +342,7 @@ fn summary(row: SessionRow) -> (SessionSummary, Vec<String>) {
             cache_write: row.usage.cache_write,
             reasoning: row.usage.reasoning,
             cost_usd: row.usage.cost_usd,
+            cache_ttl_secs: None,
         },
         prompts: row.prompts as usize,
         models: Default::default(),
@@ -879,6 +880,7 @@ impl Backend for Remote {
                 cache_write: state.usage.cache_write,
                 reasoning: state.usage.reasoning,
                 cost_usd: state.usage.cost_usd,
+                cache_ttl_secs: None,
             },
             requests: state.requests,
         }

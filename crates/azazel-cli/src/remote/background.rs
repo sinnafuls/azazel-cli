@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_core::Paths;
-use azazel_remote::{Conn, Folders, Kind, NewSession, SessionInfo, Sessions, StartError};
+use azazel_remote::{Conn, Folders, Kind, NewSession, SavedSession, SessionInfo, Sessions, StartError};
 use clap::Parser;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
@@ -28,6 +28,13 @@ pub struct BackgroundSessions {
     rules: Rules,
     /// The terminal that allows a session in a folder nobody trusted; none without one.
     asks: Option<mpsc::Sender<Ask>>,
+    /// The background sessions browsers started through this server, for the note on quitting.
+    started: std::sync::Mutex<Vec<String>>,
+    /// The ids of the saved sessions browsers started or went on with through this server: they
+    /// may be gone on with again wherever they work.
+    owned: std::sync::Mutex<Vec<String>>,
+    /// Held while a session is gone on with, so that two requests for one session start one host.
+    resuming: tokio::sync::Mutex<()>,
 }
 
 impl BackgroundSessions {
@@ -44,7 +51,59 @@ impl BackgroundSessions {
             carried,
             rules,
             asks,
+            started: std::sync::Mutex::default(),
+            owned: std::sync::Mutex::default(),
+            resuming: tokio::sync::Mutex::new(()),
         })
+    }
+
+    /// The background session that has the saved session `session_id` open, if one does.
+    async fn host_of(&self, session_id: &str) -> Result<Option<String>, StartError> {
+        let (home, session) = (self.paths.home.clone(), session_id.to_string());
+        tokio::task::spawn_blocking(move || running::host_of(&home, &session))
+            .await
+            .map_err(|e| StartError::Failed(e.to_string()))
+    }
+
+    /// Notes a background session a browser has through this server, for the note on quitting.
+    fn note_started(&self, id: &str) {
+        let mut started = self
+            .started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !started.iter().any(|known| known == id) {
+            started.push(id.to_string());
+        }
+    }
+
+    fn owned(&self) -> Vec<String> {
+        self.owned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn own(&self, session_id: String) {
+        let mut owned = self
+            .owned
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !owned.contains(&session_id) {
+            owned.push(session_id);
+        }
+    }
+
+    /// The sessions browsers started through this server that are still running, oldest first.
+    pub fn still_running(&self) -> Vec<running::Entry> {
+        let started = self
+            .started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        running::list(&self.paths.home)
+            .into_iter()
+            .filter(|entry| started.contains(&entry.id) && entry.alive(&self.paths.home))
+            .collect()
     }
 }
 
@@ -132,9 +191,68 @@ impl Sessions for BackgroundSessions {
             .map_err(|e| StartError::Failed(e.to_string()))?
     }
 
-    async fn start(&self, new: NewSession) -> Result<String, StartError> {
-        let (dir, trust) = self.rules.admit(&new, self.asks.as_ref()).await?;
+    async fn history(&self, query: Option<&str>) -> Result<Vec<SavedSession>, StartError> {
+        let (rules, query) = (self.rules.clone(), query.map(str::to_string));
+        let home = self.paths.home.clone();
+        let (owned, redact) = (self.owned(), self.redact);
+        // What was typed in a session may hold a secret, as what it says now may.
+        let hide = move |text: String| match redact {
+            true => azazel_tui::text::redact(&text).into_owned(),
+            false => text,
+        };
+        tokio::task::spawn_blocking(move || {
+            rules
+                .saved(query.as_deref(), &owned)
+                .into_iter()
+                .map(|session| SavedSession {
+                    running: running::host_of(&home, &session.id),
+                    name: session.name.map(hide),
+                    cwd: session.cwd,
+                    created: session.timestamp,
+                    updated: session.updated,
+                    first_prompt: session.first_prompt.map(hide),
+                    messages: session.messages as u64,
+                    id: session.id,
+                })
+                .collect()
+        })
+        .await
+        .map_err(|e| StartError::Failed(e.to_string()))
+    }
+
+    async fn start(&self, mut new: NewSession) -> Result<String, StartError> {
         let home = &self.paths.home;
+        let mut resume = None;
+        let mut gate = None;
+        let mut resumed = None;
+        if let Some(wanted) = new.resume.clone() {
+            // Only a session in a folder a browser may look into, or one it started itself, is
+            // found at all: an id elsewhere is answered as an id that does not exist, whether or
+            // not a background session has it open.
+            let (rules, owned) = (self.rules.clone(), self.owned());
+            let found = tokio::task::spawn_blocking(move || rules.find_saved(&wanted, &owned))
+                .await
+                .map_err(|e| StartError::Failed(e.to_string()))??;
+            // Open in a background session already: that one, not a second.
+            if let Some(host) = self.host_of(&found.id).await? {
+                self.note_started(&host);
+                return Ok(host);
+            }
+            new.cwd = found.cwd;
+            resume = Some(found.path);
+            resumed = Some(found.id);
+        }
+        let (dir, trust) = self.rules.admit(&new, self.asks.as_ref()).await?;
+        if let Some(session) = &resumed {
+            // One request at a time decides whether a host has the session, so that two for the
+            // same one do not start two writers of its file. Looked at again: the other may have
+            // started it while this one waited for the terminal.
+            gate = Some(self.resuming.lock().await);
+            if let Some(host) = self.host_of(session).await? {
+                self.note_started(&host);
+                return Ok(host);
+            }
+        }
         let id = crate::detach::new_id(home);
         if let Some(request) = &new.request_id {
             match running::claim_request(home, request, &id) {
@@ -144,9 +262,18 @@ impl Sessions for BackgroundSessions {
                 Err(e) => return Err(StartError::Failed(format!("cannot note the request: {e}"))),
             }
         }
-        let args = host_args(&self.carried, &dir, &new, trust, &id);
+        let args = host_args(&self.carried, &dir, &new, trust, &id, resume.as_deref());
         match crate::detach::start(home, args, &id).await {
-            Ok(()) => Ok(id),
+            Ok(()) => {
+                self.note_started(&id);
+                let session =
+                    resumed.or_else(|| running::read_entry(home, &id).map(|entry| entry.session_id));
+                if let Some(session) = session {
+                    self.own(session);
+                }
+                drop(gate);
+                Ok(id)
+            }
             Err(e) => {
                 if let Some(request) = &new.request_id {
                     running::release_request(home, request);

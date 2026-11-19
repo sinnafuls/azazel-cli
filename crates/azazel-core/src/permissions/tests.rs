@@ -18,13 +18,19 @@ struct Fixture {
 }
 
 fn fixture(config: &str) -> Fixture {
+    fixture_in(config, "")
+}
+
+/// A project whose session was started in its folder `launch` (the root itself when empty).
+fn fixture_in(config: &str, launch: &str) -> Fixture {
     let tmp = tempfile::tempdir().unwrap();
     let project = tmp.path().join("proj");
     std::fs::create_dir_all(project.join(".azazel")).unwrap();
+    std::fs::create_dir_all(project.join(launch)).unwrap();
     std::fs::create_dir_all(tmp.path().join("extra")).unwrap();
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
-    let paths = Paths::discover(&project, Some(&home.to_string_lossy()));
+    let paths = Paths::discover(&project.join(launch), Some(&home.to_string_lossy()));
     std::fs::write(paths.project_config(), config).unwrap();
     let loaded = Config::load(
         &paths,
@@ -272,6 +278,46 @@ fn the_decision_table() {
     assert!(!f.state.add_root(&elsewhere.join("nested")));
     assert!(allowed(&verdict(&f, "read", Read, &outside)));
     assert_eq!(f.state.roots().len(), 3);
+}
+
+#[test]
+fn a_session_started_in_a_folder_works_in_that_folder_and_asks_before_leaving_it() {
+    use Access::*;
+    let f = fixture_in("[permissions]\nadditional_dirs = [\"../extra\"]\n", "web");
+    assert_eq!(f.paths.project_root, f.paths.cwd.parent().unwrap());
+    let root = f.paths.project_root.to_string_lossy().into_owned();
+    f.state.set_mode(PermissionMode::AcceptEdits);
+
+    // Inside the launch folder, and in a folder `additional_dirs` names relative to the project.
+    assert!(allowed(&verdict(&f, "write", Write, "src/new.rs")));
+    let extra = f.paths.project_root.parent().unwrap().join("extra/notes.txt");
+    assert!(allowed(&verdict(&f, "edit", Write, &extra.to_string_lossy())));
+    // The parent folder and the project's other folders are outside the roots.
+    assert!(prompts(&verdict(&f, "write", Write, "../x.txt")));
+    assert!(prompts(&verdict(
+        &f,
+        "write",
+        Write,
+        &format!("{root}/other/x.txt")
+    )));
+    f.state.set_mode(PermissionMode::Manual);
+    assert!(prompts(&verdict(&f, "read", Read, "../x.txt")));
+    assert!(allowed(&verdict(&f, "read", Read, "src/main.rs")));
+
+    // `/add-dir ..` (or `--add-dir ..`) brings the parent in.
+    f.state.set_mode(PermissionMode::AcceptEdits);
+    assert!(f.state.add_root(&f.paths.project_root));
+    assert!(allowed(&verdict(&f, "write", Write, "../x.txt")));
+}
+
+#[test]
+fn a_session_started_at_the_project_root_works_in_the_whole_project() {
+    use Access::*;
+    let f = fixture("");
+    f.state.set_mode(PermissionMode::AcceptEdits);
+    assert_eq!(f.state.roots(), vec![canonical(&f.paths.project_root)]);
+    assert!(allowed(&verdict(&f, "write", Write, "web/x.txt")));
+    assert!(prompts(&verdict(&f, "write", Write, "../x.txt")));
 }
 
 /// What the engine decides for a `patch` of `files`.

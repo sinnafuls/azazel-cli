@@ -360,6 +360,14 @@ struct State {
     /// The lead's cached prefix while no request of the lead is on its way; gone once its
     /// expiry has been told.
     lead: Option<LeadPrefix>,
+    /// When the lead's request on its way was sent: the provider's clock for what it caches
+    /// starts when it reads the request, not when the answer ends.
+    lead_sent: Option<Instant>,
+    /// The cache ran out while the session waited, and no request has been sent since.
+    cold: bool,
+    /// The answered request of the lead (`LeadPrefix::seq`) whose cache nearing its expiry was
+    /// already pointed out.
+    announced: u64,
 }
 
 impl State {
@@ -487,8 +495,12 @@ impl CacheLedger {
         self
     }
 
-    /// How long the provider keeps what a request to `provider` over `api` cached.
-    fn ttl_of(&self, provider: &str, api: WireApi) -> Duration {
+    /// How long the provider keeps what a request to `provider` over `api` cached: what its
+    /// usage says when it says, else what a login or the API is known to give.
+    fn ttl_of(&self, provider: &str, api: WireApi, usage: &Usage) -> Duration {
+        if let Some(secs) = usage.cache_ttl_secs.filter(|secs| *secs > 0) {
+            return Duration::from_secs(secs);
+        }
         let login = self.logins.as_ref().is_some_and(|check| check(provider));
         match api {
             WireApi::AnthropicMessages if login => LOGIN_CACHE_TTL,
@@ -510,6 +522,8 @@ impl CacheLedger {
         let mut state = locked(&self.state);
         state.enter(&agent.session_id);
         state.lead = None;
+        state.cold = false;
+        state.lead_sent = Some(Instant::now());
         if state.target.take().is_some() {
             state.warming.next = None;
             drop(state);
@@ -529,7 +543,7 @@ impl CacheLedger {
         let meta = message.meta.as_ref()?;
         let now = Instant::now();
         let print = Fingerprint::of(request, message, now)?;
-        let ttl = self.ttl_of(&meta.provider, meta.api);
+        let ttl = self.ttl_of(&meta.provider, meta.api, &meta.usage);
         let mut state = locked(&self.state);
         state.enter(&agent.session_id);
         state
@@ -560,13 +574,17 @@ impl CacheLedger {
         if agent.depth == 0 {
             let prefix = meta.usage.cache_read + meta.usage.cache_write;
             state.seq += 1;
+            // The clock starts when the provider read the request; an answer that took long
+            // leaves less time than a full lifetime after it.
+            let touched = state.lead_sent.take().map_or(now, |sent| sent.min(now));
+            state.cold = false;
             // A short prefix costs little to send again: its expiry is not worth a word.
             state.lead = (prefix >= MIN_WARM_PREFIX).then(|| LeadPrefix {
                 model: ModelRef::new(meta.provider.clone(), meta.model.clone()),
                 prefix,
                 renewable: meta.api == WireApi::AnthropicMessages,
                 seq: state.seq,
-                touched: now,
+                touched,
                 ttl,
             });
         }
@@ -645,17 +663,18 @@ impl CacheLedger {
         }
     }
 
-    /// Books a warming request that was answered, for the target it was sent for.
-    fn warmed(&self, seq: u64, usage: &Usage) {
+    /// Books a warming request that was answered, for the target it was sent for. The provider
+    /// read the cache when the request arrived, so the clock restarts from `sent`, as it does for
+    /// a request of the lead.
+    fn warmed(&self, seq: u64, sent: Instant, usage: &Usage) {
         let mut state = locked(&self.state);
         state.warming.requests += 1;
         state.warming.usage.add(usage);
-        let now = Instant::now();
         if let Some(target) = state.target.as_mut().filter(|target| target.seq == seq) {
-            target.touched = now;
+            target.touched = sent;
         }
         if let Some(lead) = state.lead.as_mut().filter(|lead| lead.seq == seq) {
-            lead.touched = now;
+            lead.touched = sent;
         }
     }
 
@@ -680,9 +699,118 @@ impl CacheLedger {
         let expiry = self
             .expiry(session)
             .filter(|expiry| expiry.at <= Instant::now())?;
-        locked(&self.state).lead = None;
+        let mut state = locked(&self.state);
+        state.lead = None;
+        state.cold = true;
         Some(expiry)
     }
+
+    /// When the cache of the lead's last answered request is [`NEAR_EXPIRY`] from running out,
+    /// unless that was pointed out already.
+    pub fn near_expiry_at(&self, session: &str) -> Option<Instant> {
+        let state = locked(&self.state);
+        let lead = state
+            .lead
+            .as_ref()
+            .filter(|lead| state.session == session && lead.seq != state.announced)?;
+        Some(lead.touched + lead.ttl.saturating_sub(NEAR_EXPIRY.min(lead.ttl / 2)))
+    }
+
+    /// The warm cache, once per answered request, when it is [`NEAR_EXPIRY`] from running out.
+    pub fn take_near_expiry(&self, session: &str) -> Option<CacheClock> {
+        let at = self.near_expiry_at(session)?;
+        if Instant::now() < at {
+            return None;
+        }
+        // `at` stays in the past once it has come, so every way out of here that says nothing
+        // must still count the request as announced, or the main loop would wake for it again
+        // at once.
+        let clock = self.clock(session);
+        let mut state = locked(&self.state);
+        match clock {
+            Some(CacheClock::Warm { seq, .. }) => {
+                state.announced = seq;
+                clock
+            }
+            _ => {
+                if let Some(lead) = state.lead.as_ref() {
+                    state.announced = lead.seq;
+                }
+                None
+            }
+        }
+    }
+
+    /// The state of the lead's prompt cache in the session `session` as a clock shows it: time
+    /// left while it is warm, `Cold` once it has run out and nothing has read it since. `None`
+    /// while a request of the lead is on its way, and when there is no cache worth a word.
+    pub fn clock(&self, session: &str) -> Option<CacheClock> {
+        let state = locked(&self.state);
+        if state.session != session {
+            return None;
+        }
+        let Some(lead) = state.lead.as_ref() else {
+            return state.cold.then_some(CacheClock::Cold);
+        };
+        let left = (lead.touched + lead.ttl).saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Some(CacheClock::Cold);
+        }
+        Some(CacheClock::Warm {
+            left,
+            ttl: lead.ttl,
+            prefix: lead.prefix,
+            seq: lead.seq,
+        })
+    }
+}
+
+/// How long before the cache runs out it is pointed out, for a word about using it while it is
+/// cheap.
+pub const NEAR_EXPIRY: Duration = Duration::from_secs(60);
+
+/// Where the lead's prompt cache stands, for a clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheClock {
+    Warm {
+        /// Until the provider drops it, unless a request reads it first.
+        left: Duration,
+        /// How long the provider keeps it.
+        ttl: Duration,
+        /// The cached prefix, in tokens.
+        prefix: u64,
+        /// Which answered request of the lead left it, so a word about it is said once.
+        seq: u64,
+    },
+    Cold,
+}
+
+impl CacheClock {
+    /// `4:12` while there is time left, `cold` after. Whole seconds, rounded down, so the text
+    /// changes once a second and not before.
+    pub fn text(&self) -> String {
+        match self {
+            CacheClock::Warm { left, .. } => countdown(*left),
+            CacheClock::Cold => "cold".to_string(),
+        }
+    }
+
+    /// When the text of the clock changes next; `None` for a cache that is cold.
+    pub fn next_change(&self) -> Option<Duration> {
+        match self {
+            CacheClock::Warm { left, .. } => Some(match left.subsec_nanos() {
+                0 => Duration::from_secs(1),
+                nanos => Duration::from_nanos(u64::from(nanos)),
+            }),
+            CacheClock::Cold => None,
+        }
+    }
+}
+
+/// `4:12`: minutes and seconds left, the minutes counted past the hour (`59:59`, `60:00`).
+pub fn countdown(left: Duration) -> String {
+    let secs = left.as_secs();
+    format!("{}:{:02}", secs / 60, secs % 60)
 }
 
 /// Tells the user about a miss when `cache.report_misses` asks for it.
@@ -750,10 +878,11 @@ impl Warmer {
                 ledger.plan(target.seq, None, Some("stopped: the cost limit is reached"));
                 continue;
             }
+            let sent = Instant::now();
             match self.warm(&target).await {
                 Ok(usage) => {
                     self.costs.add(WARMING_PURPOSE, &usage);
-                    ledger.warmed(target.seq, &usage);
+                    ledger.warmed(target.seq, sent, &usage);
                 }
                 Err(error) => {
                     tracing::warn!("cache warming stopped: {error}");
@@ -1081,6 +1210,7 @@ mod tests {
             warming: CacheWarming::Idle,
             warm_minutes: 12,
             report_misses: false,
+            suggest_handoff_at: 0,
         }));
         let warmer = warmer(mock.clone(), ledger.clone());
         let costs = warmer.costs.clone();
@@ -1191,6 +1321,116 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_lifetime_the_usage_reports_counts_from_when_the_request_was_sent() {
+        let ledger = ledger(CacheWarming::Off);
+        let sent = Instant::now();
+        ledger.sent(&agent("lead", 0));
+        // The answer takes a minute to arrive; the provider's clock started when it read the
+        // request.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let mut long = reply(WireApi::AnthropicMessages, "lead", 10, 20_000, 4_000);
+        if let Some(meta) = long.meta.as_mut() {
+            meta.usage.cache_ttl_secs = Some(3600);
+        }
+        ledger.answered(&agent("lead", 0), &Arc::new(request(1)), &lead_chain(), &long);
+        let expiry = ledger.expiry("s1").unwrap();
+        assert_eq!((expiry.at, expiry.ttl), (sent + LOGIN_CACHE_TTL, LOGIN_CACHE_TTL));
+
+        // A usage that says nothing falls back to what the API is known to keep: five minutes.
+        ledger.sent(&agent("lead", 0));
+        let resent = Instant::now();
+        assert_eq!(answer(&ledger, request(3), 24_000, 0), None);
+        let expiry = ledger.expiry("s1").unwrap();
+        assert_eq!((expiry.at, expiry.ttl), (resent + CACHE_TTL, CACHE_TTL));
+    }
+
+    #[test]
+    fn the_countdown_counts_whole_seconds_down_and_ends_cold() {
+        assert_eq!(countdown(Duration::from_secs(252)), "4:12");
+        assert_eq!(countdown(Duration::from_millis(251_900)), "4:11");
+        assert_eq!(countdown(Duration::from_secs(5)), "0:05");
+        assert_eq!(countdown(Duration::from_secs(3600)), "60:00");
+        let warm = |left| CacheClock::Warm {
+            left,
+            ttl: CACHE_TTL,
+            prefix: 9_000,
+            seq: 1,
+        };
+        assert_eq!(warm(Duration::from_secs(252)).text(), "4:12");
+        assert_eq!(CacheClock::Cold.text(), "cold");
+        // The text changes when the whole second does, and a cold clock never changes.
+        assert_eq!(
+            warm(Duration::from_millis(4_300)).next_change(),
+            Some(Duration::from_millis(300))
+        );
+        assert_eq!(
+            warm(Duration::from_secs(4)).next_change(),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(CacheClock::Cold.next_change(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_clock_runs_down_to_cold_and_starts_again_with_the_next_request() {
+        let ledger = ledger(CacheWarming::Off);
+        assert_eq!(ledger.clock("s1"), None);
+        assert_eq!(answer(&ledger, request(1), 20_000, 4_000), None);
+        let left = |ledger: &CacheLedger| match ledger.clock("s1") {
+            Some(CacheClock::Warm { left, .. }) => left,
+            other => panic!("not warm: {other:?}"),
+        };
+        assert_eq!(left(&ledger), CACHE_TTL);
+        assert_eq!(ledger.clock("s2"), None);
+        tokio::time::sleep(Duration::from_secs(48)).await;
+        assert_eq!(
+            ledger.clock("s1").map(|clock| clock.text()),
+            Some("4:12".to_string())
+        );
+        // Past the lifetime it is cold without anybody having told of it, and stays cold once
+        // it has been.
+        tokio::time::sleep(Duration::from_secs(300)).await;
+        assert_eq!(ledger.clock("s1"), Some(CacheClock::Cold));
+        assert!(ledger.expired("s1").is_some());
+        assert_eq!(ledger.clock("s1"), Some(CacheClock::Cold));
+        // A request on its way reads the cache: no clock until it is answered.
+        ledger.sent(&agent("lead", 0));
+        assert_eq!(ledger.clock("s1"), None);
+        assert_eq!(answer(&ledger, request(3), 24_000, 500), None);
+        assert_eq!(left(&ledger), CACHE_TTL);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cache_nearing_its_expiry_is_pointed_out_once_per_request() {
+        let ledger = ledger(CacheWarming::Off);
+        assert_eq!(ledger.near_expiry_at("s1"), None);
+        let asked = Instant::now();
+        assert_eq!(answer(&ledger, request(1), 20_000, 4_000), None);
+        assert_eq!(ledger.near_expiry_at("s1"), Some(asked + CACHE_TTL - NEAR_EXPIRY));
+        tokio::time::sleep(Duration::from_secs(200)).await;
+        assert_eq!(ledger.take_near_expiry("s1"), None);
+        tokio::time::sleep(Duration::from_secs(45)).await;
+        let clock = ledger.take_near_expiry("s1").unwrap();
+        assert_eq!(clock.text(), "0:55");
+        assert_eq!(ledger.take_near_expiry("s1"), None);
+        assert_eq!(ledger.near_expiry_at("s1"), None);
+        // The next answer starts a clock of its own.
+        assert_eq!(answer(&ledger, request(3), 24_000, 500), None);
+        assert!(ledger.near_expiry_at("s1").is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cache_that_ran_out_before_it_was_pointed_out_is_not_asked_about_again() {
+        let ledger = ledger(CacheWarming::Off);
+        assert_eq!(answer(&ledger, request(1), 20_000, 4_000), None);
+        // Nobody asked while it was near its expiry: when somebody does, it is cold and there is
+        // nothing to say, and the moment must not stay in the past for the main loop to wake at.
+        tokio::time::sleep(Duration::from_secs(400)).await;
+        assert!(ledger.near_expiry_at("s1").is_some());
+        assert_eq!(ledger.take_near_expiry("s1"), None);
+        assert_eq!(ledger.near_expiry_at("s1"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_cache_kept_warm_expires_when_the_warming_ends() {
         let mock = Arc::new(MockProvider::new());
         for _ in 0..4 {
@@ -1200,6 +1440,7 @@ mod tests {
             warming: CacheWarming::Idle,
             warm_minutes: 12,
             report_misses: false,
+            suggest_handoff_at: 0,
         }));
         tokio::spawn(warmer(mock.clone(), ledger.clone()).run());
         let asked = Instant::now();

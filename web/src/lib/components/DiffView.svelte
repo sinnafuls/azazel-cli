@@ -1,19 +1,35 @@
 <script lang="ts">
-	import { parseDiff } from '$lib/tools';
+	// A unified diff as a CodeBlock: the file (or `title`) and the counts in its header, one
+	// CodeBlock.Line per line with its number in the file, a green bar on what was added and a red
+	// one on what was removed. `bare` leaves the frame and the header to the card it is put in.
+	import { numberDiff, parseDiff } from '$lib/tools';
+	import * as CodeBlock from '$lib/components/ui/code-block';
+	import { Button } from '$lib/components/ui/button';
+	import { cn } from '$lib/utils';
+
 	let {
 		diff,
 		max = 18,
 		file,
-		flush = false
+		title,
+		bare = false,
+		class: className
 	}: {
 		diff: string;
 		max?: number;
 		file?: string;
-		/** Inside a card that already names the file: no frame and no caption, only the lines. */
-		flush?: boolean;
+		/** What the header says instead of the file's name. */
+		title?: string;
+		/** Only the lines (and the "show all" row): the caller draws the frame and the header. */
+		bare?: boolean;
+		/** For the block that holds the lines, such as a height to scroll within. */
+		class?: string;
 	} = $props();
-	const lines = $derived(parseDiff(diff));
-	const body = $derived(lines.filter((l) => l.kind !== 'meta'));
+	const lines = $derived(numberDiff(parseDiff(diff)));
+	// The file names are in the header, and the first hunk needs no rule above it.
+	const body = $derived(
+		lines.filter((l) => l.kind !== 'meta').filter((l, i) => !(i === 0 && l.kind === 'hunk'))
+	);
 	let all = $state(false);
 	const shown = $derived(all ? body : body.slice(0, max));
 	const stats = $derived({
@@ -23,54 +39,64 @@
 	const name = $derived(
 		file ?? lines.find((l) => l.text.startsWith('+++'))?.text.replace(/^\+\+\+ (b\/)?/, '') ?? ''
 	);
+	// The gutter is as wide as the longest number; a diff that does not say where it is has none.
+	const digits = $derived(
+		Math.max(0, ...body.map((l) => (l.n === undefined ? 0 : String(l.n).length)))
+	);
+	const SIGN = { add: '+', del: '−', ctx: ' ', hunk: ' ', meta: ' ' } as const;
+	const LINE = {
+		add: 'border-success bg-success/10',
+		del: 'border-destructive bg-destructive/10',
+		ctx: 'border-transparent text-muted-foreground',
+		hunk: 'border-transparent text-muted-foreground select-none',
+		meta: ''
+	} as const;
 </script>
 
-<figure
-	class="bg-inset overflow-hidden font-mono text-xs leading-[1.6] {flush
-		? 'border-t'
-		: 'rounded-lg border'}"
->
-	{#if !flush}
-		<figcaption class="bg-card flex items-center gap-3 border-b px-3 py-2">
-			<span class="text-ink-2 min-w-0 flex-1 truncate">{name || 'diff'}</span>
-			<span class="num shrink-0"
-				><span class="text-diff-add-fg">+{stats.add}</span>
-				<span class="text-diff-del-fg">−{stats.del}</span></span
+{#snippet rows()}
+	<CodeBlock.Content class={cn('scroll-thin', className)} data-diff-lines>
+		{#each shown as l, i (i)}
+			<CodeBlock.Line
+				variant={l.kind === 'add' ? 'added' : l.kind === 'del' ? 'removed' : 'default'}
+				data-line={l.kind}
+				class={cn('border-l-2 after:content-none', LINE[l.kind])}
+				>{#if digits}<span
+						class="inline-block text-end text-muted-foreground select-none"
+						style="width: {digits}ch"
+						data-line-number>{l.n ?? ''}</span
+					>{/if}<span class="inline-block w-[3ch] text-center select-none" aria-hidden="true"
+					>{l.kind === 'hunk' ? '⋯' : SIGN[l.kind]}</span
+				>{l.kind === 'hunk' ? '' : l.text || '\n'}{#if l.kind === 'add'}<span class="sr-only"
+						>added</span
+					>{:else if l.kind === 'del'}<span class="sr-only">removed</span>{/if}</CodeBlock.Line
 			>
-		</figcaption>
-	{/if}
-	<div class="scroll-thin overflow-x-auto">
-		<div class="w-max min-w-full py-1.5">
-			{#each shown as l, i (i)}
-				{#if l.kind === 'hunk'}
-					<div class="text-faint px-3 py-0.5 select-none">{l.text}</div>
-				{:else}
-					<div
-						class="flex px-3 {l.kind === 'add'
-							? 'bg-diff-add text-diff-add-fg shadow-[inset_2px_0_0_var(--diff-add-fg)]'
-							: l.kind === 'del'
-								? 'bg-diff-del text-diff-del-fg shadow-[inset_2px_0_0_var(--diff-del-fg)]'
-								: 'text-muted-foreground'}"
-					>
-						<span class="w-5 shrink-0 select-none" aria-hidden="true"
-							>{l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' '}</span
-						>
-						<span class="pr-3 whitespace-pre">{l.text || ' '}</span>
-						{#if l.kind === 'add'}<span class="sr-only">added</span>{:else if l.kind === 'del'}<span
-								class="sr-only">removed</span
-							>{/if}
-					</div>
-				{/if}
-			{/each}
-		</div>
-	</div>
+		{/each}
+	</CodeBlock.Content>
 	{#if body.length > max}
-		<button
-			type="button"
-			class="text-muted-foreground hover:text-foreground hover:bg-hover block min-h-11 w-full border-t font-sans text-xs -outline-offset-2 transition-colors duration-100 fine:min-h-8"
-			onclick={() => (all = !all)}
-		>
-			{all ? 'Show less' : `Show all ${body.length} lines`}
-		</button>
+		<CodeBlock.Footer>
+			<Button variant="ghost" size="xs" class="-ml-2" onclick={() => (all = !all)}>
+				{all ? 'Show less' : `Show all ${body.length} lines`}
+			</Button>
+		</CodeBlock.Footer>
 	{/if}
-</figure>
+{/snippet}
+
+{#if bare}
+	{@render rows()}
+{:else}
+	<CodeBlock.Root size="sm" data-diff>
+		<CodeBlock.Header>
+			<CodeBlock.Title
+				role="heading"
+				aria-level={3}
+				class={title ? '' : 'font-mono font-normal'}
+				title={title ? undefined : name}>{title ?? (name || 'diff')}</CodeBlock.Title
+			>
+			<span class="num ml-auto shrink-0 text-xs"
+				><span class="text-success">+{stats.add}</span>
+				<span class="text-destructive">−{stats.del}</span></span
+			>
+		</CodeBlock.Header>
+		{@render rows()}
+	</CodeBlock.Root>
+{/if}

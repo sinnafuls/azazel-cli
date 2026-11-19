@@ -10,7 +10,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use azazel_core::session::SessionStore;
+use azazel_core::session::{SessionStore, SessionSummary};
 use azazel_core::{Paths, TrustStore};
 use azazel_remote::{Folder, FolderKind, Folders, NewSession, StartError};
 use tokio::sync::{mpsc, oneshot};
@@ -21,6 +21,8 @@ use crate::running;
 const MAX_FOLDERS: usize = 200;
 /// Projects the first list offers at most.
 const MAX_PROJECTS: usize = 50;
+/// Earlier sessions the list of them offers at most.
+const MAX_HISTORY: usize = 100;
 /// How long the terminal has to answer before the browser is told no.
 const ANSWER_WITHIN: Duration = Duration::from_secs(120);
 
@@ -138,6 +140,92 @@ impl Rules {
     /// Whether a session may be started in `dir`.
     fn allowed(&self, dir: &Path, roots: &[PathBuf]) -> bool {
         self.browsable(dir, roots) || self.projects().iter().any(|project| project == dir)
+    }
+
+    /// Keeps the sessions a browser may go on with: those in a folder it may look into (a folder
+    /// of `[remote] folders`, or any folder once bypass or full access is allowed) and those
+    /// this server started itself (`owned`, by session id). The projects other sessions have worked
+    /// in do not count: they are where a browser may start a new session, not a reason to show it
+    /// what was said there.
+    fn retain_resumable(&self, found: &mut Vec<SessionSummary>, owned: &[String]) {
+        let roots = self.roots();
+        // The folder as written in the session, whether it exists, and whether it is open.
+        let mut known: Vec<(PathBuf, bool, bool)> = Vec::new();
+        found.retain(|session| {
+            let dir = PathBuf::from(&session.cwd);
+            let (exists, open) = match known.iter().find(|(known, ..)| *known == dir) {
+                Some(&(_, exists, open)) => (exists, open),
+                None => {
+                    let exists = dir.is_dir();
+                    let open = exists && self.browsable(&azazel_core::paths::canonical(&dir), &roots);
+                    known.push((dir, exists, open));
+                    (exists, open)
+                }
+            };
+            exists && (open || owned.contains(&session.id))
+        });
+    }
+
+    /// Earlier sessions of every project that a browser may go on with: those in a folder it may
+    /// look into and those this server started (`owned`, session ids). With `query`, those whose
+    /// name, folder or conversation mention it. Most recently used first, at most [`MAX_HISTORY`].
+    pub(crate) fn saved(&self, query: Option<&str>, owned: &[String]) -> Vec<SessionSummary> {
+        let paths = Paths::discover(&self.home, Some(&self.home.to_string_lossy()));
+        let dirs = crate::sessions::session_dirs(&paths, true);
+        let mut found: Vec<SessionSummary> = match query.map(str::trim).filter(|q| !q.is_empty()) {
+            None => dirs.iter().flat_map(|dir| SessionStore::list(dir)).collect(),
+            Some(query) => {
+                let needle = query.to_lowercase();
+                dirs.iter()
+                    .flat_map(|dir| {
+                        let by_text = SessionStore::search(dir, query, 1);
+                        let mut hits: Vec<SessionSummary> =
+                            by_text.into_iter().map(|(summary, _)| summary).collect();
+                        // The name and the folder are not part of the conversation.
+                        for summary in SessionStore::list(dir) {
+                            let named = summary.name.as_deref().unwrap_or_default().to_lowercase();
+                            if (named.contains(&needle) || summary.cwd.to_lowercase().contains(&needle))
+                                && !hits.iter().any(|hit| hit.id == summary.id)
+                            {
+                                hits.push(summary);
+                            }
+                        }
+                        hits
+                    })
+                    .collect()
+            }
+        };
+        found.retain(|session| !session.archived && session.messages > 0 && !session.cwd.is_empty());
+        found.sort_by(|a, b| b.updated.cmp(&a.updated));
+        self.retain_resumable(&mut found, owned);
+        found.truncate(MAX_HISTORY);
+        found
+    }
+
+    /// The earlier session `id` names, when a browser may go on with it: the whole id, or the
+    /// start of one (8 characters or more) that only one allowed session has. A session a browser
+    /// may not go on with is as good as none, so that the answer says nothing about it.
+    pub fn find_saved(&self, id: &str, owned: &[String]) -> Result<SessionSummary, StartError> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(StartError::Invalid(
+                "`resume` names the session to go on with".into(),
+            ));
+        }
+        let paths = Paths::discover(&self.home, Some(&self.home.to_string_lossy()));
+        let mut matches: Vec<SessionSummary> = crate::sessions::session_dirs(&paths, true)
+            .iter()
+            .flat_map(|dir| SessionStore::list(dir))
+            .collect();
+        self.retain_resumable(&mut matches, owned);
+        matches.retain(|session| session.id == id || (id.len() >= 8 && session.id.starts_with(id)));
+        match matches.len() {
+            0 => Err(StartError::Invalid(format!("there is no earlier session {id}"))),
+            1 => Ok(matches.remove(0)),
+            _ => Err(StartError::Invalid(format!(
+                "`{id}` matches several sessions: give more of it"
+            ))),
+        }
     }
 
     /// Whether the project `dir` belongs to is trusted.
@@ -280,13 +368,15 @@ impl Rules {
 }
 
 /// The arguments of the background process of a new session: `carried` (what `azazel remote`
-/// was started with), the folder, the mode, the trust, then `host` with the first message.
+/// was started with), the folder, the mode, the trust, the earlier session to go on with, then
+/// `host` with the first message.
 pub(crate) fn host_args(
     carried: &[OsString],
     dir: &Path,
     new: &NewSession,
     trust: bool,
     id: &str,
+    resume: Option<&Path>,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = carried.to_vec();
     args.extend(["--cwd".into(), dir.as_os_str().to_os_string()]);
@@ -295,6 +385,9 @@ pub(crate) fn host_args(
     }
     if trust {
         args.push("--trust".into());
+    }
+    if let Some(file) = resume {
+        args.extend(["--session".into(), file.as_os_str().to_os_string()]);
     }
     args.extend(["host", "--id", id].map(OsString::from));
     if let Some(request) = &new.request_id {
@@ -480,6 +573,7 @@ mod tests {
             prompt: Some("-v is a flag?".into()),
             mode: Some("auto".into()),
             request_id: Some("r1".into()),
+            resume: None,
         };
         let args = host_args(
             &["--set".into(), "a=1".into()],
@@ -487,6 +581,7 @@ mod tests {
             &new,
             true,
             "ab12",
+            None,
         );
         let args: Vec<String> = args
             .iter()

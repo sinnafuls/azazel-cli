@@ -297,10 +297,19 @@ const TAILSCALE_HELP: &str = "Tailscale is not set up on this machine.\n  \
 install it from https://tailscale.com/download, sign in with `tailscale up`, and install the \
 Tailscale app on the phone (signed in to the same account)";
 
+/// `tailscale` on `PATH`, or where its installer puts it: the Windows installer does not add its
+/// folder to `PATH`, and the macOS app keeps the command inside the bundle.
 fn find_tailscale() -> Option<PathBuf> {
     which::which("tailscale").ok().or_else(|| {
-        let app = PathBuf::from("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
-        app.is_file().then_some(app)
+        let mut places = vec![PathBuf::from(
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        )];
+        for var in ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"] {
+            if let Some(dir) = std::env::var_os(var) {
+                places.push(PathBuf::from(dir).join("Tailscale").join("tailscale.exe"));
+            }
+        }
+        places.into_iter().find(|p| p.is_file())
     })
 }
 

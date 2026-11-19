@@ -151,6 +151,18 @@ pub trait Tool: Send + Sync {
         Offer::Always
     }
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
+    /// Called once with the result of a call that succeeded, before it is stored in the context.
+    /// A tool may shrink its own result here, knowing which earlier results the model still has.
+    /// What it leaves is what every later request repeats, so it is never undone later.
+    fn shape(&self, _input: &Value, _output: &mut ToolOutput, _ctx: &ShapeCtx<'_>) {}
+}
+
+/// What [`Tool::shape`] is told about the call.
+pub struct ShapeCtx<'a> {
+    pub agent_id: &'a str,
+    pub call_id: &'a str,
+    /// Whether the result of an earlier call is still in the context with its content.
+    pub in_context: &'a (dyn Fn(&str) -> bool + Send + Sync),
 }
 
 pub fn tool_spec(tool: &dyn Tool) -> ToolSpec {
@@ -252,6 +264,32 @@ impl UpdateSink {
         }
     }
 }
+
+/// What a [`ResultShaper`] is told about the call whose result it may shrink.
+pub struct ShapeRequest<'a> {
+    pub agent: &'a AgentInfo,
+    pub call_id: &'a str,
+    pub name: &'a str,
+    pub input: &'a Value,
+    /// The last thing the user asked, for notes that answer it.
+    pub last_user: Option<&'a str>,
+    pub cwd: &'a std::path::Path,
+    pub services: &'a Arc<Services>,
+    pub cancel: &'a CancellationToken,
+}
+
+/// Shrinks a tool result once, when the result is produced and before it is stored in the
+/// context. What it returns is what the model sees from then on and what every later request
+/// repeats, so it must leave the output as it is whenever it is unsure. Registered as a service
+/// behind [`Shaper`].
+#[async_trait]
+pub trait ResultShaper: Send + Sync {
+    async fn shape(&self, request: ShapeRequest<'_>, output: &mut ToolOutput);
+}
+
+/// The [`ResultShaper`] of the application, as a service.
+#[derive(Clone)]
+pub struct Shaper(pub Arc<dyn ResultShaper>);
 
 /// Stores tool output that is too large to return and gives back a URI the model can read.
 pub trait ArtifactSink: Send + Sync {

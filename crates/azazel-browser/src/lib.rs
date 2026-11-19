@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_agent::agent::ABORTED_TEXT;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, ShapeCtx, Tool, ToolCtx, ToolOutput};
 use azazel_ai::ServiceStore;
 use azazel_core::{
     ArtifactStore, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Outcome, Registrar, Ui,
@@ -122,10 +122,17 @@ impl Tool for BrowserTool {
         let artifacts = ctx.services.get::<ArtifactStore>();
         let act = async {
             if input.action != "handoff" {
-                return self.0.act(input, artifacts.as_deref()).await;
+                return self
+                    .0
+                    .act_as(&ctx.agent_id, Some(&ctx.call_id), input, artifacts.as_deref())
+                    .await;
             }
             match ctx.services.get::<Ui>() {
-                Some(ui) => self.0.handoff(&input, ui.0.as_ref()).await,
+                Some(ui) => {
+                    self.0
+                        .handoff_as(&ctx.agent_id, Some(&ctx.call_id), &input, ui.0.as_ref())
+                        .await
+                }
                 None => Err("nobody is here to take over the browser".to_string()),
             }
         };
@@ -141,6 +148,11 @@ impl Tool for BrowserTool {
             },
             Err(why) => ToolOutput::error(why),
         }
+    }
+
+    fn shape(&self, _input: &Value, output: &mut ToolOutput, ctx: &ShapeCtx<'_>) {
+        self.0
+            .revise(ctx.agent_id, ctx.call_id, ctx.in_context, &mut output.content);
     }
 }
 
@@ -163,6 +175,10 @@ pub struct BrowserExt {
     pub headless: bool,
     /// The browser's user data directory.
     pub profile: PathBuf,
+    /// `[browser] screenshot_scale`.
+    pub screenshot_scale: f64,
+    /// `[browser] snapshot_diff`.
+    pub snapshot_diff: bool,
     /// Where the logins `fill_login` types are stored.
     pub logins: Arc<ServiceStore>,
 }
@@ -177,6 +193,8 @@ impl Extension for BrowserExt {
             path: self.path.clone(),
             headless: self.headless,
             profile: self.profile.clone(),
+            screenshot_scale: self.screenshot_scale,
+            snapshot_diff: self.snapshot_diff,
         };
         let session = Arc::new(BrowserSession::new(settings).with_logins(self.logins.clone()));
         r.service(session.clone());
@@ -198,6 +216,8 @@ mod tests {
             path: String::new(),
             headless: true,
             profile: PathBuf::from("unused"),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
         })));
         let subjects = |input: Value| tool.subjects(&input);
         assert_eq!(

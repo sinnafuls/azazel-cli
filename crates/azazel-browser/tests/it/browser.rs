@@ -88,11 +88,17 @@ struct Bench {
 
 impl Bench {
     fn new(dir: &Path) -> Bench {
+        Bench::scaled(dir, 1.0)
+    }
+
+    fn scaled(dir: &Path, screenshot_scale: f64) -> Bench {
         let logins = Arc::new(ServiceStore::new(dir.join("secrets.json")));
         let settings = Settings {
             path: String::new(),
             headless: true,
             profile: dir.join("profile"),
+            screenshot_scale,
+            snapshot_diff: true,
         };
         let session = Arc::new(BrowserSession::new(settings).with_logins(logins.clone()));
         let services = Arc::new(Services::default());
@@ -540,5 +546,139 @@ async fn a_stored_login_is_typed_into_its_own_page_only_and_never_shown() {
         "typed the password of the stored login `fixture`"
     );
 
+    bench.session.shutdown().await;
+}
+
+/// A tall page of products with a button far from the top left corner.
+const SHOP_PAGE: &str = r#"<!doctype html>
+<html><head><title>shop</title></head>
+<body style="margin:0">
+<h1>Shop</h1>
+<div style="height:300px"></div>
+<button id="buy" style="margin-left:500px;width:200px;height:60px" onclick="document.title = 'bought'">Buy now</button>
+<ul id="list"></ul>
+<script>
+const list = document.getElementById('list');
+for (let i = 1; i <= 40; i++) { const li = document.createElement('li'); const a = document.createElement('a'); a.href = '#p' + i; a.textContent = 'Product number ' + i; li.append(a); list.append(li); }
+document.getElementById('buy').addEventListener('click', () => { const li = document.createElement('li'); li.textContent = 'Thanks'; list.append(li); });
+</script>
+</body></html>"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_click_on_a_scaled_screenshot_lands_on_the_pixel_it_points_at() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let site = serve(SHOP_PAGE).await;
+    let image_of = |output: &ToolOutput| {
+        let Some(Block::Image { data, .. }) = output.content.get(1) else {
+            panic!("no image: {:?}", output.content);
+        };
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data).unwrap();
+        let size = image::load_from_memory(&bytes).unwrap();
+        (bytes.len(), data.len(), (size.width(), size.height()))
+    };
+
+    // Scale 1: the image is the window; no note is needed.
+    let full = Bench::scaled(dir.path(), 1.0);
+    full.ok(json!({ "action": "open", "url": site })).await;
+    full.ok(json!({ "action": "resize", "width": 1280, "height": 800 }))
+        .await;
+    let whole = full.call(json!({ "action": "screenshot" })).await;
+    let (full_bytes, _, full_size) = image_of(&whole);
+    assert_eq!(full_size, (1280, 800));
+    assert!(
+        !whole.text_content().contains("the image is"),
+        "{}",
+        whole.text_content()
+    );
+    full.session.shutdown().await;
+
+    // Scale 0.5: half the size, and positions are read off the image.
+    let half = Bench::scaled(dir.path(), 0.5);
+    half.ok(json!({ "action": "open", "url": site })).await;
+    half.ok(json!({ "action": "resize", "width": 1280, "height": 800 }))
+        .await;
+    let shot = half.call(json!({ "action": "screenshot" })).await;
+    let (half_bytes, _, half_size) = image_of(&shot);
+    assert_eq!(half_size, (640, 400));
+    assert!(
+        shot.text_content()
+            .contains("the image is 640x400, the window 1280x800"),
+        "{}",
+        shot.text_content()
+    );
+    println!(
+        "screenshot 1280x800: scale 1.0 {full_bytes} bytes PNG, ~{} tokens; scale 0.5 {half_bytes} bytes PNG, ~{} tokens",
+        1280u32.div_ceil(28) * 800u32.div_ceil(28),
+        640u32.div_ceil(28) * 400u32.div_ceil(28)
+    );
+    let rect = half
+        .ok(json!({ "action": "eval", "expression": "(() => { const r = document.getElementById('buy').getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()" }))
+        .await;
+    let centre: Vec<f64> = serde_json::from_str(&rect).unwrap();
+    // Where the button is in the image the model sees.
+    let (x, y) = (centre[0] / 2.0, centre[1] / 2.0);
+    let clicked = half.ok(json!({ "action": "click", "x": x, "y": y })).await;
+    assert!(
+        clicked.starts_with(&format!("clicked at {:.0},{:.0}", centre[0], centre[1])),
+        "{clicked}"
+    );
+    assert!(clicked.contains("bought"), "{clicked}");
+    half.session.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_snapshot_of_a_page_is_the_changes_only_and_old_refs_still_work() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bench = Bench::new(dir.path());
+    let site = serve(SHOP_PAGE).await;
+    // What the agent loop does: run the call, then shape its result, with every earlier result
+    // still in the context.
+    let step = |n: u32, input: Value| {
+        let bench = &bench;
+        async move {
+            let mut ctx_call = bench.ctx.clone();
+            ctx_call.call_id = format!("c{n}");
+            let mut output = bench.tool.call(input.clone(), &ctx_call).await;
+            assert!(!output.is_error, "{input}: {}", output.text_content());
+            let live = |_: &str| true;
+            bench.tool.shape(
+                &input,
+                &mut output,
+                &azazel_agent::ShapeCtx {
+                    agent_id: "lead",
+                    call_id: &format!("c{n}"),
+                    in_context: &live,
+                },
+            );
+            output.text_content()
+        }
+    };
+    let first = step(1, json!({ "action": "open", "url": site })).await;
+    let buy = ref_of(&first, "Buy now");
+    let same = step(2, json!({ "action": "snapshot" })).await;
+    assert!(same.contains("unchanged"), "{same}");
+    step(3, json!({ "action": "click", "ref": buy })).await;
+    let second = step(4, json!({ "action": "snapshot" })).await;
+    println!(
+        "second snapshot: full {} bytes ~{} tokens; sent {} bytes ~{} tokens",
+        first.len(),
+        first.len().div_ceil(4),
+        second.len(),
+        second.len().div_ceil(4)
+    );
+    assert!(second.starts_with("(the page changed"), "{second}");
+    assert!(second.contains("+ ") && second.contains("Thanks"), "{second}");
+    assert!(second.len() * 3 < first.len(), "{second}");
+    // The ref of the first snapshot still names the button.
+    assert_eq!(ref_of(&first, "Buy now"), buy);
+    step(5, json!({ "action": "click", "ref": buy })).await;
     bench.session.shutdown().await;
 }

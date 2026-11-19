@@ -763,6 +763,16 @@ A tool result whose text exceeds `max_result_bytes` (default 50000) is cut at th
 
 The agent reads the rest with `read artifact://<call id>`. The same directory holds other files tools produce: screenshots, recordings, downloads that are not text, worktree patches.
 
+## Slimmer and digested results
+
+Two settings keep large results from MCP tools, the web tools and PDFs from filling the context. Both decide once, when the result is produced, and what they leave is what every later request repeats: nothing is rewritten afterwards, so the prompt cache is not disturbed.
+
+**Slimming** (`[tools] slim_results`, on by default, no model involved). A JSON result of an MCP tool, `web_fetch`, `web_search` or `http` of 2000 characters or more loses `node_id`s, `*_html` copies of text that is there as plain text, and null or empty values. When the JSON looks like it comes from GitHub or Linear (an object with `node_id`, `html_url` or `gravatar_id`, or a link to `api.github.com` or `linear.app`) it also loses colours, avatar, image and other media links, and links into an API (`api.…`, `repos/…`, URL templates). Numbers, `false` and `0` stay, and so does everything in JSON from any other source. The result is then compact JSON. Whenever fields were removed, a last line says how many and gives the full original as `artifact://slim-<call id>`, which `read` opens. Text that is not JSON, and JSON with nothing to drop, is left as it is.
+
+**Digests** (`[tools] digest = "smol"`, off by default). A result of an MCP tool or `web_fetch` longer than `digest_min_chars` (after slimming), or a `read` of a local PDF of more than `digest_min_pages` pages, is replaced by notes written by the model of the `smol` [role](models-and-logins.md), who is given your last request. The notes cite the line ranges they come from, are cut at 1500 words, and start with a line that says they are notes. The full text, with one JSON field to a line, is saved as `artifact://digest-<call id>`; the model reads it, with `offset` and `limit` for the cited lines, when the notes are not enough. Notes are cached under `~/.azazel/cache/digests` by a hash of the text and the request, so the same result is not summarised twice.
+
+Never digested: a `read` of anything but a PDF (code, `AGENTS.md`, skills, configuration), shell output (builds, tests, git), a `web_fetch` with an `offset`, results with images, results over 400000 characters, and any result for which the `smol` request fails, takes longer than 90 seconds or does not make it at least half as short. Those arrive as they are.
+
 ## Calls that are mended
 
 A model sometimes calls a tool by the name another harness gives it, or sends its input in a slightly wrong shape. Before the permission check, such a call is mended against the tool's input schema:
@@ -827,6 +837,10 @@ check_on_write = true                 # run the file's checker after write and e
 check_report = "delta"                # what the lead is told when it stops: delta, all or off
 read_guard = "range"                  # what must have been read before an edit: range, file or off
 redact_output = false                 # take secrets out of tool results before the model gets them
+slim_results = true                   # drop noise fields from large JSON results of MCP tools and web fetches
+digest = "off"                        # smol: notes from the smol model replace large MCP, web and PDF results
+digest_min_chars = 16000              # MCP and web results longer than this are digested
+digest_min_pages = 10                 # PDF reads of more pages than this are digested
 
 [tools.format]                        # file extension to formatter command
 rs = "rustfmt --edition 2024"
@@ -862,6 +876,10 @@ javascript = true                     # eval may run JavaScript
 | `check_report` | `"delta"` | What the lead is told when it stops: findings on the lines the turn changed (`delta`), every finding (`all`), or nothing (`off`) |
 | `read_guard` | `"range"` | What an agent must have read of a file before it changes it: the lines an edit changes (`range`), any part of the file (`file`), or nothing (`off`); see [the read guard](#the-read-guard) |
 | `redact_output` | `false` | Replaces what looks like a secret in a tool result with `[redacted:<kind>]` before the model and the session file get it; see [permissions](permissions.md#secrets-in-tool-results) |
+| `slim_results` | `true` | Drops `node_id`s, HTML copies and empty fields (and colours, avatars and API links of GitHub and Linear results) from large JSON results, and says so; see [slimmer and digested results](#slimmer-and-digested-results) |
+| `digest` | `"off"` | `smol` replaces a large MCP, web or PDF result with notes from the `smol` model; `off` keeps results as they are |
+| `digest_min_chars` | `16000` | Characters of an MCP or web result above which it is digested |
+| `digest_min_pages` | `10` | Pages of a PDF read above which it is digested |
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
 | `eval.python` | `true` | Lets [`eval`](#eval) run Python. Project config: trusted projects only |
 | `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript; with both off, `eval` is not offered. Project config: trusted projects only |

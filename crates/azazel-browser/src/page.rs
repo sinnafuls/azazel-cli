@@ -2,6 +2,7 @@
 //! geometry and the host of a URL.
 
 use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 use serde_json::Value;
 
@@ -58,6 +59,19 @@ fn label(value: Option<&Value>) -> String {
 /// Renders the nodes of `Accessibility.getFullAXTree`: one line per node that has a name or can be
 /// interacted with, `- <role> "<name>" [ref=e<n>]`, indented under the listed node that contains it.
 pub fn snapshot(nodes: &[Value]) -> Snapshot {
+    snapshot_with(nodes, None, 0)
+}
+
+/// [`snapshot`], where an element that `previous` (the refs of the last snapshot of the page)
+/// already numbered keeps its number and new ones are numbered after the highest ever given (at
+/// least `floor`), so that what an earlier snapshot showed the model still names the same element.
+pub fn snapshot_with(nodes: &[Value], previous: Option<&HashMap<u32, i64>>, floor: u32) -> Snapshot {
+    let known: HashMap<i64, u32> = previous
+        .map(|refs| refs.iter().map(|(number, dom)| (*dom, *number)).collect())
+        .unwrap_or_default();
+    // Numbers are never handed out twice in a tab, so a ref in an older snapshot is either the
+    // same element or none.
+    let mut next = floor.max(previous.and_then(|refs| refs.keys().max().copied()).unwrap_or(0));
     let id_of = |node: &Value| node.get("nodeId").and_then(Value::as_str).map(str::to_string);
     let by_id: HashMap<String, &Value> = nodes
         .iter()
@@ -101,7 +115,14 @@ pub fn snapshot(nodes: &[Value]) -> Snapshot {
                     line.push_str(&format!(" value=\"{value}\""));
                 }
                 if let Some(dom) = node.get("backendDOMNodeId").and_then(Value::as_i64) {
-                    let number = out.refs.len() as u32 + 1;
+                    let number = match known.get(&dom) {
+                        Some(number) => *number,
+                        None if previous.is_some() => {
+                            next += 1;
+                            next
+                        }
+                        None => out.refs.len() as u32 + 1,
+                    };
                     out.refs.insert(number, dom);
                     line.push_str(&format!(" [ref=e{number}]"));
                 }
@@ -125,6 +146,229 @@ pub fn snapshot(nodes: &[Value]) -> Snapshot {
         out.text.push_str(&format!("… {omitted} more nodes not shown\n"));
     }
     out
+}
+
+/// How a snapshot differs from the one before it, for the model that still has that one.
+#[derive(Debug, PartialEq)]
+pub enum Change {
+    /// Nothing changed.
+    Same,
+    /// What changed, ready to show.
+    Diff(String),
+    /// Too much changed to be worth it: show the whole snapshot.
+    Whole,
+}
+
+/// The ref a snapshot line carries, `e12` of `[ref=e12]`.
+fn line_ref(line: &str) -> Option<&str> {
+    let start = line.rfind("[ref=")? + "[ref=".len();
+    let end = line[start..].find(']')?;
+    Some(&line[start..start + end])
+}
+
+/// Compares the lines of two snapshots of one page (refs are stable between them, see
+/// [`snapshot_with`]). `+` lines are new, `-` lines gone, `~` lines are the same element (same
+/// ref) whose line differs now. [`Change::Whole`] when more than half the lines moved or the
+/// difference would not be shorter than the snapshot.
+pub fn diff(old: &str, new: &str) -> Change {
+    if old == new {
+        return Change::Same;
+    }
+    let (before, after): (Vec<&str>, Vec<&str>) = (old.lines().collect(), new.lines().collect());
+    let mut left: HashMap<&str, usize> = HashMap::new();
+    for line in &before {
+        *left.entry(line).or_default() += 1;
+    }
+    let mut added: Vec<&str> = Vec::new();
+    let mut kept = 0usize;
+    for line in &after {
+        match left.get_mut(line) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                kept += 1;
+            }
+            _ => added.push(line),
+        }
+    }
+    let mut gone: Vec<&str> = Vec::new();
+    let mut remaining = left;
+    for line in &before {
+        if let Some(count) = remaining.get_mut(line)
+            && *count > 0
+        {
+            *count -= 1;
+            gone.push(line);
+        }
+    }
+    let total = before.len().max(after.len());
+    if (added.len() + gone.len()) * 2 > total {
+        return Change::Whole;
+    }
+    // A removed line and an added one with the same ref are one element that changed.
+    let mut changed: Vec<&str> = Vec::new();
+    let mut plus: Vec<&str> = Vec::new();
+    for line in added {
+        match line_ref(line).filter(|r| gone.iter().any(|g| line_ref(g) == Some(*r))) {
+            Some(reference) => {
+                gone.retain(|g| line_ref(g) != Some(reference));
+                changed.push(line);
+            }
+            None => plus.push(line),
+        }
+    }
+    let mut text = format!(
+        "(the page changed since your last snapshot of this tab: {kept} lines unchanged, refs keep their numbers; \
+         `+` is new, `-` is gone, `~` changed)\n"
+    );
+    for (mark, lines) in [('-', &gone), ('~', &changed), ('+', &plus)] {
+        for line in lines {
+            text.push(mark);
+            text.push(' ');
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    if text.len() >= new.len() {
+        return Change::Whole;
+    }
+    Change::Diff(text)
+}
+
+/// The longest chain of changes sent one after another before the whole snapshot is sent again.
+const MAX_CHAIN: usize = 8;
+
+/// What one agent was last shown of one tab.
+struct Shown {
+    url: String,
+    body: String,
+    /// The calls whose results the model needs to have in its context to rebuild `body`: the
+    /// full snapshot and the changes sent after it.
+    needs: Vec<String>,
+}
+
+/// The snapshots agents were shown, to send only what changed the next time. Decided once, when a
+/// result is produced: it needs the earlier results to be in the context still, and says so when
+/// they are not by sending the whole snapshot.
+#[derive(Default)]
+pub struct Baselines(Mutex<HashMap<(String, String), Shown>>);
+
+impl Baselines {
+    /// The text to give `agent` for a snapshot of `tab` at `url`: `header` then `body`, or then
+    /// only what changed since the snapshot the agent was shown last. `live` says whether the
+    /// result of a call is still in the agent's context.
+    pub fn revise(
+        &self,
+        (agent, tab, url): (&str, &str, &str),
+        (header, body): (&str, &str),
+        call_id: &str,
+        live: &dyn Fn(&str) -> bool,
+    ) -> String {
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (agent.to_string(), tab.to_string());
+        let change = shown
+            .get(&key)
+            .filter(|before| {
+                before.url == url && before.needs.len() < MAX_CHAIN && before.needs.iter().all(|id| live(id))
+            })
+            .map(|before| diff(&before.body, body));
+        let whole = |shown: &mut HashMap<(String, String), Shown>| {
+            shown.insert(
+                key.clone(),
+                Shown {
+                    url: url.to_string(),
+                    body: body.to_string(),
+                    needs: vec![call_id.to_string()],
+                },
+            );
+            format!("{header}{body}")
+        };
+        match change {
+            Some(Change::Same) => {
+                format!(
+                    "{header}(unchanged since your last snapshot of this tab; its refs are still valid)\n"
+                )
+            }
+            Some(Change::Diff(changes)) => {
+                if let Some(before) = shown.get_mut(&key) {
+                    before.body = body.to_string();
+                    before.needs.push(call_id.to_string());
+                }
+                format!("{header}{changes}")
+            }
+            Some(Change::Whole) | None => whole(&mut shown),
+        }
+    }
+}
+
+/// The shortest long side a scaled screenshot keeps: smaller than this and text on a page stops
+/// being legible.
+pub const MIN_SHOT_SIDE: u32 = 512;
+
+/// How a screenshot given to the model relates to the page it shows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShotFrame {
+    /// Size of the area shown, in page (CSS) pixels: what `click` and `hover` coordinates are
+    /// measured in, from the top left of the area.
+    pub page: (f64, f64),
+    /// Size of the image the model gets, in pixels.
+    pub shown: (u32, u32),
+}
+
+impl ShotFrame {
+    /// The frame of an `image`-sized screenshot of a `page`-sized area, shown at `scale` (from
+    /// 0.1 to 1) but never with a long side below [`MIN_SHOT_SIDE`] nor above `max_side`, and
+    /// never larger than the image was.
+    pub fn new(page: (f64, f64), image: (u32, u32), scale: f64, max_side: u32) -> Self {
+        let long = image.0.max(image.1);
+        let scale = if scale.is_finite() {
+            scale.clamp(0.1, 1.0)
+        } else {
+            1.0
+        };
+        let wanted = ((f64::from(long) * scale).round() as u32).max(MIN_SHOT_SIDE.min(long));
+        let side = wanted.min(long).min(max_side).max(1);
+        let shown = if long <= side {
+            image
+        } else {
+            let k = f64::from(side) / f64::from(long);
+            (
+                ((f64::from(image.0) * k).round() as u32).max(1),
+                ((f64::from(image.1) * k).round() as u32).max(1),
+            )
+        };
+        ShotFrame { page, shown }
+    }
+
+    /// The long side the image is scaled to (what to pass to `image_block`).
+    pub fn side(&self) -> u32 {
+        self.shown.0.max(self.shown.1)
+    }
+
+    /// The point of the page area that the point (`x`, `y`) of the shown image is.
+    pub fn to_page(&self, x: f64, y: f64) -> (f64, f64) {
+        (
+            x * self.page.0 / f64::from(self.shown.0.max(1)),
+            y * self.page.1 / f64::from(self.shown.1.max(1)),
+        )
+    }
+
+    /// Whether image pixels are page pixels, so that nothing needs saying.
+    pub fn is_identity(&self) -> bool {
+        (f64::from(self.shown.0) - self.page.0).abs() < 0.5
+            && (f64::from(self.shown.1) - self.page.1).abs() < 0.5
+    }
+
+    /// The line of the result that says which pixels `x` and `y` are measured in.
+    pub fn note(&self) -> String {
+        format!(
+            "the image is {}x{}, the window {}x{} page pixels: until the next screenshot of this tab, give `x` \
+             and `y` of click, hover and scroll in pixels of this image; they are scaled to the page",
+            self.shown.0,
+            self.shown.1,
+            self.page.0.round(),
+            self.page.1.round(),
+        )
+    }
 }
 
 /// What the `wait` action waits for.
@@ -549,5 +793,253 @@ mod tests {
         );
         assert!(parse_keys("F13").is_err());
         assert!(parse_keys("").is_err());
+    }
+
+    /// A list page of `items` rows, each a link and a button, the shape of a search result page.
+    fn list_page(items: &[(i64, &str)]) -> Vec<Value> {
+        let ids: Vec<String> = items.iter().map(|(dom, _)| format!("r{dom}")).collect();
+        let children: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut nodes = vec![node("1", None, "RootWebArea", "Results", &children, 1)];
+        for (dom, name) in items {
+            let (row, link, button) = (format!("r{dom}"), format!("l{dom}"), format!("b{dom}"));
+            nodes.push(node(&row, Some("1"), "listitem", "", &[&link, &button], dom * 10));
+            nodes.push(node(&link, Some(&row), "link", name, &[], dom * 10 + 1));
+            nodes.push(node(
+                &button,
+                Some(&row),
+                "button",
+                "Add to cart",
+                &[],
+                dom * 10 + 2,
+            ));
+        }
+        nodes
+    }
+
+    fn rows(n: i64) -> Vec<(i64, String)> {
+        (1..=n).map(|i| (i, format!("Product number {i}"))).collect()
+    }
+
+    fn page_of(rows: &[(i64, String)]) -> Vec<Value> {
+        let items: Vec<(i64, &str)> = rows.iter().map(|(d, n)| (*d, n.as_str())).collect();
+        list_page(&items)
+    }
+
+    #[test]
+    fn refs_keep_their_numbers_and_new_elements_get_numbers_never_given_before() {
+        let first = snapshot_with(&page_of(&rows(3)), None, 0);
+        let button_2 = first
+            .refs
+            .iter()
+            .find(|(_, dom)| **dom == 22)
+            .map(|(n, _)| *n)
+            .unwrap();
+        // Row 1 goes, row 4 comes.
+        let mut later = rows(4);
+        later.remove(0);
+        let second = snapshot_with(&page_of(&later), Some(&first.refs), 7);
+        assert_eq!(second.refs[&button_2], 22, "the same element keeps its ref");
+        let highest_before = *first.refs.keys().max().unwrap();
+        for (number, dom) in &second.refs {
+            if !first.refs.values().any(|d| d == dom) {
+                assert!(*number > highest_before.max(7), "e{number} was given before");
+            }
+        }
+        // Refs of the gone row are not handed to anything else.
+        for (number, dom) in &first.refs {
+            if let Some(now) = second.refs.get(number) {
+                assert_eq!(now, dom);
+            }
+        }
+    }
+
+    #[test]
+    fn a_diff_of_the_same_page_is_same() {
+        let shot = snapshot(&page_of(&rows(10))).text;
+        assert_eq!(diff(&shot, &shot), Change::Same);
+    }
+
+    #[test]
+    fn a_diff_shows_an_added_node_with_its_ref() {
+        let before = snapshot_with(&page_of(&rows(10)), None, 0);
+        let after = snapshot_with(&page_of(&rows(11)), Some(&before.refs), 0);
+        let Change::Diff(text) = diff(&before.text, &after.text) else {
+            panic!("{:?}", diff(&before.text, &after.text));
+        };
+        assert!(
+            text.contains("+ ") && text.contains("Product number 11"),
+            "{text}"
+        );
+        assert!(!text.contains("Product number 3\""), "{text}");
+        assert!(!text.contains("\n- "), "{text}");
+        assert!(text.len() < after.text.len() / 3);
+    }
+
+    #[test]
+    fn a_diff_shows_a_removed_node_and_a_changed_one() {
+        let before = snapshot_with(&page_of(&rows(10)), None, 0);
+        let mut later = rows(10);
+        later.remove(4);
+        later[0].1 = "Product number 1 (sold out)".into();
+        let after = snapshot_with(&page_of(&later), Some(&before.refs), 0);
+        let Change::Diff(text) = diff(&before.text, &after.text) else {
+            panic!("no diff");
+        };
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("- ") && l.contains("Product number 5")),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.starts_with("~ ") && l.contains("Product number 1 (sold out)")),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_page_that_changed_by_more_than_half_is_sent_whole() {
+        let before = snapshot(&page_of(&rows(4))).text;
+        let other: Vec<(i64, String)> = (50..58).map(|i| (i, format!("Other {i}"))).collect();
+        let after = snapshot(&page_of(&other)).text;
+        assert_eq!(diff(&before, &after), Change::Whole);
+    }
+
+    #[test]
+    fn baselines_send_changes_only_while_the_last_snapshot_is_in_context() {
+        let baselines = Baselines::default();
+        let before = snapshot_with(&page_of(&rows(10)), None, 0);
+        let after = snapshot_with(&page_of(&rows(11)), Some(&before.refs), 0);
+        let page = ("lead", "T1", "http://shop/list");
+        let all = |_: &str| true;
+        let first = baselines.revise(page, ("tab-1 · x\n", &before.text), "c1", &all);
+        assert_eq!(first, format!("tab-1 · x\n{}", before.text));
+        let same = baselines.revise(page, ("", &before.text), "c2", &all);
+        assert!(same.contains("unchanged"), "{same}");
+        let changed = baselines.revise(page, ("", &after.text), "c3", &all);
+        assert!(changed.starts_with("(the page changed") && changed.len() < after.text.len() / 3);
+
+        // The full snapshot c1 was elided or compacted away: the whole snapshot again.
+        let lost = |id: &str| id != "c1";
+        let whole = baselines.revise(page, ("", &after.text), "c4", &lost);
+        assert_eq!(whole, after.text);
+        // From c4 on, changes are against c4.
+        let only_c4 = |id: &str| id == "c4";
+        assert!(
+            baselines
+                .revise(page, ("", &after.text), "c5", &only_c4)
+                .contains("unchanged")
+        );
+
+        // Another URL, another agent and another tab start from a whole snapshot.
+        assert_eq!(
+            baselines.revise(("lead", "T1", "http://shop/other"), ("", &after.text), "c6", &all),
+            after.text
+        );
+        assert_eq!(
+            baselines.revise(
+                ("scout", "T1", "http://shop/other"),
+                ("", &after.text),
+                "c7",
+                &all
+            ),
+            after.text
+        );
+        assert_eq!(
+            baselines.revise(("lead", "T2", "http://shop/other"), ("", &after.text), "c8", &all),
+            after.text
+        );
+    }
+
+    #[test]
+    fn a_long_chain_of_changes_ends_in_a_whole_snapshot() {
+        let baselines = Baselines::default();
+        let page = ("lead", "T1", "u");
+        let all = |_: &str| true;
+        let mut previous = snapshot_with(&page_of(&rows(20)), None, 0);
+        baselines.revise(page, ("", &previous.text), "c0", &all);
+        let mut wholes = 0;
+        for n in 21..=(21 + MAX_CHAIN as i64) {
+            let next = snapshot_with(&page_of(&rows(n)), Some(&previous.refs), 0);
+            let sent = baselines.revise(page, ("", &next.text), &format!("c{n}"), &all);
+            if sent == next.text {
+                wholes += 1;
+            }
+            previous = next;
+        }
+        assert_eq!(wholes, 1);
+    }
+
+    #[test]
+    fn a_scaled_screenshot_maps_its_positions_back_to_page_pixels() {
+        // A 1280x800 window on a screen with two device pixels to a page pixel.
+        let frame = ShotFrame::new((1280.0, 800.0), (2560, 1600), 0.5, 1568);
+        assert_eq!(frame.shown, (1280, 800));
+        assert!(frame.is_identity());
+        let frame = ShotFrame::new((1280.0, 800.0), (1280, 800), 0.5, 1568);
+        assert_eq!(frame.shown, (640, 400));
+        assert_eq!(frame.to_page(320.0, 200.0), (640.0, 400.0));
+        assert_eq!(frame.to_page(0.0, 0.0), (0.0, 0.0));
+        assert_eq!(frame.to_page(640.0, 400.0), (1280.0, 800.0));
+        assert!(frame.note().contains("640x400"));
+        // Never below the minimum long side, nor above what the image was.
+        let small = ShotFrame::new((800.0, 600.0), (800, 600), 0.25, 1568);
+        assert_eq!(small.side(), MIN_SHOT_SIDE);
+        assert_eq!(small.shown, (512, 384));
+        let (x, y) = small.to_page(256.0, 192.0);
+        assert!((x - 400.0).abs() < 1e-9 && (y - 300.0).abs() < 1e-9);
+        assert_eq!(
+            ShotFrame::new((300.0, 200.0), (300, 200), 0.1, 1568).shown,
+            (300, 200)
+        );
+        // Scale 1 keeps the image as it was, up to the model's largest side.
+        assert_eq!(
+            ShotFrame::new((1280.0, 800.0), (1280, 800), 1.0, 1568).shown,
+            (1280, 800)
+        );
+        assert_eq!(
+            ShotFrame::new((4000.0, 1000.0), (4000, 1000), 1.0, 1568).shown,
+            (1568, 392)
+        );
+    }
+
+    /// Estimated tokens: characters / 4 for text, ⌈w/28⌉×⌈h/28⌉ for an image.
+    fn tokens_text(text: &str) -> usize {
+        text.len().div_ceil(4)
+    }
+
+    fn tokens_image((w, h): (u32, u32)) -> u32 {
+        w.div_ceil(28) * h.div_ceil(28)
+    }
+
+    /// Prints what the two browser settings save on a fixture page (`--nocapture` shows it).
+    #[test]
+    fn measure_what_scaling_and_diffs_save() {
+        let full = ShotFrame::new((1280.0, 800.0), (1280, 800), 1.0, 1568);
+        let half = ShotFrame::new((1280.0, 800.0), (1280, 800), 0.5, 1568);
+        let (big, small) = (tokens_image(full.shown), tokens_image(half.shown));
+        println!(
+            "screenshot 1280x800: scale 1.0 {:?} ~{big} tokens; scale 0.5 {:?} ~{small} tokens",
+            full.shown, half.shown
+        );
+        assert!(small * 3 < big);
+
+        let baselines = Baselines::default();
+        let all = |_: &str| true;
+        let first = snapshot_with(&page_of(&rows(40)), None, 0);
+        baselines.revise(("lead", "T", "u"), ("", &first.text), "c1", &all);
+        // After a click: one product sold out, one more loaded.
+        let mut later = rows(41);
+        later[2].1 = "Product number 3 (in cart)".into();
+        let second = snapshot_with(&page_of(&later), Some(&first.refs), 0);
+        let sent = baselines.revise(("lead", "T", "u"), ("", &second.text), "c2", &all);
+        println!(
+            "second snapshot of a 40-row page: full {} bytes ~{} tokens; diff {} bytes ~{} tokens",
+            second.text.len(),
+            tokens_text(&second.text),
+            sent.len(),
+            tokens_text(&sent)
+        );
+        assert!(sent.len() * 5 < second.text.len());
     }
 }

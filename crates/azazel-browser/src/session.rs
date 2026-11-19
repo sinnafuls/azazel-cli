@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use azazel_ai::services::{self, Service};
 use azazel_ai::{Block, ServiceStore};
-use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
+use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_size};
 use azazel_core::{ArtifactStore, UiBridge, UiError};
 use base64::Engine;
 use process_wrap::tokio::ChildWrapper;
@@ -18,7 +18,7 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
 use crate::launch::{LEFT_AT_ONCE, NOT_FOUND, find_binary, launch};
-use crate::page::{self, Condition, Key};
+use crate::page::{self, Baselines, Condition, Key, ShotFrame};
 
 pub const NO_TAB: &str = "no tab is open; use the `open` action first";
 
@@ -54,6 +54,22 @@ pub struct Settings {
     pub headless: bool,
     /// The user data directory the browser runs on.
     pub profile: PathBuf,
+    /// `[browser] screenshot_scale`: below 1, screenshots are scaled down and `x`,`y` are taken in
+    /// pixels of the last screenshot.
+    pub screenshot_scale: f64,
+    /// `[browser] snapshot_diff`: refs keep their numbers within a tab, and a snapshot of the page
+    /// the agent last saw is sent as what changed.
+    pub snapshot_diff: bool,
+}
+
+/// A snapshot an action returned: what [`Baselines::revise`] needs to send only what changed.
+#[derive(Debug, Clone)]
+pub(crate) struct Taken {
+    target: String,
+    url: String,
+    /// The text of the result before the snapshot.
+    header: String,
+    body: String,
 }
 
 /// The input of the `browser` tool.
@@ -197,6 +213,11 @@ struct Tab {
     session: String,
     /// Refs of the last snapshot of this tab.
     refs: HashMap<u32, i64>,
+    /// The highest ref number given in this tab, so that none is given twice.
+    numbered: u32,
+    /// How the last scaled screenshot of the viewport each agent was given relates to the page:
+    /// that agent's `x`,`y` are read in it. Per agent, since another agent was shown another image.
+    frames: HashMap<String, ShotFrame>,
 }
 
 /// What an action acts on.
@@ -220,6 +241,14 @@ struct Running {
     shots: u32,
     /// Whether the browser runs without a window.
     headless: bool,
+    /// `[browser] screenshot_scale`.
+    scale: f64,
+    /// Refs keep their numbers between snapshots of a tab (`[browser] snapshot_diff`).
+    stable_refs: bool,
+    /// The snapshot the action running now returned.
+    taken: Option<Taken>,
+    /// The agent whose action runs now.
+    agent: String,
 }
 
 /// `(target id, URL)` of the pages in a `Target.getTargets` reply.
@@ -238,6 +267,27 @@ fn page_targets(reply: &Value) -> Vec<(&str, &str)> {
 /// browser's own interface (`chrome://…`, `edge://…` dialogs).
 fn web_page(url: &str) -> bool {
     url == "about:blank" || page::host_of(url).is_some()
+}
+
+/// `bytes`, a screenshot of a `page`-sized area, as an image block scaled by `scale`, with the
+/// frame that maps positions in it back to the page.
+fn scaled_shot(bytes: &[u8], page: (f64, f64), scale: f64) -> Result<(Block, ShotFrame), String> {
+    let size = image_size(bytes).ok_or("the browser returned an unreadable screenshot")?;
+    let page = if page.0 > 0.0 && page.1 > 0.0 {
+        page
+    } else {
+        (f64::from(size.0), f64::from(size.1))
+    };
+    let mut frame = ShotFrame::new(page, size, scale, MAX_IMAGE_SIDE);
+    let image = image_block(bytes, frame.side())?;
+    // The image as encoded, which rounding may leave a pixel off what was asked for.
+    if let Block::Image { data, .. } = &image
+        && let Ok(png) = base64::engine::general_purpose::STANDARD.decode(data)
+        && let Some(shown) = image_size(&png)
+    {
+        frame.shown = shown;
+    }
+    Ok((image, frame))
 }
 
 impl Running {
@@ -272,6 +322,10 @@ impl Running {
             named: 0,
             shots: 0,
             headless,
+            scale: settings.screenshot_scale,
+            stable_refs: settings.snapshot_diff,
+            taken: None,
+            agent: String::new(),
         })
     }
 
@@ -474,6 +528,8 @@ impl Running {
             target: target.to_string(),
             session,
             refs: HashMap::new(),
+            numbered: 0,
+            frames: HashMap::new(),
         });
         Ok(self.tabs.len() - 1)
     }
@@ -612,13 +668,37 @@ impl Running {
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        let shot = page::snapshot(&nodes);
-        self.tabs[index].refs = shot.refs;
+        let tab = &mut self.tabs[index];
+        let shot = if self.stable_refs {
+            page::snapshot_with(&nodes, Some(&tab.refs), tab.numbered)
+        } else {
+            page::snapshot(&nodes)
+        };
+        tab.numbered = tab.numbered.max(shot.refs.keys().max().copied().unwrap_or(0));
+        tab.refs = shot.refs;
         Ok(if shot.text.is_empty() {
             "(the page has no accessible content)\n".to_string()
         } else {
             shot.text
         })
+    }
+
+    /// `header` and a snapshot of tab `index`, remembered as what this action returned.
+    async fn snapshot_taken(&mut self, index: usize, header: String) -> Result<String, String> {
+        let body = self.snapshot(index).await?;
+        let session = self.tabs[index].session.clone();
+        let url = match self.evaluate(&session, "location.href").await {
+            Ok(Value::String(url)) => url,
+            _ => String::new(),
+        };
+        let text = format!("{header}{body}");
+        self.taken = Some(Taken {
+            target: self.tabs[index].target.clone(),
+            url,
+            header,
+            body,
+        });
+        Ok(text)
     }
 
     /// What `ref`, `selector` or `x`,`y` of the input point at; `None` when none is given.
@@ -654,7 +734,14 @@ impl Running {
             return Ok(Some(Target::Node(json!({ "objectId": object }))));
         }
         match (input.x, input.y) {
-            (Some(x), Some(y)) => Ok(Some(Target::Point(x, y))),
+            // After a scaled screenshot the model reads positions off the image.
+            (Some(x), Some(y)) => {
+                let (x, y) = tab
+                    .frames
+                    .get(&self.agent)
+                    .map_or((x, y), |frame| frame.to_page(x, y));
+                Ok(Some(Target::Point(x, y)))
+            }
             (None, None) => Ok(None),
             _ => Err("give both `x` and `y`".to_string()),
         }
@@ -840,10 +927,54 @@ impl Running {
         let path = store
             .save(&name, &bytes)
             .map_err(|e| format!("could not save {name}: {e}"))?;
-        let image = tokio::task::spawn_blocking(move || image_block(&bytes, MAX_IMAGE_SIDE))
+        let saved = format!("saved {}", path.display());
+        let scale = self.scale;
+        if scale.is_nan() || scale >= 1.0 {
+            let image = tokio::task::spawn_blocking(move || image_block(&bytes, MAX_IMAGE_SIDE))
+                .await
+                .map_err(|e| e.to_string())??;
+            return Ok(vec![Block::text(saved), image]);
+        }
+        let area = match clip {
+            Some((_, _, width, height)) => (width, height),
+            None => {
+                // The window as the screenshot shows it, scrollbars included.
+                match self.evaluate(&session, "[innerWidth, innerHeight]").await {
+                    Ok(Value::Array(size)) if size.len() == 2 => {
+                        (size[0].as_f64().unwrap_or(0.0), size[1].as_f64().unwrap_or(0.0))
+                    }
+                    _ => (0.0, 0.0),
+                }
+            }
+        };
+        let (image, frame) = tokio::task::spawn_blocking(move || scaled_shot(&bytes, area, scale))
             .await
             .map_err(|e| e.to_string())??;
-        Ok(vec![Block::text(format!("saved {}", path.display())), image])
+        let note = if clip.is_some() {
+            format!(
+                "the image is {}x{}, scaled from {}x{} page pixels",
+                frame.shown.0,
+                frame.shown.1,
+                area.0.round(),
+                area.1.round()
+            )
+        } else {
+            // Positions in a shot of the viewport are what click, hover and scroll are given next.
+            let identity = frame.is_identity();
+            let frames = &mut self.tabs[index].frames;
+            if identity {
+                frames.remove(&self.agent);
+            } else {
+                frames.insert(self.agent.clone(), frame);
+            }
+            if identity { String::new() } else { frame.note() }
+        };
+        let text = if note.is_empty() {
+            saved
+        } else {
+            format!("{saved}\n{note}")
+        };
+        Ok(vec![Block::text(text), image])
     }
 
     /// Drops tabs whose page is gone and adopts pages the browser opened by itself (pop-ups, links
@@ -919,8 +1050,8 @@ impl Running {
                 let line = self
                     .go(&self.tabs[index].session, "Page.navigate", json!({ "url": url }))
                     .await?;
-                let snapshot = self.snapshot(index).await?;
-                text(format!("tab {} · {line}\n{snapshot}", self.tabs[index].name))
+                let header = format!("tab {} · {line}\n", self.tabs[index].name);
+                text(self.snapshot_taken(index, header).await?)
             }
             "tabs" => text(self.list_tabs().await?),
             "close" => {
@@ -964,7 +1095,7 @@ impl Running {
                             .await?,
                         )
                     }
-                    "snapshot" => text(self.snapshot(index).await?),
+                    "snapshot" => text(self.snapshot_taken(index, String::new()).await?),
                     "click" | "hover" => {
                         let target = self
                             .target(index, input)
@@ -1067,6 +1198,8 @@ impl Running {
                         let metrics = json!({ "width": width, "height": height, "deviceScaleFactor": 1, "mobile": false });
                         self.call(&session, "Emulation.setDeviceMetricsOverride", metrics)
                             .await?;
+                        // The last screenshot no longer shows the window as it is.
+                        self.tabs[index].frames.clear();
                         text(format!("viewport is {width}×{height}"))
                     }
                     "console" => {
@@ -1118,6 +1251,10 @@ pub struct BrowserSession {
     logins: Option<Arc<ServiceStore>>,
     /// The passwords typed into pages so far: no result shows them.
     typed: Mutex<Vec<String>>,
+    /// The snapshots calls returned, by call id, until [`BrowserSession::revise`] takes them.
+    taken: Mutex<HashMap<String, Taken>>,
+    /// What each agent was last shown of each tab.
+    baselines: Baselines,
 }
 
 impl BrowserSession {
@@ -1127,6 +1264,8 @@ impl BrowserSession {
             state: tokio::sync::Mutex::new(None),
             logins: None,
             typed: Mutex::default(),
+            taken: Mutex::default(),
+            baselines: Baselines::default(),
         }
     }
 
@@ -1138,11 +1277,71 @@ impl BrowserSession {
 
     /// Carries out one action; actions run one at a time. `artifacts` is where screenshots go.
     pub async fn act(&self, input: Input, artifacts: Option<&ArtifactStore>) -> Result<Vec<Block>, String> {
-        let done = self.perform(input, artifacts).await;
+        self.act_as("", None, input, artifacts).await
+    }
+
+    /// [`BrowserSession::act`] for call `call_id`, whose snapshot [`BrowserSession::revise`] may
+    /// shorten afterwards.
+    pub async fn act_as(
+        &self,
+        agent: &str,
+        call_id: Option<&str>,
+        input: Input,
+        artifacts: Option<&ArtifactStore>,
+    ) -> Result<Vec<Block>, String> {
+        let done = self.perform(agent, call_id, input, artifacts).await;
         self.without_passwords(done)
     }
 
-    async fn perform(&self, input: Input, artifacts: Option<&ArtifactStore>) -> Result<Vec<Block>, String> {
+    /// Keeps the snapshot `running` took for `call_id`.
+    fn keep_taken(&self, call_id: Option<&str>, running: &mut Running) {
+        let taken = running.taken.take();
+        if let (Some(id), Some(taken), true) = (call_id, taken, self.settings.snapshot_diff) {
+            self.taken
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(id.to_string(), taken);
+        }
+    }
+
+    /// The result of call `call_id` of `agent` with its snapshot cut to what changed since the
+    /// snapshot of the same page `agent` was shown last, when that one is still in its context
+    /// (`live`). Called once per call, when its result is produced.
+    pub fn revise(&self, agent: &str, call_id: &str, live: &dyn Fn(&str) -> bool, output: &mut [Block]) {
+        let Some(taken) = self
+            .taken
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(call_id)
+        else {
+            return;
+        };
+        let [Block::Text { text }] = output else {
+            return;
+        };
+        let typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
+        // Between the call and now, hooks and `[tools] redact_output` may have changed the result;
+        // a text rebuilt from the snapshot would bring back what they took out, so it stays as is.
+        let produced = format!("{}{}", taken.header, taken.body);
+        if *text != services::scrub(&produced, &typed) {
+            return;
+        }
+        let revised = self.baselines.revise(
+            (agent, &taken.target, &taken.url),
+            (&taken.header, &taken.body),
+            call_id,
+            live,
+        );
+        *text = services::scrub(&revised, &typed).into_owned();
+    }
+
+    async fn perform(
+        &self,
+        agent: &str,
+        call_id: Option<&str>,
+        input: Input,
+        artifacts: Option<&ArtifactStore>,
+    ) -> Result<Vec<Block>, String> {
         let mut state = self.state.lock().await;
         // The user closed the window, or the browser crashed: start over.
         if state.as_ref().is_some_and(|running| running.cdp.is_closed()) {
@@ -1171,7 +1370,11 @@ impl BrowserSession {
             }
             return Ok(vec![Block::text(said)]);
         }
-        running.act(&input, artifacts).await
+        running.taken = None;
+        running.agent = agent.to_string();
+        let done = running.act(&input, artifacts).await;
+        self.keep_taken(call_id, running);
+        done
     }
 
     /// `done` without the passwords `fill_login` typed, whatever the page did with them.
@@ -1215,7 +1418,18 @@ impl BrowserSession {
     /// same tabs, `ui` asks the user to do what `reason` says, and when the user answers the
     /// agent gets the tabs and the page as they are then.
     pub async fn handoff(&self, input: &Input, ui: &dyn UiBridge) -> Result<Vec<Block>, String> {
-        let done = self.hand_over(input, ui, false).await;
+        self.handoff_as("", None, input, ui).await
+    }
+
+    /// [`BrowserSession::handoff`] for call `call_id`; see [`BrowserSession::act_as`].
+    pub async fn handoff_as(
+        &self,
+        agent: &str,
+        call_id: Option<&str>,
+        input: &Input,
+        ui: &dyn UiBridge,
+    ) -> Result<Vec<Block>, String> {
+        let done = self.hand_over(agent, call_id, input, ui, false).await;
         self.without_passwords(done)
     }
 
@@ -1223,6 +1437,8 @@ impl BrowserSession {
     /// has no screen to show a window on.
     async fn hand_over(
         &self,
+        agent: &str,
+        call_id: Option<&str>,
         input: &Input,
         ui: &dyn UiBridge,
         headless: bool,
@@ -1260,6 +1476,7 @@ impl BrowserSession {
                 tab: input.tab.clone(),
                 ..Input::default()
             };
+            running.agent = agent.to_string();
             running.act(&go, None).await?;
         }
         if let Ok(index) = running.tab(input.tab.as_deref()) {
@@ -1297,8 +1514,10 @@ impl BrowserSession {
         said.push_str(&running.list_tabs().await?);
         if let Ok(index) = running.tab(None) {
             let line = running.page_line(&running.tabs[index].session).await;
-            let snapshot = running.snapshot(index).await?;
-            said.push_str(&format!("tab {} · {line}\n{snapshot}", running.tabs[index].name));
+            said.push_str(&format!("tab {} · {line}\n", running.tabs[index].name));
+            running.taken = None;
+            said = running.snapshot_taken(index, said).await?;
+            self.keep_taken(call_id, running);
         }
         Ok(vec![Block::text(said)])
     }
@@ -1322,6 +1541,66 @@ mod tests {
             session: Some("S".into()),
             method: method.into(),
             params,
+        }
+    }
+
+    #[test]
+    fn a_result_changed_after_the_call_is_never_rebuilt_from_its_snapshot() {
+        let session = BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: PathBuf::new(),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
+        });
+        let take = |call: &str, body: &str| {
+            session.taken.lock().unwrap().insert(
+                call.to_string(),
+                Taken {
+                    target: "T".into(),
+                    url: "http://x/".into(),
+                    header: "tab-1 · x\n".into(),
+                    body: body.to_string(),
+                },
+            );
+        };
+        let live = |_: &str| true;
+        let secret = "sk-ant-api03-SECRETSECRETSECRET";
+        let hidden = "[redacted:anthropic key]";
+        let first = "- heading \"Keys\"\n- button \"Copy\" [ref=e1]\n";
+        take("c1", first);
+        let mut output = vec![Block::text(format!("tab-1 · x\n{first}"))];
+        session.revise("lead", "c1", &live, &mut output);
+        // The next snapshot shows a key, which `[tools] redact_output` hid before shaping.
+        let second = format!("{first}- text \"{secret}\"\n");
+        take("c2", &second);
+        let redacted = format!("tab-1 · x\n{}", second.replace(secret, hidden));
+        let mut output = vec![Block::text(redacted.clone())];
+        session.revise("lead", "c2", &live, &mut output);
+        assert_eq!(text_of_blocks(&output), redacted);
+        // A later snapshot with the key still on the page does not bring it back as a change.
+        let third = format!("{second}- button \"Done\" [ref=e2]\n");
+        take("c3", &third);
+        let mut output = vec![Block::text(format!(
+            "tab-1 · x\n{}",
+            third.replace(secret, hidden)
+        ))];
+        session.revise("lead", "c3", &live, &mut output);
+        let sent = text_of_blocks(&output);
+        assert!(!sent.contains(secret) && sent.contains(hidden), "{sent}");
+        // An unchanged result is still cut to what changed.
+        let fourth = format!("{first}- link \"More\" [ref=e3]\n");
+        take("c4", &fourth);
+        let mut output = vec![Block::text(format!("tab-1 · x\n{fourth}"))];
+        session.revise("lead", "c4", &live, &mut output);
+        let sent = text_of_blocks(&output);
+        assert!(!sent.contains(secret), "{sent}");
+    }
+
+    fn text_of_blocks(blocks: &[Block]) -> String {
+        match blocks {
+            [Block::Text { text }] => text.clone(),
+            _ => panic!("{blocks:?}"),
         }
     }
 
@@ -1477,6 +1756,8 @@ mod tests {
             path: String::new(),
             headless: true,
             profile: dir.path().join("profile"),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
         });
         let browser = &session;
         let act = |input: Input| async move { text(browser.act(input, None).await.unwrap()) };
@@ -1511,7 +1792,7 @@ mod tests {
         };
         let back = text(
             session
-                .hand_over(&handoff(Some("Sign in to the fixture")), &user, true)
+                .hand_over("", None, &handoff(Some("Sign in to the fixture")), &user, true)
                 .await
                 .unwrap(),
         );
@@ -1548,14 +1829,14 @@ mod tests {
         };
         assert_eq!(
             session
-                .hand_over(&handoff(Some("Solve the CAPTCHA")), &declining, true)
+                .hand_over("", None, &handoff(Some("Solve the CAPTCHA")), &declining, true)
                 .await
                 .unwrap_err(),
             "the user declined to take over the browser"
         );
         assert!(
             session
-                .hand_over(&handoff(None), &user, true)
+                .hand_over("", None, &handoff(None), &user, true)
                 .await
                 .unwrap_err()
                 .contains("needs `reason`")
@@ -1575,12 +1856,14 @@ mod tests {
             path: String::new(),
             headless: true,
             profile: dir.path().join("other-profile"),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
         });
         let start = Input {
             url: Some(format!("{site}/start")),
             ..handoff(Some("Accept the terms"))
         };
-        let back = text(fresh.hand_over(&start, &user, true).await.unwrap());
+        let back = text(fresh.hand_over("", None, &start, &user, true).await.unwrap());
         assert_eq!(
             back.lines().nth(1),
             Some(format!("* tab-1 · fixture · {site}/start").as_str()),

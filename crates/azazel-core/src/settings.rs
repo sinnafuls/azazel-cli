@@ -12,9 +12,9 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
-    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PasteMode, PatchMode, PermissionMode,
-    ProcessPriority, QueueMode, ReadGuard, RemoteAccess, SessionResume, StatusPreset, StatusSeparator,
-    TelemetryExporter, ToolStyle, WorktreeTarget, WriteSeverity,
+    DigestMode, EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, ModelRouting, PasteMode,
+    PatchMode, PermissionMode, ProcessPriority, QueueMode, ReadGuard, RemoteAccess, SessionResume,
+    StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WorktreeTarget, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -250,6 +250,8 @@ settings! {
         "cache.warm_minutes": Number, "Warm for", "Minutes after the lead's last request the cache is kept warm.";
         "cache.report_misses": Switch, "Report cache misses",
             "Say in the transcript when a request misses the cached prefix, and why.";
+        "cache.suggest_handoff_at": Number, "Suggest a handoff before the cache cools",
+            "Context size in tokens above which /handoff or /compact is suggested a minute before a warm cache runs out; 0 never.";
     }
     Appearance / "Interface" {
         "tui.theme": Theme, "Theme",
@@ -369,6 +371,14 @@ settings! {
             "Who gets the patch tool: auto gives it instead of edit to OpenAI GPT and Codex models, on to every model.";
         "tools.redact_output": Switch, "Redact secrets for the model",
             "Replace secrets in tool results with [redacted:<kind>] before the model and the session file get them.";
+        "tools.slim_results": Switch, "Slim JSON results",
+            "Drop avatars, HTML copies, colours, empty fields and API URLs from large JSON results of MCP tools and web fetches.";
+        "tools.digest": Choice(DigestMode::NAMES), "Digest large results",
+            "smol: a large MCP, web or PDF result is replaced by notes from the smol role, with the full text saved to a file.";
+        "tools.digest_min_chars": Number, "Digest above (characters)",
+            "Characters of an MCP or web result above which it is digested.";
+        "tools.digest_min_pages": Number, "Digest above (PDF pages)",
+            "Pages of a PDF read above which it is digested.";
     }
     Tools / "After a write" {
         "tools.format_on_write": Switch, "Format on write",
@@ -417,6 +427,10 @@ settings! {
             "Under auto, search through the lead model's provider first when it has a search tool.";
         "browser.path": Text, "Browser program", "The browser binary; empty looks for Chrome, Chromium, Edge or Brave.";
         "browser.headless": Switch, "Headless browser", "Run the browser without a window.";
+        "browser.screenshot_scale": Number, "Screenshot scale",
+            "Scale screenshots by this (0.1 to 1) before the model gets them, never below 512 pixels on the long side; 0.5 saves about three quarters.";
+        "browser.snapshot_diff": Switch, "Snapshot changes only",
+            "A new snapshot of the page the agent's last snapshot showed sends only the lines that changed.";
     }
     Tools / "Media" {
         "media.output_dir": Text, "Output directory", "Where generated files go, relative to the project.";
@@ -445,6 +459,8 @@ settings! {
             "A run cut off by a crash or a closed terminal continues when the session is opened again.";
         "session.branch_summary": Switch, "Summarise a branch you leave",
             "Going back with /tree has a small model tell the agent what happened on the branch you left.";
+        "session.handoff_at": Number, "Offer a handoff at",
+            "Context size in tokens at which /handoff is offered once per session; 0 never.";
     }
     Sessions / "Checkpoints" {
         "checkpoints.enabled": Switch, "Checkpoints", "Snapshot the project before each prompt, so /rewind can bring it back.";
@@ -502,6 +518,14 @@ settings! {
             "Where an agent in a worktree builds: shared (the main checkout's target/), own, or sccache (own, through sccache).";
         "team.max_turns": Number, "Sub-agent turn cap", "Requests per task for a sub-agent whose definition sets no limit; 0 is no limit.";
         "team.agent_retention_days": Number, "Keep finished agents (days)", "Finished sub-agents older than this leave the agent hub and their transcripts are deleted; 0 keeps them.";
+        "team.model_routing": Choice(ModelRouting::NAMES), "Sub-agent model routing",
+            "The smol role rates each sub-agent's task: suggest only records the model it would pick, auto uses it.";
+        "team.routing_fast": Text, "Model for mechanical tasks", "A model or @role for well-specified, local work.";
+        "team.routing_balanced": Text, "Model for ordinary tasks", "A model or @role for ordinary engineering work.";
+        "team.routing_deep": Text, "Model for hard tasks", "A model or @role for open design, unknown causes and irreversible actions.";
+        "team.allow_deep": Switch, "Route up to the hard-task model", "Off, routing never picks the model for hard tasks.";
+        "team.min_upgrade_confidence": Number, "Confidence to route up", "How sure the rating must be (0 to 1) to move an agent to a stronger model.";
+        "team.min_downgrade_confidence": Number, "Confidence to route down", "How sure the rating must be (0 to 1) to move an agent to a cheaper model.";
     }
     Advanced / "Schedules and loops" {
         "schedule.register": Switch, "Use the system scheduler",

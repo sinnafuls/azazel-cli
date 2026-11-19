@@ -237,20 +237,42 @@ impl Switched {
     }
 }
 
-/// The project's most recent session, for `-c`, or for the interactive UI when
-/// `[session] resume = "last"` and neither `--new` nor `--no-session` is given. `None` when
-/// neither asks for it, or the setting does and there is none: a new session starts then.
-fn latest_session(dir: &Path, cli: &Cli, resume: SessionResume) -> Result<Option<Open>> {
+/// The most recent session started in `folder` (the launch folder; any of the project's when
+/// `None`), for `-c`, or for the interactive UI when `[session] resume = "last"` and neither
+/// `--new` nor `--no-session` is given. `None` when neither asks for it, or the setting does and
+/// there is none: a new session starts then.
+fn latest_session(
+    dir: &Path,
+    folder: Option<&Path>,
+    cli: &Cli,
+    resume: SessionResume,
+) -> Result<Option<Open>> {
     let by_default = resume == SessionResume::Last && cli.interactive() && !cli.new && !cli.no_session;
     if !(cli.resume_latest || by_default) {
         return Ok(None);
     }
+    let mut sessions = SessionStore::list(dir);
+    if let Some(folder) = folder {
+        sessions = azazel_core::session::in_folder(sessions, folder);
+    }
     // An archived session (`-p --archived`) is not one to go on with.
-    match SessionStore::list(dir).into_iter().find(|s| !s.archived) {
+    match sessions.into_iter().find(|s| !s.archived) {
         Some(latest) => Ok(Some(Open::File(latest.path))),
+        None if cli.resume_latest && folder.is_some() => {
+            bail!(
+                "no session was started in this folder to continue; `--session <id>` opens one of the project's"
+            )
+        }
         None if cli.resume_latest => bail!("this project has no session to continue"),
         None => Ok(None),
     }
+}
+
+/// The id of the background session that has the session file `how` names open, when one does.
+fn background_host(home: &Path, how: &Open) -> Option<String> {
+    let Open::File(path) = how else { return None };
+    let id = SessionStore::open(path).ok()?.id();
+    running::host_of(home, &id)
 }
 
 /// A mistake in how azazel was called; the run exits with status 2.
@@ -507,7 +529,7 @@ pub fn mcp_manager(
     // Each server the project defines waits for the user's word; `--trust` gives it for this run.
     let trust = azazel_core::TrustStore::new(paths.trust_file());
     azazel_mcp::config::apply_approvals(&mut loaded, paths, &trust, approve_all);
-    let mut roots = vec![paths.project_root.clone()];
+    let mut roots = vec![paths.cwd.clone()];
     roots.extend(
         config
             .permissions
@@ -638,6 +660,11 @@ impl App {
             ..azazel_agent::ToolSettings::default()
         }));
         services.insert(Arc::new(azazel_agent::Deferral(config.tools.defer.clone())));
+        // Large JSON results lose their noise and, with `tools.digest`, large results become notes;
+        // decided once, when the result is produced.
+        if let Some(digester) = crate::digest::digester(&config, paths.cache_dir().join("digests")) {
+            services.insert(Arc::new(azazel_agent::Shaper(digester)));
+        }
         // How long a provider may stay silent; the providers extensions add read it from here.
         let stall = StallLimits::from_secs(config.retry.first_event_secs, config.retry.stall_secs);
         services.insert(Arc::new(stall));
@@ -890,6 +917,8 @@ impl App {
             path: config.browser.path.clone(),
             headless: config.browser.headless,
             profile: paths.browser_profile_dir(),
+            screenshot_scale: config.browser.screenshot_scale,
+            snapshot_diff: config.browser.snapshot_diff,
             logins: stored.clone(),
         })?;
         #[cfg(feature = "screen")]
@@ -1190,6 +1219,7 @@ impl App {
             max_result_bytes: config.tools.max_result_bytes,
             compaction: (&config.compaction).into(),
             posix_shell: shell.is_posix(),
+            routing: (&config.team).into(),
         }));
         services.insert(team.clone());
         let report = cli
@@ -1342,7 +1372,14 @@ impl App {
             // Read back from its file, like any session that was not open in this process.
             return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
-        Ok(latest_session(&dir, cli, self.config.session.resume)?.unwrap_or(Open::New))
+        let folder = self.paths.session_folder();
+        Ok(latest_session(&dir, folder, cli, self.config.session.resume)?.unwrap_or(Open::New))
+    }
+
+    /// The id of the background session that has the session `how` opens, when one does: such a
+    /// session is not opened a second time, it is attached to.
+    pub fn background_host(&self, how: &Open) -> Option<String> {
+        background_host(&self.paths.home, how)
     }
 
     /// Model names as typed (`fable`, `@smol`, `anthropic/claude-fable-5:high`) turned into a chain,
@@ -1895,8 +1932,13 @@ mod tests {
     /// What a start with `args` opens in a project whose sessions are in `dir`: the file of a
     /// session, `None` for a new one.
     fn opened(dir: &Path, args: &[&str], resume: SessionResume) -> Option<PathBuf> {
+        opened_in(dir, None, args, resume)
+    }
+
+    /// The same for a start in `folder` of the project.
+    fn opened_in(dir: &Path, folder: Option<&Path>, args: &[&str], resume: SessionResume) -> Option<PathBuf> {
         let cli = Cli::try_parse_from(std::iter::once("azazel").chain(args.iter().copied())).unwrap();
-        match latest_session(dir, &cli, resume).unwrap() {
+        match latest_session(dir, folder, &cli, resume).unwrap() {
             Some(Open::File(path)) => Some(path),
             Some(_) => panic!("not a session file"),
             None => None,
@@ -1910,7 +1952,7 @@ mod tests {
         // No session yet: a new one, without complaint; `-c` does complain.
         assert_eq!(opened(&sessions, &[], SessionResume::Last), None);
         let cli = Cli::try_parse_from(["azazel", "-c"]).unwrap();
-        assert!(latest_session(&sessions, &cli, SessionResume::Last).is_err());
+        assert!(latest_session(&sessions, None, &cli, SessionResume::Last).is_err());
 
         let store = SessionStore::create(&sessions, dir.path(), None).unwrap();
         store.append(EntryKind::SessionInfo {
@@ -1926,5 +1968,43 @@ mod tests {
         assert_eq!(opened(&sessions, &["-p", "-c", "hi"], SessionResume::New), latest);
         // `--new` with a flag that names a session is a mistake.
         assert!(Cli::try_parse_from(["azazel", "--new", "-c"]).is_err());
+    }
+
+    #[test]
+    fn a_session_open_in_the_background_is_attached_to_instead_of_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let store = SessionStore::create(&dir.path().join("sessions"), dir.path(), None).unwrap();
+        let latest = Open::File(store.path());
+        assert_eq!(background_host(&home, &latest), None);
+        assert_eq!(background_host(&home, &Open::New), None);
+
+        // A background session took it (as one a browser starts through `azazel remote` does).
+        let lock = running::lock_session(&home, &store.id()).unwrap();
+        let _alive = Lock::acquire(&running::host_lock(&home, "ab12"))
+            .unwrap()
+            .unwrap();
+        running::Entry {
+            id: "ab12".into(),
+            pid: 1,
+            session_id: store.id(),
+            session_file: store.path(),
+            cwd: dir.path().to_path_buf(),
+            name: None,
+            started: "2026-01-01T00:00:00Z".into(),
+            socket: "sock".into(),
+            version: "0".into(),
+            state: "idle".into(),
+            cost_usd: None,
+            mode: None,
+            args: Vec::new(),
+            interrupted_at: None,
+        }
+        .write(&home)
+        .unwrap();
+        assert_eq!(background_host(&home, &latest).as_deref(), Some("ab12"));
+        // Once it has ended, the session is opened here again.
+        drop(lock);
+        assert_eq!(background_host(&home, &latest), None);
     }
 }

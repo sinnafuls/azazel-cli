@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_remote::{
-    Access, Conn, Folder, FolderKind, Folders, Kind, NewSession, Options, Server, SessionInfo, Sessions,
-    StartError,
+    Access, Conn, Folder, FolderKind, Folders, Kind, NewSession, Options, SavedSession, Server, SessionInfo,
+    Sessions, StartError,
 };
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -108,11 +108,32 @@ impl Sessions for Fake {
         }
     }
 
-    /// Starts `s2` in `/work`; `/missing` does not exist and anything else is refused.
+    /// Two earlier sessions; a query keeps the one that mentions it.
+    async fn history(&self, query: Option<&str>) -> Result<Vec<SavedSession>, StartError> {
+        let saved = |id: &str, first: &str| SavedSession {
+            id: id.into(),
+            name: None,
+            cwd: "/work".into(),
+            created: "2026-11-14T10:00:00Z".into(),
+            updated: "2026-11-14T11:00:00Z".into(),
+            first_prompt: Some(first.into()),
+            messages: 4,
+            running: None,
+        };
+        let all = vec![saved("old1", "write the parser"), saved("old2", "fix the build")];
+        Ok(all
+            .into_iter()
+            .filter(|s| query.is_none_or(|q| s.first_prompt.as_deref().unwrap_or_default().contains(q)))
+            .collect())
+    }
+
+    /// Starts `s2` in `/work` (`s3` for a session that goes on with an earlier one); `/missing` does not exist and anything else is refused.
     async fn start(&self, new: NewSession) -> Result<String, StartError> {
         let cwd = new.cwd.clone();
+        let resumes = new.resume.is_some();
         self.started.lock().unwrap().push(new);
         match cwd.as_str() {
+            _ if resumes => Ok("s3".into()),
             "/work" => Ok("s2".into()),
             "/missing" => Err(StartError::Invalid("no such folder".into())),
             _ => Err(StartError::Refused("not open to browsers".into())),

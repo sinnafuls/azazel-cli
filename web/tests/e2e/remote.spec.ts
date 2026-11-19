@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test, expect, Stack, type Page } from './stack';
 
@@ -47,15 +47,30 @@ test('the chat shows the run and keeps streaming into it', async ({ page, manual
 	await page.getByRole('button', { name: 'Allow once' }).click();
 	await ranCleanly(page, manual);
 	await expect(page.locator('[data-request="approval"]')).toHaveCount(0);
-	// The write and the read that follows it are told as one run, which opens on its steps.
-	await page.getByRole('button', { name: /Created a file, read a file/ }).click();
-	const steps = page.locator('dialog[open]');
-	await expect(steps.getByRole('heading', { name: 'Created a file, read a file' })).toBeVisible();
-	await expect(steps.locator('[data-tool="write"]')).toHaveAttribute('data-status', 'done');
-	await steps.locator('[data-tool="write"]').click();
-	await expect(steps.getByRole('heading', { name: 'Changes' })).toBeVisible();
-	await steps.getByRole('button', { name: 'Back' }).click();
-	await expect(steps.locator('[data-tool="read"]')).toHaveAttribute('data-status', 'done');
+	// The write and the read that follows it are told as one run, which opens in place in the
+	// transcript into a card per call.
+	const row = page.getByRole('button', { name: /Created a file, read a file/ });
+	await expect(row).toHaveAttribute('aria-expanded', 'false');
+	await row.click();
+	await expect(row).toHaveAttribute('aria-expanded', 'true');
+	const steps = page.locator('[data-transcript] [data-steps="2"]');
+	const write = steps.locator('[data-tool="write"]');
+	await expect(write).toHaveAttribute('data-status', 'done');
+	// The card of the write names the file and shows what went into it, as an added line.
+	await expect(write.getByRole('heading', { name: 'hello.txt' })).toBeVisible();
+	await expect(write.locator('[data-line=add]')).toHaveCount(1);
+	await expect(write.locator('[data-line=add]')).toContainText('hello from azazel');
+	const read = steps.locator('[data-tool="read"]');
+	await expect(read).toHaveAttribute('data-status', 'done');
+	await expect(read.getByLabel('Output', { exact: true })).toContainText('hello from azazel');
+	// Nothing of a tool call opens beside the chat any more.
+	await expect(
+		page.getByRole('complementary', { name: 'Agents and usage' }).locator('[data-tool]')
+	).toHaveCount(0);
+	// The row closes its cards again.
+	await row.click();
+	await expect(row).toHaveAttribute('aria-expanded', 'false');
+	await expect(write).toBeHidden();
 });
 
 test('answering the approval on one tab closes it on the other', async ({ browser, manual }) => {
@@ -106,9 +121,10 @@ test('the model chip names the role the lead follows, and a role can be picked',
 	const chip = page.locator('[data-statusbar]').getByRole('button', { name: /^Model:/ });
 	await expect(chip).toHaveAccessibleName(/^Model: @\w+ \(mock\/lead\)$/);
 	await chip.click();
-	const roles = page.getByRole('list', { name: 'Roles' });
-	await expect(roles.getByRole('button', { name: /@default/ })).toBeVisible();
-	await roles.getByRole('button', { name: /@default/ }).click();
+	// The picker is a Command list: its roles are the options of the group headed "Roles".
+	const roles = page.getByRole('group', { name: 'Roles' });
+	await expect(roles.getByRole('option', { name: /@default/ })).toBeVisible();
+	await roles.getByRole('option', { name: /@default/ }).click();
 	await expect(chip).toHaveAccessibleName('Model: @default (mock/lead)');
 });
 
@@ -142,6 +158,41 @@ test('a new chat starts in a folder once the computer allows it', async ({ page 
 	}
 });
 
+test('an earlier session is resumed from the sidebar and takes a message', async ({ page }) => {
+	const stack = new Stack();
+	try {
+		// Earlier sessions are listed for the folders a browser may look into: the project is one.
+		await stack.start('auto', false, ['--set', `remote.folders=['${join(stack.dir, 'project')}']`]);
+		// The session ends and stays on disk; the one that continues it reads the script from its start.
+		stack.endSession();
+		writeFileSync(
+			join(stack.dir, 'script.json'),
+			JSON.stringify({ lead: [{ reply: { text: 'Picked up where we left off.' } }] })
+		);
+		await page.goto(stack.pair);
+		await page.getByRole('button', { name: 'Resume a session' }).first().click();
+		const sheet = page.getByRole('dialog', { name: 'Resume a session' });
+		const seen = stack.heardSoFar();
+		await sheet
+			.getByRole('list', { name: 'Earlier sessions' })
+			.getByRole('button', { name: /create hello/ })
+			.click();
+		// The folder of the earlier session is not trusted: the computer is asked, as for New chat.
+		await stack.heardLine('which is not trusted', seen);
+		stack.type('y');
+		await page.waitForURL(/\/s\/[^/]+$/);
+		await expect(page.getByRole('paragraph').filter({ hasText: FINAL })).toBeVisible();
+		const box = page.getByRole('combobox', { name: 'Message' });
+		await box.fill('are you still there?');
+		await box.press('Enter');
+		await expect(
+			page.getByRole('paragraph').filter({ hasText: 'Picked up where we left off.' })
+		).toBeVisible();
+	} finally {
+		await stack.stop();
+	}
+});
+
 /** Pairs, opens the only session and waits until its message box is there. */
 async function openSession(page: Page, stack: Stack) {
 	await page.goto(stack.pair);
@@ -153,7 +204,7 @@ async function openSession(page: Page, stack: Stack) {
 /** The settings window, opened with its shortcut. */
 async function openSettings(page: Page) {
 	await page.keyboard.press('Control+.');
-	const win = page.locator('dialog[data-settings]');
+	const win = page.locator('[role=dialog][data-settings]');
 	await expect(win).toBeVisible();
 	return win;
 }
@@ -189,7 +240,7 @@ test('a lone /word that is no command is not sent', async ({ page, auto }) => {
 	await box.press('Escape');
 	await box.press('Enter');
 	await expect(
-		page.getByRole('status').filter({ hasText: "/trust isn't a command" })
+		page.locator('[data-sonner-toast]', { hasText: "/trust isn't a command" })
 	).toBeVisible();
 	await expect(box).toHaveValue('/trust');
 	await expect(page.locator('[data-item="user"]', { hasText: '/' })).toHaveCount(0);
@@ -244,25 +295,26 @@ test('the sidebar folds with its shortcut and its button, and stays folded after
 	auto
 }) => {
 	await openSession(page, auto);
-	const side = page.locator('aside[data-sidebar]');
-	await expect(side).toHaveAttribute('data-sidebar', 'full');
+	// The shadcn Sidebar says whether it is folded to its rail of icons in `data-state`.
+	const side = page.locator('[data-slot="sidebar"][data-state]');
+	await expect(side).toHaveAttribute('data-state', 'expanded');
 
 	await page.keyboard.press('Control+Shift+S');
-	await expect(side).toHaveAttribute('data-sidebar', 'rail');
+	await expect(side).toHaveAttribute('data-state', 'collapsed');
 	await page.keyboard.press('Control+Shift+S');
-	await expect(side).toHaveAttribute('data-sidebar', 'full');
+	await expect(side).toHaveAttribute('data-state', 'expanded');
 
 	await side.getByRole('button', { name: 'Hide the sidebar' }).click();
-	await expect(side).toHaveAttribute('data-sidebar', 'rail');
+	await expect(side).toHaveAttribute('data-state', 'collapsed');
 	await page.reload();
 	await expect(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
-	await expect(side).toHaveAttribute('data-sidebar', 'rail');
+	await expect(side).toHaveAttribute('data-state', 'collapsed');
 
 	await side.getByRole('button', { name: 'Show the sidebar' }).click();
-	await expect(side).toHaveAttribute('data-sidebar', 'full');
+	await expect(side).toHaveAttribute('data-state', 'expanded');
 	await page.reload();
 	await expect(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
-	await expect(side).toHaveAttribute('data-sidebar', 'full');
+	await expect(side).toHaveAttribute('data-state', 'expanded');
 });
 
 test('a view link watches: no way to send, and settings stay read-only', async ({
@@ -285,7 +337,7 @@ test('a view link watches: no way to send, and settings stay read-only', async (
 		await expect(page.getByRole('paragraph').filter({ hasText: FINAL })).toBeVisible();
 		const box = page.getByRole('combobox', { name: 'Message' });
 		await expect(box).toBeDisabled();
-		await expect(box).toHaveAttribute('placeholder', 'View link: you can watch but not send.');
+		await expect(box).toHaveAttribute('placeholder', 'View link: you can watch but not send');
 
 		const win = await openSettings(page);
 		await win.getByRole('tab', { name: 'All settings' }).click();

@@ -1,7 +1,17 @@
 <script lang="ts">
-	import { app, THEMES, type EnterKey, type TextSize } from '$lib/app.svelte';
+	// What this browser keeps for itself: the theme and its accent, the text size, what Enter does,
+	// whether thinking is shown, and notifications.
+	import Segmented from '$lib/components/Segmented.svelte';
+	import { Switch } from '$lib/components/ui/switch';
+	import * as NativeSelect from '$lib/components/ui/native-select';
+	import * as RadioGroup from '$lib/components/ui/radio-group';
+	import * as ToggleGroup from '$lib/components/ui/toggle-group';
+	import * as Field from '$lib/components/ui/field';
+	import { app, THEMES, type EnterKey, type TextSize, type ThemeChoice } from '$lib/app.svelte';
+	import { ACCENTS, accentColor, mapTheme, preview, type Accent, type Preview } from '$lib/theme';
 	import { toasts } from '$lib/toasts.svelte';
-	import Check from '@lucide/svelte/icons/check';
+	import Section from './Section.svelte';
+	import Row from './Row.svelte';
 
 	const SIZES: [TextSize, string][] = [
 		['small', 'Small'],
@@ -15,6 +25,16 @@
 	];
 	const canNotify = typeof Notification !== 'undefined';
 	const fellBack = $derived(app.mapped?.fellBack.length ?? 0);
+	// Each theme card draws the page small, in that theme's own colours and the accent in use.
+	// "Match terminal" is drawn as the terminal's theme once a session has reported it.
+	const terminal = $derived(app.terminal ? mapTheme(app.terminal) : null);
+	const pictures = $derived<Record<ThemeChoice, Preview>>({
+		terminal: preview(false, app.accent, terminal),
+		dark: preview(false, app.accent),
+		light: preview(true, app.accent)
+	});
+	// A matched terminal theme brings its own accent, so the choice waits for the dark or light theme.
+	const ownAccent = $derived(app.theme === 'terminal' && !!app.mapped);
 
 	async function notify(on: boolean) {
 		if (!(await app.setNotify(on)) && on)
@@ -27,140 +47,169 @@
 	}
 </script>
 
-<h3 class="set-h" id="set-theme">Theme</h3>
-<div role="radiogroup" aria-labelledby="set-theme" class="grid gap-2 sm:grid-cols-3">
-	{#each THEMES as t (t.value)}
-		<button
-			type="button"
-			role="radio"
-			aria-checked={app.theme === t.value}
-			class="choice flex flex-col gap-2 p-2.5 text-left"
-			onclick={() => app.setTheme(t.value)}
-		>
-			<span class="swatch swatch-{t.value}" aria-hidden="true">
-				<span></span><span></span><span></span>
-			</span>
-			<span class="flex items-center gap-1.5 text-[13px] font-medium"
-				>{t.label}{#if app.theme === t.value}<Check class="size-3.5" />{/if}</span
-			>
-			<span class="text-muted-foreground text-xs leading-snug">{t.hint}</span>
-		</button>
-	{/each}
-</div>
-{#if app.theme === 'terminal'}
-	<p class="text-muted-foreground mt-2 text-xs leading-relaxed" data-terminal-theme>
-		{#if app.terminal}
-			Following <span class="text-foreground font-mono">{app.terminal.name || 'the terminal'}</span
-			>{app.terminal.light ? ' (light)' : ''}.
-			{#if fellBack}
-				{fellBack} colour{fellBack === 1 ? '' : 's'} kept the built-in value: the terminal's
-				{fellBack === 1 ? 'was' : 'were'} too faint to read here.
-			{/if}
-		{:else}
-			The terminal's theme arrives when a session is open. Until then this is the dark theme.
-		{/if}
-	</p>
-{/if}
-
-<h3 class="set-h">Reading</h3>
-<div class="set-row">
-	<div>
-		<p class="set-label" id="set-size">Text size</p>
-		<p class="set-hint">Scales the whole page.</p>
-	</div>
-	<div class="seg w-56 shrink-0" role="radiogroup" aria-labelledby="set-size">
-		{#each SIZES as [v, label] (v)}
-			<button
-				type="button"
-				role="radio"
-				aria-checked={app.textSize === v}
-				onclick={() => app.setTextSize(v)}>{label}</button
-			>
-		{/each}
-	</div>
-</div>
-
-<h3 class="set-h">Message box</h3>
-<div class="set-row">
-	<label class="set-label" for="set-enter">Enter</label>
-	<select
-		id="set-enter"
-		class="select"
-		value={app.enter}
-		onchange={(e) => app.setEnter(e.currentTarget.value as EnterKey)}
+<Section title="Theme" id="set-theme">
+	<RadioGroup.Root
+		aria-labelledby="set-theme"
+		class="sm:grid-cols-3"
+		value={app.theme}
+		onValueChange={(v) => app.setTheme(v as (typeof THEMES)[number]['value'])}
 	>
-		{#each ENTER as [v, label] (v)}<option value={v}>{label}</option>{/each}
-	</select>
-</div>
-
-<h3 class="set-h">Notifications</h3>
-<div class="set-row">
-	<div>
-		<p class="set-label" id="set-notify">Notify when a session needs you</p>
-		<p class="set-hint">
-			A browser notification while this page is in the background. It stays on this device.
+		{#each THEMES as t (t.value)}
+			{@const c = pictures[t.value]}
+			<Field.Label for="set-theme-{t.value}" data-theme-card={t.value}>
+				<!-- The page in small: the sidebar with a chosen row, two lines of a reply, the message box. -->
+				<span
+					class="m-2.5 mb-0 flex h-16 self-stretch overflow-hidden rounded-md border"
+					style="background: {c.background}; border-color: {c.border}"
+					aria-hidden="true"
+					data-theme-preview
+				>
+					<span
+						class="flex w-1/4 flex-col gap-1 border-r p-1.5"
+						style="background: {c.sidebar}; border-color: {c.border}"
+					>
+						<span class="h-1.5 rounded-full" style="background: {c['sidebar-accent']}"></span>
+						<span class="h-1 w-2/3 rounded-full" style="background: {c['muted-foreground']}"></span>
+						<span class="h-1 w-1/2 rounded-full" style="background: {c['muted-foreground']}"></span>
+					</span>
+					<span class="flex min-w-0 flex-1 flex-col gap-1 p-1.5">
+						<span class="h-1 w-3/4 rounded-full" style="background: {c.foreground}"></span>
+						<span class="h-1 w-1/2 rounded-full" style="background: {c['muted-foreground']}"></span>
+						<span
+							class="mt-auto flex h-4 items-center justify-end rounded-sm border px-1"
+							style="background: {c.card}; border-color: {c.border}"
+						>
+							<span class="size-2 rounded-full" style="background: {c.brand}" data-preview-accent
+							></span>
+						</span>
+					</span>
+				</span>
+				<Field.Field orientation="horizontal">
+					<RadioGroup.Item value={t.value} id="set-theme-{t.value}" />
+					<Field.Content>
+						<Field.Title>{t.label}</Field.Title>
+						<Field.Description class="text-xs">{t.hint}</Field.Description>
+					</Field.Content>
+				</Field.Field>
+			</Field.Label>
+		{/each}
+	</RadioGroup.Root>
+	{#if app.theme === 'terminal'}
+		<p class="mt-2 text-xs leading-relaxed text-muted-foreground" data-terminal-theme>
+			{#if app.terminal}
+				Following <span class="font-mono text-foreground"
+					>{app.terminal.name || 'the terminal'}</span
+				>{app.terminal.light ? ' (light)' : ''}.
+				{#if fellBack}
+					{fellBack} colour{fellBack === 1 ? '' : 's'} kept the built-in value: the terminal's
+					{fellBack === 1 ? 'was' : 'were'} too faint to read here.
+				{/if}
+			{:else}
+				The terminal's theme arrives when a session is open. Until then this is the dark theme.
+			{/if}
 		</p>
-	</div>
-	<button
-		type="button"
-		class="switch"
-		role="switch"
-		aria-checked={app.notify}
-		aria-labelledby="set-notify"
-		disabled={!canNotify}
-		onclick={() => notify(!app.notify)}
-	></button>
-</div>
+	{/if}
+</Section>
 
-<style>
-	/* A thumbnail of a theme: a rail, a canvas and a line of ink. The colours are fixed, not tokens. */
-	.swatch {
-		position: relative;
-		display: block;
-		height: 3.25rem;
-		overflow: hidden;
-		border-radius: var(--radius-sm);
-		box-shadow: inset 0 0 0 1px var(--border-strong);
-		background: var(--sw-bg);
-	}
-	.swatch span:nth-child(1) {
-		position: absolute;
-		inset: 0 auto 0 0;
-		width: 26%;
-		background: var(--sw-rail);
-	}
-	.swatch span:nth-child(2) {
-		position: absolute;
-		top: 34%;
-		left: 36%;
-		width: 44%;
-		height: 4px;
-		border-radius: 2px;
-		background: var(--sw-ink);
-	}
-	.swatch span:nth-child(3) {
-		position: absolute;
-		top: 56%;
-		left: 36%;
-		width: 28%;
-		height: 4px;
-		border-radius: 2px;
-		background: var(--sw-ink);
-		opacity: 0.5;
-	}
-	.swatch-dark {
-		--sw-bg: #161616;
-		--sw-rail: #0b0b0b;
-		--sw-ink: #eeeeee;
-	}
-	.swatch-light {
-		--sw-bg: #ffffff;
-		--sw-rail: #f0f0f0;
-		--sw-ink: #161616;
-	}
-	.swatch-terminal {
-		--sw-bg: #1a1b26;
-		--sw-rail: #13141c;
-		--sw-ink: #7aa2f7;
-	}
-</style>
+<Section title="Accent">
+	<Row
+		label="Accent colour"
+		hint={ownAccent
+			? "Match terminal uses the terminal theme's own accent."
+			: 'Focus, what is running or chosen, and the meters.'}
+		id="set-accent"
+		orientation="responsive"
+	>
+		<ToggleGroup.Root
+			type="single"
+			variant="outline"
+			spacing={1}
+			aria-labelledby="set-accent"
+			disabled={ownAccent}
+			data-accents
+			bind:value={
+				() => app.accent,
+				(v) => {
+					if (v && v !== app.accent) app.setAccent(v as Accent);
+				}
+			}
+		>
+			{#each ACCENTS as a (a.value)}
+				<ToggleGroup.Item
+					value={a.value}
+					aria-label={a.label}
+					title={a.label}
+					class="px-0 data-[state=on]:border-ring"
+				>
+					<span
+						class="size-4 rounded-full"
+						style="background: {accentColor(a.value, app.light)}"
+						data-swatch={a.value}
+					></span>
+				</ToggleGroup.Item>
+			{/each}
+		</ToggleGroup.Root>
+	</Row>
+</Section>
+
+<Section title="Reading">
+	<Row label="Text size" hint="Scales the whole page." id="set-size" orientation="responsive">
+		<Segmented
+			class="w-56 shrink-0"
+			labelledby="set-size"
+			value={app.textSize}
+			onchange={(v) => app.setTextSize(v)}
+			options={SIZES.map(([value, label]) => ({ value, label }))}
+		/>
+	</Row>
+</Section>
+
+<Section title="Message box">
+	<Row label="Enter" for="set-enter" orientation="responsive">
+		<NativeSelect.Root
+			id="set-enter"
+			value={app.enter}
+			onchange={(e) => app.setEnter(e.currentTarget.value as EnterKey)}
+		>
+			{#each ENTER as [v, label] (v)}
+				<NativeSelect.Option value={v}>{label}</NativeSelect.Option>
+			{/each}
+		</NativeSelect.Root>
+	</Row>
+</Section>
+
+<Section title="Transcript">
+	<Row
+		label="Thinking"
+		hint="Follow terminal uses the terminal's tui.show_thinking setting."
+		id="set-thinking"
+		orientation="responsive"
+	>
+		<Segmented
+			class="w-72 max-w-full shrink-0"
+			labelledby="set-thinking"
+			value={app.thinking}
+			onchange={(v) => app.setThinking(v)}
+			options={[
+				{ value: 'follow', label: 'Follow terminal' },
+				{ value: 'show', label: 'Show' },
+				{ value: 'hide', label: 'Hide' }
+			]}
+		/>
+	</Row>
+</Section>
+
+<Section title="Notifications">
+	<Row
+		label="Notify when a session needs you"
+		hint="A browser notification while this page is in the background. It stays on this device."
+		id="set-notify"
+	>
+		<Switch
+			aria-labelledby="set-notify"
+			checked={app.notify}
+			disabled={!canNotify}
+			onCheckedChange={(v) => notify(v)}
+		/>
+	</Row>
+</Section>

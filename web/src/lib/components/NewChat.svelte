@@ -2,10 +2,18 @@
 	// Starts a background session in a folder: one the server offers, one inside it, or (when bypass
 	// is allowed on the computer) any folder typed in. A folder nobody trusted waits for the person
 	// at the computer that runs `azazel remote` to allow it.
+	import Segmented from '$lib/components/Segmented.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Input } from '$lib/components/ui/input';
+	import { Textarea } from '$lib/components/ui/textarea';
+	import * as Field from '$lib/components/ui/field';
+	import * as Alert from '$lib/components/ui/alert';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
 	import { app } from '$lib/app.svelte';
 	import { newChat } from '$lib/newchat.svelte';
+	import { resume } from '$lib/resume.svelte';
 	import { sessions } from '$lib/sessions.svelte';
 	import { basename } from '$lib/format';
 	import { MODES, type Folder, type Folders } from '$lib/protocol';
@@ -103,125 +111,155 @@
 	onclose={() => newChat.close()}
 >
 	<form
-		class="space-y-4"
+		id="new-chat"
 		onsubmit={(e) => {
 			e.preventDefault();
 			void start();
 		}}
 	>
-		<div>
-			<label class="label" for="new-chat-folder">Folder</label>
-			<input
-				id="new-chat-folder"
-				class="field mt-1.5 font-mono text-xs"
-				placeholder={listing?.anywhere ? '~/projects/app' : 'Pick a folder below'}
-				autocomplete="off"
-				spellcheck="false"
-				bind:value={cwd}
-			/>
-		</div>
-
-		<div class="well border">
-			{#if listing?.at}
-				<div class="flex items-center gap-1 border-b px-1.5 py-1">
-					<button
-						type="button"
-						class="btn btn-quiet btn-icon"
-						aria-label="Up"
-						onclick={() => load(listing?.parent ?? undefined)}><ArrowUp class="size-4" /></button
+		<Field.Group class="gap-4">
+			<Field.Field>
+				<Field.Label for="new-chat-folder">Folder</Field.Label>
+				<Input
+					id="new-chat-folder"
+					class="font-mono text-xs md:text-xs"
+					placeholder={listing?.anywhere ? '~/projects/app' : 'Pick a folder below'}
+					autocomplete="off"
+					spellcheck="false"
+					bind:value={cwd}
+				/>
+				<!-- The folders to pick from: one bordered list, with the way up and back at its edges. -->
+				<div class="overflow-hidden rounded-lg border" data-folders>
+					{#if listing?.at}
+						<div class="flex items-center gap-1 border-b p-1">
+							<Button
+								variant="ghost"
+								size="icon-sm"
+								aria-label="Up"
+								onclick={() => load(listing?.parent ?? undefined)}><ArrowUp /></Button
+							>
+							<span class="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+								>{listing.at}</span
+							>
+							<Button variant="ghost" size="sm" onclick={() => (cwd = listing?.at ?? '')}
+								>Use this folder</Button
+							>
+						</div>
+					{/if}
+					<ul
+						class="scroll-thin grid max-h-64 grid-cols-1 gap-0.5 overflow-y-auto p-1"
+						aria-label="Folders"
 					>
-					<span class="meta min-w-0 flex-1 truncate font-mono">{listing.at}</span>
-					<button
-						type="button"
-						class="btn btn-quiet px-2 text-xs"
-						onclick={() => (cwd = listing?.at ?? '')}>Use this folder</button
-					>
+						{#each listing?.folders ?? [] as f (f.path)}
+							<li class="flex items-center gap-0.5">
+								<Button
+									variant="ghost"
+									class="min-w-0 flex-1 justify-start font-normal aria-[current=true]:bg-muted"
+									aria-current={f.path === cwd.trim() ? 'true' : undefined}
+									disabled={!f.startable}
+									onclick={() => (cwd = f.path)}
+								>
+									{#if f.kind === 'project'}
+										<FolderGit class="text-muted-foreground" />
+									{:else}
+										<Folder_ class="text-muted-foreground" />
+									{/if}
+									<span class="min-w-0 flex-1 truncate text-left font-mono text-xs" data-row-text
+										>{listing?.at ? basename(f.path) : f.name}</span
+									>
+									{#if !f.trusted}<Badge variant="outline">untrusted</Badge>{/if}
+									{#if f.path === cwd.trim()}<Check class="text-success" />{/if}
+								</Button>
+								{#if canOpen(f)}
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										class="shrink-0"
+										aria-label="Open {f.name}"
+										onclick={() => load(f.path)}><ChevronRight /></Button
+									>
+								{:else if (listing?.folders ?? []).some(canOpen)}
+									<!-- The place of the button, kept so that the badges of every row end on one line. -->
+									<span class="size-7 shrink-0" aria-hidden="true"></span>
+								{/if}
+							</li>
+						{:else}
+							<li class="px-2 py-4 text-sm text-muted-foreground">
+								{loading
+									? 'Looking for folders…'
+									: listing?.at
+										? 'No folders in here.'
+										: 'No folders yet. Add some to `[remote] folders` on the computer, or start a session there once.'}
+							</li>
+						{/each}
+					</ul>
+					{#if listing?.at}
+						<div class="border-t p-1">
+							<Button
+								variant="ghost"
+								size="sm"
+								class="w-full justify-start font-normal text-muted-foreground"
+								onclick={() => load()}>Back to the start</Button
+							>
+						</div>
+					{/if}
 				</div>
+			</Field.Field>
+
+			<Field.Field>
+				<Field.Label for="new-chat-prompt">First message</Field.Label>
+				<Textarea
+					id="new-chat-prompt"
+					placeholder="Optional: the session waits for you without one"
+					bind:value={prompt}
+				/>
+			</Field.Field>
+
+			<Field.Field>
+				<Field.Label id="new-chat-mode">Permission mode</Field.Label>
+				<Segmented
+					labelledby="new-chat-mode"
+					bind:value={mode}
+					options={[
+						{ value: '', label: 'default' },
+						...modes.map((m) => ({
+							value: m,
+							label: m,
+							class: m === 'bypass' ? 'text-destructive data-[state=on]:text-destructive' : ''
+						}))
+					]}
+				/>
+			</Field.Field>
+
+			{#if asks}
+				<Alert.Root>
+					<ShieldAlert class="text-warning" />
+					<Alert.Description>
+						This folder is not trusted. The session starts once someone at the computer allows it in
+						the terminal of azazel remote.
+					</Alert.Description>
+				</Alert.Root>
 			{/if}
-			<ul class="scroll-thin max-h-64 overflow-y-auto p-1" aria-label="Folders">
-				{#each listing?.folders ?? [] as f (f.path)}
-					<li class="flex items-center">
-						<button
-							type="button"
-							class="opt min-w-0 flex-1"
-							aria-current={f.path === cwd.trim() ? 'true' : undefined}
-							disabled={!f.startable}
-							onclick={() => (cwd = f.path)}
-						>
-							{#if f.kind === 'project'}<FolderGit
-									class="text-faint size-4 shrink-0"
-								/>{:else}<Folder_ class="text-faint size-4 shrink-0" />{/if}
-							<span class="min-w-0 flex-1 truncate font-mono text-xs"
-								>{listing?.at ? basename(f.path) : f.name}</span
-							>
-							{#if !f.trusted}<span class="tag shrink-0" title="Not trusted">untrusted</span>{/if}
-							{#if f.path === cwd.trim()}<Check class="text-accent-text size-4 shrink-0" />{/if}
-						</button>
-						{#if canOpen(f)}
-							<button
-								type="button"
-								class="btn btn-quiet btn-icon shrink-0"
-								aria-label="Open {f.name}"
-								onclick={() => load(f.path)}><ChevronRight class="size-4" /></button
-							>
-						{/if}
-					</li>
-				{:else}
-					<li class="text-muted-foreground px-2 py-4 text-sm">
-						{loading
-							? 'Looking for folders…'
-							: listing?.at
-								? 'No folders in here.'
-								: 'No folders yet. Add some to `[remote] folders` on the computer, or start a session there once.'}
-					</li>
-				{/each}
-			</ul>
-			{#if listing?.at}
-				<button
-					type="button"
-					class="text-muted-foreground meta w-full border-t px-3 py-2 text-left"
-					onclick={() => load()}>Back to the start</button
-				>
+			{#if error}
+				<Alert.Root variant="destructive" role="alert">
+					<Alert.Description>{error}</Alert.Description>
+				</Alert.Root>
 			{/if}
-		</div>
-
-		<div>
-			<label class="label" for="new-chat-prompt">First message</label>
-			<textarea
-				id="new-chat-prompt"
-				class="field mt-1.5 min-h-20"
-				placeholder="Optional: the session waits for you without one"
-				bind:value={prompt}></textarea>
-		</div>
-
-		<div>
-			<p class="label" id="new-chat-mode">Permission mode</p>
-			<div class="seg mt-1.5 flex-wrap" role="radiogroup" aria-labelledby="new-chat-mode">
-				<button type="button" role="radio" aria-checked={mode === ''} onclick={() => (mode = '')}
-					>default</button
-				>
-				{#each modes as m (m)}
-					<button
-						type="button"
-						role="radio"
-						aria-checked={mode === m}
-						class={m === 'bypass' ? 'text-destructive' : ''}
-						onclick={() => (mode = m)}>{m}</button
-					>
-				{/each}
-			</div>
-		</div>
-
-		{#if asks}
-			<p class="text-muted-foreground flex gap-2 text-xs leading-relaxed">
-				<ShieldAlert class="text-ember mt-px size-4 shrink-0" />
-				This folder is not trusted. The session starts once someone at the computer allows it in the terminal
-				of azazel remote.
-			</p>
-		{/if}
-		{#if error}<p class="text-destructive text-sm" role="alert">{error}</p>{/if}
-		<button type="submit" class="btn btn-primary w-full" disabled={!cwd.trim() || busy}>
-			{busy ? (asks ? 'Waiting for the computer to allow it…' : 'Starting…') : 'Start'}
-		</button>
+		</Field.Group>
 	</form>
+	{#snippet footer()}
+		{#if resume.available}
+			<Button
+				variant="ghost"
+				class="font-normal text-muted-foreground sm:mr-auto"
+				onclick={() => {
+					newChat.close();
+					resume.show();
+				}}>Continue an earlier session…</Button
+			>
+		{/if}
+		<Button type="submit" form="new-chat" class="sm:min-w-36" disabled={!cwd.trim() || busy}>
+			{busy ? (asks ? 'Waiting for the computer to allow it…' : 'Starting…') : 'Start'}
+		</Button>
+	{/snippet}
 </Sheet>

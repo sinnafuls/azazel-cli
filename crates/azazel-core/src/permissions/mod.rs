@@ -310,7 +310,7 @@ pub struct PermissionState {
     /// to a pattern. A call has to fit every list.
     agent_grants: RwLock<HashMap<String, Vec<Vec<Rule>>>>,
     project_root: PathBuf,
-    /// The project root and `additional_dirs`.
+    /// The launch folder and `additional_dirs`.
     roots: RwLock<Vec<PathBuf>>,
     cwd: PathBuf,
     home: PathBuf,
@@ -365,7 +365,10 @@ impl PermissionState {
                 });
             }
         }
-        let mut roots = vec![canonical(&paths.project_root)];
+        // The launch folder, not the project root: azazel started in `foo/web` works in `foo/web`
+        // and asks before it touches `foo`, as Claude Code does. `additional_dirs` are written
+        // relative to the project's configuration, so they join onto the root.
+        let mut roots = vec![canonical(&paths.cwd)];
         roots.extend(
             permissions
                 .additional_dirs
@@ -733,7 +736,7 @@ impl PermissionState {
         }
     }
 
-    /// The directories agents may work in: the project root, then the extra ones.
+    /// The directories agents may work in: the launch folder, then the extra ones.
     pub fn roots(&self) -> Vec<PathBuf> {
         read(&self.roots).clone()
     }
@@ -1105,14 +1108,21 @@ impl PermissionState {
     /// The `mode` part of the system prompt for `agent`.
     pub fn mode_prompt(&self, agent: &AgentInfo) -> Option<String> {
         match self.mode_for(agent) {
-            PermissionMode::Plan => Some(
-                "# Plan mode\nYou are planning, not changing anything. Investigate with read-only tools. \
-                 When the approach is clear, write the plan to `.azazel/plans/<short-name>.md`: what will \
-                 change, in which files, in what order, and how it will be verified. Then call `plan_submit` \
-                 with that path and wait for the user's decision. Every other write and every command is \
-                 refused in this mode."
-                    .to_string(),
-            ),
+            PermissionMode::Plan => {
+                // Plans live in the project's `.azazel`, which is not under the working folder when
+                // azazel was started in a folder of the project.
+                let plans = match self.cwd == self.project_root {
+                    true => ".azazel/plans".to_string(),
+                    false => normal(&self.plans_dir),
+                };
+                Some(format!(
+                    "# Plan mode\nYou are planning, not changing anything. Investigate with read-only tools. \
+                     When the approach is clear, write the plan to `{plans}/<short-name>.md`: what will \
+                     change, in which files, in what order, and how it will be verified. Then call `plan_submit` \
+                     with that path and wait for the user's decision. Every other write and every command is \
+                     refused in this mode."
+                ))
+            }
             _ => None,
         }
     }

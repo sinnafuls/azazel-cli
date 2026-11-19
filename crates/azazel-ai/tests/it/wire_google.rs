@@ -187,6 +187,7 @@ fn thinking_tool_fixture_keeps_block_order_signature_and_usage() {
             cache_write: 0,
             reasoning: 64,
             cost_usd: None,
+            cache_ttl_secs: None,
         }
     );
 }

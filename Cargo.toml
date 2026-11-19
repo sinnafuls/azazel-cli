@@ -22,10 +22,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
+authors = ["sin"]
+homepage = "https://sinister.codes"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/sinnafuls/azazel-cli"
 
@@ -138,6 +140,8 @@ sha2 = "0.11"
 # Unpacks npm tarballs and the data packed into the binary by the build scripts; the HTTP client
 # already links it for compressed responses.
 flate2 = "1.1"
+# Compiles the Windows resource (icon, file details) in the azazel-cli build script.
+embed-resource = "3"
 rand = "0.10"
 
 # Processes and shell parsing

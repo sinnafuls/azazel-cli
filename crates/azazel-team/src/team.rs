@@ -11,9 +11,10 @@ use azazel_agent::{
     Agent, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, ArtifactSink, CompactionSettings,
     Gate, Limits, Services, Tool, ToolSource, UserInput,
 };
-use azazel_ai::{ModelSpec, Router, StopReason, StreamEvent, Usage};
+use azazel_ai::{ModelRef, ModelSpec, Router, StopReason, StreamEvent, Usage};
 use azazel_core::agents::{AgentDef, AgentDefs, Isolation};
-use azazel_core::side::{Btw, Side};
+use azazel_core::config::ModelRouting;
+use azazel_core::side::{Btw, Side, SideQuestion};
 use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, Event, EventBus, Outcome, Paths, PermissionGate, PermissionState,
@@ -24,6 +25,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::report::{NO_REPORT, REPORT_TOOL, ReportTool, Typed};
+use crate::routing::{self, Routing, RoutingSettings};
 use crate::status::{MemberStatus, RunningTool, last_lines, written_paths};
 use crate::worktree::{self, ApplyError, Worktree};
 
@@ -336,6 +338,8 @@ pub struct TeamDeps {
     pub max_result_bytes: usize,
     pub compaction: CompactionSettings,
     pub posix_shell: bool,
+    /// `[team] model_routing` and the keys that go with it.
+    pub routing: RoutingSettings,
 }
 
 struct Member {
@@ -372,6 +376,8 @@ struct Member {
     tools: Option<Arc<dyn ToolSource>>,
     /// Messages that came before it started.
     pending: Vec<UserInput>,
+    /// What model routing made of its task, when it rated one.
+    routing: Option<Routing>,
 }
 
 impl Member {
@@ -489,6 +495,17 @@ impl Inner {
         let lead = self.lead.read().unwrap_or_else(PoisonError::into_inner);
         lead.as_ref()
             .map(|lead| (lead.handle.clone(), lead.session.clone()))
+    }
+
+    /// What `usage` would have cost on the model routing moved an agent from, less what it cost on
+    /// the model it was moved to (or would have been): both priced from the catalogue.
+    fn saving_of(&self, routed: &Routing, usage: &Usage) -> Option<f64> {
+        let cost = |model: &ModelRef| self.deps.router.model_info(model).cost;
+        Some(routing::saving(
+            &cost(routed.from.as_ref()?)?,
+            &cost(routed.to.as_ref()?)?,
+            usage,
+        ))
     }
 
     /// Applies `change` to member `id` and tells everyone watching.
@@ -717,6 +734,14 @@ impl Inner {
             member.json = json;
             member.finished = Some(Instant::now());
             member.runs += 1;
+            // The usage is the agent's total over every run, so the saving is too: this run's
+            // share is what it grew by, and entries of the session add up to the total.
+            let mut run_saving = None;
+            if let (Some(routed), Some(handle)) = (&mut member.routing, &member.handle) {
+                let before = routed.saving_usd.unwrap_or_default();
+                routed.saving_usd = self.saving_of(routed, &handle.status().usage);
+                run_saving = routed.saving_usd.map(|total| total - before);
+            }
             if worktree.is_some() {
                 member.patch = patch;
                 if !keep_worktree {
@@ -735,9 +760,27 @@ impl Inner {
                 member.finished(),
                 member.transcript.clone(),
                 deliver,
+                member.routing.clone(),
+                run_saving,
             )
         };
-        let (info, finished, transcript, deliver) = recorded;
+        let (info, finished, transcript, deliver, routed, run_saving) = recorded;
+
+        if let (Some(routed), Some((_, session))) = (&routed, self.lead())
+            && let (Some(total), Some(saving)) = (routed.saving_usd, run_saving)
+        {
+            session.append(EntryKind::Custom {
+                custom_type: routing::ROUTING_ENTRY.to_string(),
+                data: serde_json::json!({
+                    "phase": "saving",
+                    "agent": info.id,
+                    "mode": routed.mode.as_str(),
+                    "applied": routed.applied,
+                    "saving_usd": saving,
+                    "total_usd": total,
+                }),
+            });
+        }
 
         if let Some((_, session)) = self.lead() {
             session.append(EntryKind::Agent {
@@ -758,6 +801,93 @@ impl Inner {
         }
     }
 
+    /// Has the `smol` role rate the task of member `id` and, in `auto` mode, moves the agent to
+    /// the model of its rating. Whatever goes wrong leaves the agent as it was. An agent with a
+    /// model of its own (the request's, or a definition the user pointed elsewhere) is not rated.
+    async fn route(&self, id: &str, prompt: &str) {
+        let settings = &self.deps.routing;
+        let router = &self.deps.router;
+        let Some((info, def, explicit, stop)) = self
+            .members()
+            .iter()
+            .find(|m| m.info.id == id)
+            .map(|m| (m.info.clone(), m.def.clone(), m.model.is_some(), m.stop.clone()))
+        else {
+            return;
+        };
+        if explicit || !routing::is_default_model(&def.name, def.model.as_deref()) {
+            return;
+        }
+        let chain = def
+            .model
+            .clone()
+            .unwrap_or_else(|| vec![ModelSpec::Role("default".to_string())]);
+        let (Some(from), Some(side)) = (
+            router.resolve(&chain).into_iter().next(),
+            self.deps.services.get::<Side>(),
+        ) else {
+            return;
+        };
+        let mut ignore = |_: &str| {};
+        let asked = side.ask_capped(
+            SideQuestion {
+                agent: &info,
+                context: Vec::new(),
+                question: routing::question(prompt),
+                chain: vec![ModelSpec::Role("smol".to_string())],
+                purpose: routing::PURPOSE,
+                framed: false,
+            },
+            Some(routing::REPLY_TOKENS),
+            &mut ignore,
+            stop,
+        );
+        let rating = match tokio::time::timeout(settings.timeout, asked).await {
+            Ok(Ok(answer)) => routing::parse_rating(&answer.text),
+            _ => None,
+        };
+        let mut routed = Routing {
+            mode: settings.mode,
+            rating,
+            from: Some(from.clone()),
+            to: None,
+            applied: false,
+            note: "no usable rating came back in time; the model is unchanged".to_string(),
+            saving_usd: None,
+        };
+        let mut moved = None;
+        if let Some(rating) = &routed.rating {
+            let baseline = routing::baseline(settings, router, &chain);
+            let verdict = routing::decide(settings, baseline, rating);
+            routed.note = verdict.why;
+            if let Some(tier) = verdict.target {
+                let to_chain = vec![settings.model(tier).clone()];
+                match router.resolve(&to_chain).into_iter().next() {
+                    Some(to) if to != from => {
+                        routed.applied = settings.mode == ModelRouting::Auto;
+                        routed.to = Some(to);
+                        moved = Some(to_chain);
+                    }
+                    Some(_) => routed.note.push_str("; that is the model it has"),
+                    None => routed.note.push_str("; no model is configured for it"),
+                }
+            }
+        }
+        if let Some((_, session)) = self.lead() {
+            session.append(EntryKind::Custom {
+                custom_type: routing::ROUTING_ENTRY.to_string(),
+                data: routed.entry(id),
+            });
+        }
+        let applied = routed.applied;
+        self.update(id, |member| {
+            if applied {
+                member.model = moved;
+            }
+            member.routing = Some(routed);
+        });
+    }
+
     /// The life of one sub-agent: wait for a slot, start, then follow what it does until it is
     /// shut down.
     async fn run_member(self: Arc<Self>, id: String, prompt: String) {
@@ -769,6 +899,10 @@ impl Inner {
         else {
             return;
         };
+        // Rated while it waits for a slot, so that its first request goes to the model chosen.
+        if self.deps.routing.mode != ModelRouting::Off {
+            self.route(&id, &prompt).await;
+        }
         let slot = tokio::select! {
             permit = self.semaphore.clone().acquire_owned() => permit.ok(),
             _ = stop.cancelled() => None,
@@ -1207,6 +1341,7 @@ impl Team {
             store: None,
             tools: None,
             pending: Vec::new(),
+            routing: None,
         });
         // The member holds the id now.
         drop(reservation);
@@ -1642,6 +1777,15 @@ impl Team {
             || (id != caller.id && self.inner.family(&caller.id).iter().any(|member| member == id))
     }
 
+    /// What routing made of each sub-agent's task, for the agents it rated.
+    pub fn routing(&self) -> Vec<(String, Routing)> {
+        self.inner
+            .members()
+            .iter()
+            .filter_map(|member| Some((member.info.id.clone(), member.routing.clone()?)))
+            .collect()
+    }
+
     /// The lead, then every sub-agent in the order they were started.
     pub fn list(&self) -> Vec<MemberInfo> {
         let mut out = Vec::new();
@@ -1722,6 +1866,7 @@ impl Team {
                     .lead_asked
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner),
+                routing: None,
             });
             worktrees.push(None);
         }
@@ -1748,6 +1893,7 @@ impl Team {
                 tokens: usage.input + usage.output,
                 cost_usd: usage.cost_usd,
                 asked: member.asked,
+                routing: member.routing.clone(),
             });
             worktrees.push(member.worktree.clone());
         }

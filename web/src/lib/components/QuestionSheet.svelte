@@ -1,5 +1,6 @@
 <script lang="ts">
-	// Answers every kind of ui_request: ask, form, confirm, select, input, plan.
+	// Answers every kind of ui_request: ask, form, confirm, select, input, plan. A choice is a
+	// RadioGroup or Checkboxes as choice cards (a Field inside its Label), several questions are Tabs.
 	import type { OpenRequest } from '$lib/session/reduce';
 	import type { Question } from '$lib/protocol';
 	import { answerOf, emptyDraft, type Answer, type Draft } from '$lib/answers';
@@ -7,6 +8,14 @@
 	import Markdown from './Markdown.svelte';
 	import DiffView from './DiffView.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { Input } from '$lib/components/ui/input';
+	import { Textarea } from '$lib/components/ui/textarea';
+	import { Checkbox } from '$lib/components/ui/checkbox';
+	import * as RadioGroup from '$lib/components/ui/radio-group';
+	import * as Field from '$lib/components/ui/field';
+	import * as Tabs from '$lib/components/ui/tabs';
+	import * as Alert from '$lib/components/ui/alert';
+	import * as CodeBlock from '$lib/components/ui/code-block';
 	import Check from '@lucide/svelte/icons/check';
 
 	type Ui = Extract<OpenRequest, { kind: 'ui' }>;
@@ -115,7 +124,97 @@
 				: questions.length > 0 &&
 					answerOf(questions[0], drafts[0] ?? emptyDraft(questions[0])) !== null)
 	);
+	const uid = $props.id();
 </script>
+
+{#snippet choice(label: string, suggested: boolean)}
+	<Field.Content>
+		<Field.Title class="font-normal break-words">{label}</Field.Title>
+		{#if suggested}<Field.Description class="text-xs">suggested</Field.Description>{/if}
+	</Field.Content>
+{/snippet}
+
+{#snippet body(q: Q, d: Draft)}
+	{#if q.context}
+		<p class="text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">{q.context}</p>
+	{/if}
+	<p class="text-sm leading-snug font-medium whitespace-pre-wrap">{q.question}</p>
+	{#if q.diff}
+		<DiffView diff={q.diff} max={12} />
+	{:else if q.code}
+		<CodeBlock.Root size="sm">
+			<CodeBlock.Content code={q.code} class="scroll-thin max-h-40" />
+		</CodeBlock.Root>
+	{/if}
+
+	{#if q.expects === 'confirm'}
+		<RadioGroup.Root
+			class="grid-cols-2"
+			aria-label={q.question}
+			value={d.confirm === null ? '' : d.confirm ? 'yes' : 'no'}
+			onValueChange={(v) => (d.confirm = v === 'yes')}
+		>
+			{#each [['yes', 'Yes'], ['no', 'No']] as [v, label] (v)}
+				<Field.Label for="{uid}-{v}">
+					<Field.Field orientation="horizontal">
+						<RadioGroup.Item value={v} id="{uid}-{v}" />
+						{@render choice(label, q.recommended === v)}
+					</Field.Field>
+				</Field.Label>
+			{/each}
+		</RadioGroup.Root>
+	{:else if q.expects === 'select'}
+		<RadioGroup.Root
+			aria-label={q.question}
+			value={d.chosen[0] ?? ''}
+			onValueChange={(v) => pick(v)}
+			data-options
+		>
+			{#each q.options as opt, i (opt)}
+				<Field.Label for="{uid}-o{i}">
+					<Field.Field orientation="horizontal">
+						<RadioGroup.Item value={opt} id="{uid}-o{i}" />
+						{@render choice(opt, q.recommended === opt)}
+					</Field.Field>
+				</Field.Label>
+			{/each}
+		</RadioGroup.Root>
+	{:else if q.expects === 'multiselect'}
+		<div class="grid gap-2" role="group" aria-label={q.question} data-options>
+			{#each q.options as opt, i (opt)}
+				<Field.Label for="{uid}-o{i}">
+					<Field.Field orientation="horizontal">
+						<Checkbox
+							id="{uid}-o{i}"
+							checked={d.chosen.includes(opt)}
+							onCheckedChange={() => pick(opt)}
+						/>
+						{@render choice(opt, q.recommended === opt)}
+					</Field.Field>
+				</Field.Label>
+			{/each}
+		</div>
+	{/if}
+
+	{#if q.expects === 'text' || q.allow_freeform}
+		<Field.Field>
+			{#if q.allow_freeform}
+				<Field.Label for="{uid}-text">Or write your own answer</Field.Label>
+			{/if}
+			<Input
+				id="{uid}-text"
+				type={secret ? 'password' : 'text'}
+				autocomplete="off"
+				spellcheck="false"
+				aria-label={q.expects === 'text' ? q.question : undefined}
+				bind:value={d.text}
+				onkeydown={(e) => {
+					if (e.key === 'Enter' && !multiple && ready && canControl) void submit();
+				}}
+			/>
+		</Field.Field>
+	{/if}
+{/snippet}
 
 <Sheet
 	open={true}
@@ -125,178 +224,75 @@
 	subtitle={multiple ? `${tab + 1} of ${questions.length}` : undefined}
 	dismissible={false}
 >
-	<div class="space-y-3" data-request="ui" data-kind={f.kind}>
+	<div class="grid gap-3" data-request="ui" data-kind={f.kind}>
 		{#if isPlan}
-			<p class="text-muted-foreground meta break-all">{f.path}</p>
-			<div class="bg-inset scroll-thin max-h-[42dvh] overflow-y-auto rounded-lg border p-4">
+			<p class="font-mono text-xs break-all text-muted-foreground">{f.path}</p>
+			<div class="scroll-thin max-h-[42dvh] overflow-y-auto rounded-lg border p-3">
 				<Markdown text={String(f.plan)} />
 			</div>
 			{#if revising}
-				<textarea
-					class="field min-h-24"
+				<Textarea
 					bind:value={feedback}
 					placeholder="What should change?"
-					aria-label="Feedback on the plan"></textarea>
+					aria-label="Feedback on the plan"
+				/>
 			{/if}
 		{:else if q && d}
 			{#if multiple}
-				<div
-					class="scroll-thin -mx-1 flex gap-1 overflow-x-auto px-1"
-					role="tablist"
-					aria-label="Questions"
-				>
-					{#each questions as qq, i (i)}
-						<button
-							type="button"
-							role="tab"
-							aria-selected={tab === i}
-							class="flex min-h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm transition-colors duration-100 fine:min-h-8 {tab ===
-							i
-								? 'bg-raised font-medium'
-								: 'text-muted-foreground hover:text-foreground'}"
-							onclick={() => (tab = i)}
-						>
-							{#if answerOf(qq, drafts[i] ?? emptyDraft(qq)) !== null}<Check
-									class="text-success size-3.5"
-								/>{/if}
-							{qq.header || `Question ${i + 1}`}
-						</button>
-					{/each}
-				</div>
-			{/if}
-
-			{#if q.context}<p class="text-muted-foreground text-sm leading-relaxed whitespace-pre-wrap">
-					{q.context}
-				</p>{/if}
-			<p class="text-base leading-snug font-medium tracking-[-0.015em] whitespace-pre-wrap">
-				{q.question}
-			</p>
-			{#if q.diff}
-				<DiffView diff={q.diff} max={12} />
-			{:else if q.code}
-				<pre
-					class="well scroll-thin max-h-40 overflow-auto border p-3 whitespace-pre">{q.code}</pre>
-			{/if}
-
-			{#if q.expects === 'confirm'}
-				<div class="grid grid-cols-2 gap-2" role="radiogroup" aria-label={q.question}>
-					{#each [[true, 'Yes'], [false, 'No']] as [v, label] (label)}
-						<button
-							type="button"
-							role="radio"
-							aria-checked={d.confirm === v}
-							class="choice min-h-11 px-3 py-1.5 text-sm font-medium"
-							onclick={() => (d.confirm = v as boolean)}
-						>
-							{label}
-							{#if (q.recommended === 'yes') === v && q.recommended}<span
-									class="text-muted-foreground block text-xs font-normal">suggested</span
-								>{/if}
-						</button>
-					{/each}
-				</div>
-			{:else if q.expects === 'select' || q.expects === 'multiselect'}
-				<ul
-					class="space-y-1.5"
-					role={q.expects === 'select' ? 'radiogroup' : 'group'}
-					data-options
-					aria-label={q.question}
-				>
-					{#each q.options as opt (opt)}
-						{@const on = d.chosen.includes(opt)}
-						<li>
-							<button
-								type="button"
-								role={q.expects === 'select' ? 'radio' : 'checkbox'}
-								aria-checked={on}
-								class="choice flex min-h-11 w-full items-center gap-3 px-3 py-2 text-left text-sm"
-								onclick={() => pick(opt)}
-							>
-								<span
-									class="grid size-4 shrink-0 place-items-center border {q.expects === 'select'
-										? 'rounded-full'
-										: 'rounded-xs'} {on
-										? 'border-ember bg-ember text-ember-foreground'
-										: 'border-input'}"
-									aria-hidden="true"
-								>
-									{#if on}<Check class="size-3" />{/if}
-								</span>
-								<span class="min-w-0 flex-1 break-words">{opt}</span>
-								{#if q.recommended === opt}<span class="text-muted-foreground shrink-0 text-xs"
-										>suggested</span
-									>{/if}
-							</button>
-						</li>
-					{/each}
-				</ul>
-			{/if}
-
-			{#if q.expects === 'text' || q.allow_freeform}
-				<label class="block">
-					{#if q.allow_freeform}<span class="label mb-1.5 block">Or write your own answer</span
-						>{/if}
-					<input
-						class="field"
-						type={secret ? 'password' : 'text'}
-						autocomplete="off"
-						spellcheck="false"
-						aria-label={q.expects === 'text' ? q.question : 'Your own answer'}
-						bind:value={d.text}
-						onkeydown={(e) => {
-							if (e.key === 'Enter' && !multiple && ready && canControl) void submit();
-						}}
-					/>
-				</label>
+				<Tabs.Root value={String(tab)} onValueChange={(v) => (tab = Number(v))}>
+					<Tabs.List class="scroll-thin max-w-full justify-start overflow-x-auto">
+						{#each questions as qq, i (i)}
+							<Tabs.Trigger value={String(i)} class="flex-none">
+								{#if answerOf(qq, drafts[i] ?? emptyDraft(qq)) !== null}
+									<Check class="text-success" />
+								{/if}
+								{qq.header || `Question ${i + 1}`}
+							</Tabs.Trigger>
+						{/each}
+					</Tabs.List>
+					<Tabs.Content value={String(tab)} class="grid gap-3">
+						{@render body(q, d)}
+					</Tabs.Content>
+				</Tabs.Root>
+			{:else}
+				{@render body(q, d)}
 			{/if}
 		{/if}
-		{#if error}<p class="text-destructive text-sm" role="alert">{error}</p>{/if}
+		{#if error}
+			<Alert.Root variant="destructive" role="alert">
+				<Alert.Description>{error}</Alert.Description>
+			</Alert.Root>
+		{/if}
 	</div>
 
+	<!-- In a row the main answer is last, at the right; stacked on a phone it is on top. -->
 	{#snippet footer()}
 		{#if !canControl}
-			<p class="text-muted-foreground text-xs">
+			<p class="mr-auto text-xs text-muted-foreground">
 				View link: waiting for someone with a control link to answer.
 			</p>
 		{:else if isPlan}
 			{#if revising}
-				<div class="flex gap-2 md:justify-end">
-					<Button variant="outline" class="flex-1 md:flex-none" onclick={() => (revising = false)}
-						>Back</Button
-					>
-					<Button
-						class="flex-1 md:flex-none"
-						disabled={busy || !feedback.trim()}
-						onclick={() => send(feedback.trim())}>Send feedback</Button
-					>
-				</div>
+				<Button variant="outline" onclick={() => (revising = false)}>Back</Button>
+				<Button disabled={busy || !feedback.trim()} onclick={() => send(feedback.trim())}
+					>Send feedback</Button
+				>
 			{:else}
-				<div class="flex gap-2 md:justify-end">
-					<Button variant="outline" class="flex-1 md:flex-none" onclick={() => (revising = true)}
-						>Ask for changes</Button
-					>
-					<Button class="flex-1 md:min-w-36 md:flex-none" disabled={busy} onclick={() => send(true)}
-						>Approve plan</Button
-					>
-				</div>
+				<Button variant="outline" onclick={() => (revising = true)}>Ask for changes</Button>
+				<Button class="sm:min-w-36" disabled={busy} onclick={() => send(true)}>Approve plan</Button>
 			{/if}
 		{:else}
-			<div class="flex gap-2">
-				<Button variant="ghost" class="md:mr-auto" disabled={busy} onclick={() => send(null)}
-					>Dismiss</Button
+			<Button variant="ghost" class="sm:mr-auto" disabled={busy} onclick={() => send(null)}
+				>Dismiss</Button
+			>
+			{#if multiple && tab < questions.length - 1}
+				<Button variant="outline" onclick={() => tab++}>Next</Button>
+			{/if}
+			{#if !multiple || tab === questions.length - 1 || drafts.some((_, i) => answerOf(questions[i], drafts[i]) !== null)}
+				<Button class="sm:min-w-36" disabled={busy || !ready} onclick={() => void submit()}
+					>Send answer</Button
 				>
-				{#if multiple && tab < questions.length - 1}
-					<Button variant="secondary" class="flex-1 md:flex-none" onclick={() => tab++}>Next</Button
-					>
-				{/if}
-				{#if !multiple || tab === questions.length - 1 || drafts.some((_, i) => answerOf(questions[i], drafts[i]) !== null)}
-					<Button
-						class="flex-1 md:min-w-36 md:flex-none"
-						disabled={busy || !ready}
-						onclick={() => void submit()}>Send answer</Button
-					>
-				{/if}
-			</div>
+			{/if}
 		{/if}
 	{/snippet}
 </Sheet>

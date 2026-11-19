@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, AgentEvent, AgentHandle, UserInput};
-use azazel_ai::{Block, Message, ModelSpec, Role, ThinkingLevel};
+use azazel_ai::{Block, ModelSpec, ThinkingLevel};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::side::{Side, SideQuestion};
 use azazel_core::{
@@ -38,6 +38,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use crate::app::{Active, App};
+use crate::handoff::settled;
 use crate::print::{EXIT_OK, event_json};
 use crate::tui::SHELL_NOTE;
 
@@ -333,6 +334,17 @@ enum Finished {
         id: Value,
         outcome: CommandOutcome,
     },
+    /// The model's brief for `handoff`, or why there is none.
+    Handoff {
+        id: Value,
+        /// The session the brief is about, which must still be the open one.
+        from: String,
+        /// Which hand-off this is, so that one cancelled earlier does not end a later one.
+        seq: u64,
+        /// The draft made without a model, removed once the hand-off is done.
+        draft: Option<std::path::PathBuf>,
+        brief: Result<String, String>,
+    },
 }
 
 struct Session {
@@ -356,38 +368,34 @@ struct Session {
     cancel: CancellationToken,
     /// The model lists providers gave this session.
     listed: crate::models::Listed,
-}
-
-/// The conversation up to the last point where every tool call has its result: a side question
-/// asked while tools run must not carry calls that are still open.
-fn settled(mut context: Vec<Message>) -> Vec<Message> {
-    let Some(at) = context
-        .iter()
-        .rposition(|message| message.role == Role::Assistant && message.tool_calls().next().is_some())
-    else {
-        return context;
-    };
-    let answered: Vec<&str> = context[at + 1..]
-        .iter()
-        .flat_map(|message| &message.content)
-        .filter_map(|block| match block {
-            Block::ToolResult { call_id, .. } => Some(call_id.as_str()),
-            _ => None,
-        })
-        .collect();
-    if !context[at].tool_calls().all(|(id, _, _)| answered.contains(&id)) {
-        context.truncate(at);
-    }
-    context
+    /// The session in which `[session] handoff_at` was told of.
+    handoff_offered: Option<String>,
+    /// The hand-off whose brief is being written, by number, and what cancels it.
+    handing_off: Option<(u64, CancellationToken)>,
+    /// Numbers the hand-offs.
+    handoffs: u64,
 }
 
 impl Session {
+    /// The lead works, or a hand-off brief is being written: either changes the session.
     fn busy(&self) -> bool {
-        self.working || self.active.lead.status().busy
+        self.working || self.handing_off.is_some() || self.active.lead.status().busy
+    }
+
+    /// Refuses what would change the conversation while a hand-off brief is being written: the
+    /// brief would leave it out.
+    fn not_handing_off(&self) -> Result<(), String> {
+        if self.handing_off.is_some() {
+            return Err(
+                "a hand-off brief is being written; wait for it, or send `abort` to cancel it".to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Refuses what cannot be done while the lead works.
     fn idle_to(&self, what: &str) -> Result<(), String> {
+        self.not_handing_off()?;
         if self.busy() {
             return Err(format!("the lead is working; send `abort` first to {what}"));
         }
@@ -401,7 +409,29 @@ impl Session {
             if let Some(chain) = self.restore_chain.take() {
                 self.active.lead.send(AgentCmd::SetModel(chain));
             }
+            self.offer_handoff();
         }
+    }
+
+    /// Past `[session] handoff_at` context tokens, tells once per session (a notification) that
+    /// `handoff` can start a fresh one from a brief. Makes no request.
+    fn offer_handoff(&mut self) {
+        let limit = self.app.config.session.handoff_at;
+        let tokens = self.active.lead.status().context_tokens;
+        let id = self.active.session.id();
+        if limit == 0 || tokens < limit || self.handoff_offered.as_deref() == Some(id.as_str()) {
+            return;
+        }
+        self.handoff_offered = Some(id);
+        self.out.line(&Frame::UiRequest {
+            request_id: self.waiting.id(),
+            request: UiRequest::Notify {
+                level: "info".to_string(),
+                text: format!(
+                    "The context holds {tokens} tokens. /handoff starts a fresh session from a written brief; it costs least while the prompt cache is warm."
+                ),
+            },
+        });
     }
 
     /// Hands a prompt to the lead.
@@ -483,6 +513,7 @@ impl Session {
                 if let Some(seen) = request_id.as_deref().and_then(|id| self.run_state(id)) {
                     return data(seen).map(Some);
                 }
+                self.not_handing_off()?;
                 let images = images
                     .into_iter()
                     .map(|image| Block::Image {
@@ -506,6 +537,7 @@ impl Session {
                 .map(Some)
             }
             Command::ContinueRun => {
+                self.not_handing_off()?;
                 if self.busy() {
                     return Err("the lead is working; there is no interrupted run to go on with".to_string());
                 }
@@ -522,6 +554,7 @@ impl Session {
                 .map(Some)
             }
             Command::Steer { text, images } => {
+                self.not_handing_off()?;
                 let mut content = vec![Block::text(text)];
                 content.extend(images.into_iter().map(|image| Block::Image {
                     mime: image.mime,
@@ -531,10 +564,14 @@ impl Session {
                 done(Value::Null)
             }
             Command::FollowUp { text } => {
+                self.not_handing_off()?;
                 self.active.lead.send(AgentCmd::FollowUp(UserInput::text(text)));
                 done(Value::Null)
             }
             Command::Abort => {
+                if let Some((_, cancel)) = self.handing_off.take() {
+                    cancel.cancel();
+                }
                 self.active.lead.abort();
                 done(Value::Null)
             }
@@ -679,6 +716,10 @@ impl Session {
                 self.btw(id.clone(), question)?;
                 Ok(None)
             }
+            Command::Handoff { focus } => {
+                self.handoff(id.clone(), focus.as_deref().unwrap_or_default())?;
+                Ok(None)
+            }
             Command::ListModels { all } => self.models(all).map(Some),
             Command::ListProviders => self.providers().map(Some),
             Command::RefreshModels { provider } => self.refresh_models(&provider).await.map(Some),
@@ -809,6 +850,75 @@ impl Session {
         Ok(())
     }
 
+    /// `handoff`: keeps a draft brief made without a model, asks the model for the brief beside
+    /// the loop, and lets [`Self::finish`] open the session that continues from it.
+    fn handoff(&mut self, id: Value, focus: &str) -> Result<(), String> {
+        self.idle_to("hand the work off")?;
+        let services = &self.app.registry.services;
+        let side = services
+            .get::<Side>()
+            .ok_or("side questions are not available in this session")?;
+        let session = self.active.session.clone();
+        let context = crate::handoff::closed_context(&session);
+        if context.is_empty() {
+            return Err("there is nothing to hand off yet".to_string());
+        }
+        let cwd = self.app.paths.cwd.clone();
+        let todos = services
+            .get::<azazel_tools::TodoStore>()
+            .map(|store| store.get(&self.active.lead.id))
+            .unwrap_or_default();
+        let from = session.id();
+        let draft = crate::handoff::draft(&session, &todos, &cwd);
+        // A failed request leaves this brief behind.
+        let kept = crate::handoff::save_draft(&self.app.paths.sessions_dir().join(&from), &from, &draft);
+        let question = crate::handoff::prompt(focus, &crate::handoff::ranked_files(&session, &cwd));
+        let agent = self.active.lead.info().clone();
+        let chain = self.active.lead.status().chain;
+        let (finished, cancel) = (self.finished.clone(), self.cancel.child_token());
+        // `abort` cancels the request through this token.
+        self.handoffs += 1;
+        let seq = self.handoffs;
+        self.handing_off = Some((seq, cancel.clone()));
+        let draft = kept.as_ref().ok().cloned();
+        tokio::spawn(async move {
+            let asked = SideQuestion {
+                agent: &agent,
+                context,
+                question,
+                chain,
+                purpose: "handoff",
+                framed: true,
+            };
+            let brief = side
+                .ask(asked, &mut |_: &str| {}, cancel)
+                .await
+                .map_err(|why| match &kept {
+                    Ok(file) => format!(
+                        "the request failed: {why}; a draft brief is in {}",
+                        file.display()
+                    ),
+                    Err(_) => format!("the request failed: {why}"),
+                })
+                .and_then(|answer| match answer.text.trim() {
+                    "" if answer.dropped_tools.is_empty() => Err("the model gave no answer".to_string()),
+                    "" => Err(format!(
+                        "the model tried to use {} instead of answering; ask again",
+                        answer.dropped_tools.join(", ")
+                    )),
+                    text => Ok(text.to_string()),
+                });
+            let _ = finished.send(Finished::Handoff {
+                id,
+                from,
+                seq,
+                draft,
+                brief,
+            });
+        });
+        Ok(())
+    }
+
     /// `run_command`: a skill (`skill:<name>`) or a command an extension registered. Registered
     /// commands run beside the loop: some ask the user, and the answer arrives as a command.
     ///
@@ -888,6 +998,29 @@ impl Session {
                         .map(|()| CommandResult::Prompt { text }),
                     CommandOutcome::Error(error) => Err(error),
                 };
+                self.out.respond(id, result.and_then(data));
+            }
+            Finished::Handoff {
+                id,
+                from,
+                seq,
+                draft,
+                brief,
+            } => {
+                // `abort` ended the wait; a brief that still arrived is not used.
+                let current = self.handing_off.as_ref().is_some_and(|(open, _)| *open == seq);
+                if current {
+                    self.handing_off = None;
+                }
+                let result = match brief {
+                    _ if !current => Err("the hand-off was cancelled".to_string()),
+                    Ok(brief) => self.continue_from(&from, &brief).await,
+                    Err(why) => Err(why),
+                };
+                // The draft is only for a hand-off that failed.
+                if let (Ok(_), Some(draft)) = (&result, &draft) {
+                    let _ = std::fs::remove_file(draft);
+                }
                 self.out.respond(id, result.and_then(data));
             }
         }
@@ -1003,6 +1136,9 @@ pub(crate) async fn serve_lines(
         finished,
         working: false,
         restore_chain: None,
+        handoff_offered: None,
+        handing_off: None,
+        handoffs: 0,
         named: HashSet::new(),
         cancel: CancellationToken::new(),
         listed: Default::default(),
@@ -1116,7 +1252,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use azazel_agent::ToolOutput;
-    use azazel_ai::{ModelRef, StopReason, StreamEvent, Tier};
+    use azazel_ai::{Message, ModelRef, Role, StopReason, StreamEvent, Tier};
 
     use super::*;
 

@@ -366,6 +366,49 @@ async fn a_controller_starts_a_session_in_a_folder_it_may_use() {
 }
 
 #[tokio::test]
+async fn a_controller_lists_earlier_sessions_and_goes_on_with_one_but_a_viewer_cannot() {
+    let (server, fake, _) = server().await;
+    let port = server.port();
+    let control = format!("Bearer {}", pair(&server, Access::Control).await);
+    let view = format!("Bearer {}", pair(&server, Access::View).await);
+    let post = |auth: String, path: &'static str, body: &'static str| async move {
+        request(
+            port,
+            "POST",
+            path,
+            &[("Authorization", &auth), ("X-Azazel", "1")],
+            body,
+        )
+        .await
+    };
+
+    let all = post(control.clone(), "/api/history", "{}").await;
+    assert_eq!(all.status, 200, "{}", all.text());
+    assert_eq!(all.json()["sessions"].as_array().unwrap().len(), 2);
+    let found = post(control.clone(), "/api/history", r#"{"query":"parser"}"#).await;
+    assert_eq!(found.json()["sessions"][0]["id"], "old1");
+    assert_eq!(found.json()["sessions"].as_array().unwrap().len(), 1);
+
+    // No folder is named: the earlier session has its own.
+    let resumed = post(control.clone(), "/api/sessions", r#"{"resume":"old1"}"#).await;
+    assert_eq!(resumed.status, 200, "{}", resumed.text());
+    assert_eq!(resumed.json()["id"], "s3");
+    assert_eq!(fake.started.lock().unwrap()[0].resume.as_deref(), Some("old1"));
+    // Neither a folder nor a session to go on with is no request.
+    assert_eq!(post(control.clone(), "/api/sessions", "{}").await.status, 400);
+
+    // A viewer can neither list nor continue; a page without the header cannot either.
+    assert_eq!(post(view.clone(), "/api/history", "{}").await.status, 403);
+    assert_eq!(
+        post(view, "/api/sessions", r#"{"resume":"old1"}"#).await.status,
+        403
+    );
+    let bare = request(port, "POST", "/api/history", &[("Authorization", &control)], "{}").await;
+    assert_eq!(bare.status, 403);
+    assert_eq!(fake.started.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn bypass_is_refused_to_a_new_session_unless_allowed_and_starts_are_limited() {
     let (server, fake, _) = server().await;
     let port = server.port();

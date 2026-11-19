@@ -419,6 +419,7 @@ async fn with_lead_on(bench: &Bench, mock: Arc<MockProvider>) -> azazel_agent::A
         max_result_bytes: 50_000,
         compaction: CompactionSettings::default(),
         posix_shell: shell.is_posix(),
+        routing: Default::default(),
     }));
     bench.services.insert(team.clone());
     let session =

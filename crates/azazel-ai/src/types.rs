@@ -194,6 +194,10 @@ pub struct Usage {
     pub reasoning: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// How long the provider keeps what this request wrote to its prompt cache, in seconds,
+    /// when its usage says (Anthropic: 300 or 3600). Not summed by [`Usage::add`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_ttl_secs: Option<u64>,
 }
 
 impl Usage {

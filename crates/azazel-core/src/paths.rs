@@ -126,6 +126,13 @@ impl Paths {
             .clone()
             .unwrap_or_else(|| self.project_data.join("sessions"))
     }
+    /// The folder whose sessions "the sessions of this folder" means: the launch folder. Sessions
+    /// of a project are kept together, whichever folder of it they were started in; each records
+    /// its folder. `None` when the sessions are in a directory the user named (`--session-dir`,
+    /// `--no-session`): that directory is the scope then.
+    pub fn session_folder(&self) -> Option<&Path> {
+        self.sessions_override.is_none().then_some(self.cwd.as_path())
+    }
     /// Transcripts of the sub-agents of one session.
     pub fn agent_transcripts_dir(&self, session_id: &str) -> PathBuf {
         self.sessions_dir().join(session_id).join(AGENT_TRANSCRIPTS)

@@ -107,7 +107,7 @@ pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -
     // `--trust` trusts the project `azazel remote` was started in, not every folder a browser names.
     let carried = cli.carried().into_iter().filter(|arg| arg != "--trust").collect();
     let sessions = BackgroundSessions::new(paths.clone(), remote.redact, carried, rules, Some(asks));
-    let server = match Server::start(options, sessions).await {
+    let server = match Server::start(options, sessions.clone()).await {
         Ok(server) => server,
         Err(e) => {
             eprintln!("azazel: could not start the server: {e}");
@@ -144,7 +144,47 @@ pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -
     if let Some(tunnel) = tunnel {
         tunnel.stop().await;
     }
+    let left = tokio::task::spawn_blocking(move || sessions.still_running())
+        .await
+        .unwrap_or_default();
+    if let Some(note) = still_running_note(&left) {
+        eprint!("{note}");
+    }
     code
+}
+
+/// What `azazel remote` says on quitting about the sessions browsers started that go on: like
+/// `azazel bg`, they run until they end or are stopped, and this says how to reach them.
+fn still_running_note(left: &[crate::running::Entry]) -> Option<String> {
+    if left.is_empty() {
+        return None;
+    }
+    let mut note = format!(
+        "{} started from the browser {} still running in the background:\n",
+        if left.len() == 1 {
+            "1 session".to_string()
+        } else {
+            format!("{} sessions", left.len())
+        },
+        if left.len() == 1 { "is" } else { "are" },
+    );
+    for entry in left {
+        let name = entry
+            .name
+            .as_deref()
+            .map(|name| format!(" {name}"))
+            .unwrap_or_default();
+        note.push_str(&format!(
+            "  {}{name}  {}  ({})\n",
+            entry.id,
+            entry.cwd.display(),
+            entry.state
+        ));
+    }
+    note.push_str(
+        "azazel attach <id> opens one, azazel kill <id> stops it, and azazel in its folder continues it.\n",
+    );
+    Some(note)
 }
 
 async fn open_tunnel(paths: &Paths, way: Way, port: u16) -> Result<Option<Tunnel>, String> {

@@ -14,11 +14,13 @@ pub mod context;
 pub mod detach;
 #[cfg(feature = "diagrams")]
 mod diagram;
+mod digest;
 pub mod doctor;
 pub mod export;
 mod fix;
 pub mod git;
 pub mod github;
+pub mod handoff;
 #[cfg(any(feature = "mcp", feature = "acp"))]
 pub mod headless;
 pub mod history;
@@ -262,6 +264,30 @@ async fn taken(mut cli: Cli) -> Result<Cli, u8> {
             Err(print::EXIT_FAILED)
         }
     }
+}
+
+/// Why the options of this command line cannot be applied to the background session `host` that
+/// plain `azazel` is about to attach to, and what to do instead.
+#[cfg(feature = "detach")]
+fn cannot_attach(cli: &Cli, open_picker: bool, host: &str) -> Option<String> {
+    let (flag, command) = if !cli.model.is_empty() {
+        ("--model", "/model")
+    } else if cli.thinking.is_some() {
+        ("--thinking", "/thinking")
+    } else if cli.mode.is_some() {
+        ("--mode", "/mode")
+    } else if cli.name.is_some() {
+        ("--name", "/name")
+    } else if cli.continue_run {
+        ("--continue-run", "/continue")
+    } else if open_picker {
+        ("`azazel open`", "/open")
+    } else {
+        return None;
+    };
+    Some(format!(
+        "{flag} cannot change a session that is already running in the background ({host}).          Run `azazel attach {host}` and use {command} there, or `azazel kill {host}` to end it first"
+    ))
 }
 
 async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
@@ -574,7 +600,27 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             };
         }
     };
-    let opened = match app.requested_session(&cli) {
+    let requested = app.requested_session(&cli);
+    // The session this folder continues is open in a background session (for instance one a
+    // browser started through `azazel remote`): the interactive UI goes to it, as `azazel attach`
+    // does, instead of refusing. Print mode and the other modes still say where it runs.
+    #[cfg(feature = "detach")]
+    if cli.interactive()
+        && let Ok(how) = &requested
+        && let Some(host) = app.background_host(how)
+    {
+        // The session is already running: what only shapes a new one cannot apply to it.
+        if let Some(refusal) = cannot_attach(&cli, open_picker, &host) {
+            eprintln!("azazel: {refusal}");
+            return print::EXIT_USAGE;
+        }
+        let first = Some(cli.prompt_text()).filter(|prompt| !prompt.trim().is_empty());
+        if let Some(code) = detach::attach_if_running(&cli, app.paths.clone(), &host, first).await {
+            return code;
+        }
+        // The host ended meanwhile: the session is free, and opens as usual.
+    }
+    let opened = match requested {
         Ok(how) => app.open(how, app.chain.clone(), app.thinking).await,
         Err(e) => Err(e),
     };

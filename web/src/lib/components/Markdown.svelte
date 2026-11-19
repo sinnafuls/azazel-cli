@@ -21,7 +21,7 @@
 		{@html html}
 	{/each}
 	{#if streaming}<span
-			class="bg-foreground ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[3px] animate-[caret_1s_steps(1)_infinite]"
+			class="ml-0.5 inline-block h-[1.05em] w-0.5 translate-y-0.5 animate-caret-blink bg-foreground"
 			aria-hidden="true"
 		></span>{/if}
 </div>

@@ -232,6 +232,18 @@ config_table!(TeamConfig {
     coordinator: bool = false,
     /// Where builds of an agent working in a worktree of a Cargo project put their output.
     worktree_target: WorktreeTarget = WorktreeTarget::Shared,
+    /// Whether the `smol` role rates a sub-agent's task and picks its model by the rating.
+    model_routing: ModelRouting = ModelRouting::Off,
+    /// The models of the three ratings: mechanical work, ordinary work, hard work.
+    routing_fast: ModelSpec = ModelSpec::Role("smol".to_string()),
+    routing_balanced: ModelSpec = ModelSpec::Role("default".to_string()),
+    routing_deep: ModelSpec = ModelSpec::Role("slow".to_string()),
+    /// Routing may move an agent up to `routing_deep`; off, it stops at `routing_balanced`.
+    allow_deep: bool = false,
+    /// The confidence a rating needs to move an agent to a stronger model.
+    min_upgrade_confidence: f64 = 0.85,
+    /// The confidence a rating needs to move an agent to a cheaper model.
+    min_downgrade_confidence: f64 = 0.6,
 });
 config_table!(VerifyConfig {
     /// Empty means auto-detect.
@@ -322,6 +334,16 @@ config_table!(ToolsConfig {
     /// Replace secrets in tool output with `[redacted:<kind>]` before the model sees it.
     redact_output: bool = false,
     eval: EvalConfig = EvalConfig::default(),
+    /// Drop what tells the model nothing (avatars, HTML copies, colours, empty fields, API URLs)
+    /// from large JSON results of MCP tools and web fetches.
+    slim_results: bool = true,
+    /// `smol`: a large MCP, web or PDF result is replaced by notes the `smol` role writes, with
+    /// the full text saved to a file; `off` keeps every result as it is.
+    digest: DigestMode = DigestMode::Off,
+    /// Characters of an MCP or web result above which it is digested.
+    digest_min_chars: usize = 16_000,
+    /// Pages of a PDF read above which it is digested.
+    digest_min_pages: usize = 10,
 });
 config_table!(EvalConfig {
     /// Let the `eval` tool run Python.
@@ -411,6 +433,9 @@ config_table!(CacheConfig {
     warm_minutes: u32 = 30,
     /// Tell the user when a request misses the cached prefix, and why.
     report_misses: bool = false,
+    /// Past this many context tokens, suggest `/handoff` or `/compact` once while the cache is
+    /// still warm and about to expire; 0 never suggests.
+    suggest_handoff_at: u64 = 0,
 });
 config_table!(ContextConfig {
     /// Read the `AGENTS.md` of every directory an agent works in, not only the root one.
@@ -533,7 +558,12 @@ config_table!(AccountsConfig {
 config_table!(CompatConfig { claude: bool = true });
 config_table!(BrowserConfig {
     path: String = String::new(),
-    headless: bool = true
+    headless: bool = true,
+    /// Screenshots are scaled by this before the model gets them (0.1 to 1), never below 512
+    /// pixels on the long side.
+    screenshot_scale: f64 = 1.0,
+    /// A snapshot of the page the agent's last snapshot of the tab showed sends only what changed.
+    snapshot_diff: bool = true,
 });
 config_table!(UpdateConfig {
     /// Look for a newer release on GitHub at most once a day, in the background.
@@ -556,6 +586,8 @@ config_table!(SessionConfig {
     /// Going back in the session tree has a small model write up the branch that is left, for
     /// the agent to know where the conversation goes on.
     branch_summary: bool = true,
+    /// Past this many context tokens, offer `/handoff` once; 0 never offers.
+    handoff_at: u64 = 0,
 });
 config_table!(LimitsConfig {
     /// Spend at which a run stops; 0 is no cap.
@@ -706,6 +738,7 @@ config_enum!(GlyphSetting { Auto = "auto", Unicode = "unicode", Nerd = "nerd", A
 config_enum!(Indicator { Shimmer = "shimmer", Kitt = "kitt", Static = "static" } default Shimmer);
 config_enum!(ToolStyle { Card = "card", Compact = "compact" } default Card);
 config_enum!(DiffView { Auto = "auto", Split = "split", Unified = "unified" } default Auto);
+config_enum!(DigestMode { Off = "off", Smol = "smol" } default Off);
 config_enum!(
     /// `delta`: findings on lines the agent changed in this turn; `all`: every finding.
     CheckReport { Delta = "delta", All = "all", Off = "off" } default Delta
@@ -737,6 +770,11 @@ config_enum!(
     /// `target/`; `own`: into the worktree's own; `sccache`: into its own, with `RUSTC_WRAPPER=sccache`
     /// when `sccache` is installed.
     WorktreeTarget { Shared = "shared", Own = "own", Sccache = "sccache" } default Shared
+);
+config_enum!(
+    /// `off`: a sub-agent runs on its definition's model; `suggest`: the rating is only recorded;
+    /// `auto`: the rating picks the model.
+    ModelRouting { Off = "off", Suggest = "suggest", Auto = "auto" } default Off
 );
 
 impl From<&CompactionConfig> for CompactionSettings {

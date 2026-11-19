@@ -477,6 +477,7 @@ fn usage_of(usage: Option<&Value>) -> Usage {
             .and_then(|usage| usage.get("cost"))
             .and_then(|cost| cost.get("total"))
             .and_then(Value::as_f64),
+        cache_ttl_secs: None,
     }
 }
 

@@ -1,4 +1,6 @@
 {
+  "cache_left_secs": 272,
+  "cache_ttl_secs": 300,
  "session_id": "01a1e0e0-96af-759d-ac3d-3931ebd4d68a",
  "session_file": "session.jsonl",
  "name": null,

@@ -1,35 +1,20 @@
 <script lang="ts">
-	// A run of tool calls in the transcript: one quiet row ("Ran 3 commands") that opens a sheet
-	// with every call on a timeline, and each call in full a step further in.
+	// A run of tool calls in the transcript: one quiet row ("Ran 3 commands") that opens in place,
+	// on every screen, into a card per call. Closed, it costs one line; a command that is still
+	// running shows its last lines beneath it.
 	import type { ToolItem } from '$lib/session/reduce';
 	import { describeSteps, diffStats, previewDiff, stepVerb, summarize, toolKind } from '$lib/tools';
-	import Sheet from './Sheet.svelte';
 	import ToolDetail from './ToolDetail.svelte';
+	import { TOOL_ICONS } from './tool-icons';
+	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Spinner } from '$lib/components/ui/spinner';
+	import * as Collapsible from '$lib/components/ui/collapsible';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ListChecks from '@lucide/svelte/icons/list';
-	import Terminal from '@lucide/svelte/icons/terminal';
-	import FilePlus from '@lucide/svelte/icons/file-plus';
-	import FilePen from '@lucide/svelte/icons/file-pen';
-	import FileText from '@lucide/svelte/icons/file-text';
-	import Search from '@lucide/svelte/icons/search';
-	import Globe from '@lucide/svelte/icons/globe';
-	import Users from '@lucide/svelte/icons/users';
-	import Wrench from '@lucide/svelte/icons/wrench';
-	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 
 	let { tools }: { tools: ToolItem[] } = $props();
 
-	const ICONS = {
-		command: Terminal,
-		read: FileText,
-		create: FilePlus,
-		edit: FilePen,
-		search: Search,
-		web: Globe,
-		agents: Users,
-		other: Wrench
-	} as const;
-	const iconOf = (t: ToolItem) => ICONS[toolKind(t.name)];
 	const isRunning = (t: ToolItem) => t.status === 'running' || t.status === 'pending';
 	const statsOf = (t: ToolItem) => diffStats(t.diff ?? previewDiff(t.name, t.input));
 
@@ -43,114 +28,80 @@
 	);
 	const target = $derived(one ? summarize(one.name, one.input) : '');
 	const oneStats = $derived(one ? statsOf(one) : null);
-	// The last lines of a command that is still running, under the row.
+	const RowIcon = $derived(one ? TOOL_ICONS[toolKind(one.name)] : ListChecks);
+
+	let open = $state(false);
+	// The cards are made when the row is first opened: a long session is mostly closed rows.
+	let made = $state(false);
+	// The last lines of a command that is still running, under the closed row.
 	const tail = $derived(
-		running && running.name === 'shell' && running.live
+		!open && running && running.name === 'shell' && running.live
 			? running.live.trimEnd().split('\n').slice(-2).join('\n')
 			: ''
 	);
-
-	let open = $state(false);
-	let shown = $state<string | null>(null);
-	const detail = $derived(tools.find((t) => t.id === shown) ?? null);
-	function openSheet() {
-		shown = one ? one.id : null;
-		open = true;
-	}
-	const sheetTitle = $derived(
-		detail ? stepVerb(detail.name, isRunning(detail)) : describeSteps(tools.map((t) => t.name))
-	);
-	const RowIcon = $derived(one ? iconOf(one) : ListChecks);
 </script>
 
-<div data-steps={tools.length}>
-	<button
-		type="button"
-		class="step {failures ? 'text-destructive' : ''}"
-		aria-haspopup="dialog"
-		onclick={openSheet}
-	>
-		<RowIcon
-			class="size-[18px] shrink-0 {failures ? 'text-destructive' : running ? 'text-info' : ''}"
-			aria-hidden="true"
-		/>
-		<span class="flex min-w-0 flex-1 items-baseline gap-2">
-			<span class="shrink-0 text-[15px]">{label}</span>
-			{#if target}<span class="text-faint min-w-0 truncate font-mono text-xs">{target}</span>{/if}
-		</span>
-		<span class="flex shrink-0 items-center gap-2">
-			{#if oneStats && (oneStats.add || oneStats.del)}
-				<span class="meta"
-					><span class="text-diff-add-fg">+{oneStats.add}</span>
-					<span class="text-diff-del-fg">−{oneStats.del}</span></span
+<Collapsible.Root
+	{open}
+	onOpenChange={(v) => {
+		if (v) made = true;
+		open = v;
+	}}
+	data-steps={tools.length}
+	data-status={failures ? 'error' : running ? 'running' : 'done'}
+>
+	<Collapsible.Trigger>
+		{#snippet child({ props })}
+			<!-- Pulled out by its own padding, so its icon stands on the column's edge and the wash of a
+			     hovered row reaches past it. -->
+			<Button
+				{...props}
+				variant="ghost"
+				class="-mx-2 w-[calc(100%+1rem)] justify-start gap-2 px-2 font-normal text-muted-foreground"
+			>
+				<RowIcon class={failures ? 'text-destructive' : running ? 'text-brand' : ''} />
+				<!-- One call: the verb, then what it worked on, which gives way first. A run: its words alone. -->
+				<span
+					class="{one ? 'shrink-0' : 'min-w-0 flex-1 truncate text-left'} {failures
+						? 'text-destructive'
+						: 'text-foreground'}"
+					data-row-text>{label}</span
 				>
-			{/if}
-			{#if running}
-				<LoaderCircle class="text-info size-4 animate-spin" aria-label="running" />
-			{:else if failures}
-				<span class="tag tag-danger">{one ? 'failed' : `${failures} failed`}</span>
-			{/if}
-			<ChevronRight class="text-faint size-4" aria-hidden="true" />
-		</span>
-	</button>
+				{#if one}
+					<span class="min-w-0 flex-1 truncate text-left font-mono text-xs">{target}</span>
+				{/if}
+				{#if oneStats && (oneStats.add || oneStats.del)}
+					<span class="num flex shrink-0 gap-1.5 text-xs"
+						>{#if oneStats.add}<span class="text-success">+{oneStats.add}</span
+							>{/if}{#if oneStats.del}<span class="text-destructive">−{oneStats.del}</span
+							>{/if}</span
+					>
+				{/if}
+				{#if running}
+					<Spinner class="text-brand" aria-label="running" />
+				{:else if failures}
+					<Badge variant="destructive">{one ? 'Failed' : `${failures} failed`}</Badge>
+				{/if}
+				<ChevronRight
+					class="opacity-60 transition-transform duration-200 {open ? 'rotate-90' : ''}"
+				/>
+			</Button>
+		{/snippet}
+	</Collapsible.Trigger>
 	{#if tail}
 		<pre
-			class="text-faint ml-[30px] line-clamp-2 overflow-hidden font-mono text-xs leading-5 whitespace-pre-wrap">{tail}</pre>
+			class="ml-6 line-clamp-2 overflow-hidden font-mono text-xs leading-5 whitespace-pre-wrap text-muted-foreground">{tail}</pre>
 	{/if}
-</div>
-
-<Sheet
-	{open}
-	title={sheetTitle}
-	subtitle={detail ? undefined : `${tools.length} step${tools.length === 1 ? '' : 's'}`}
-	onclose={() => (open = false)}
-	onback={detail && !one ? () => (shown = null) : undefined}
->
-	{#if detail}
-		<ToolDetail tool={detail} />
-	{:else}
-		<ol class="relative space-y-1" aria-label="Steps">
-			<span class="bg-border-strong absolute top-6 bottom-6 left-[21px] w-px" aria-hidden="true"
-			></span>
-			{#each tools as t (t.id)}
-				{@const Icon = iconOf(t)}
-				{@const s = statsOf(t)}
-				{@const failed = t.status === 'error'}
-				<li class="relative">
-					<button
-						type="button"
-						class="opt min-h-16 gap-3.5 rounded-2xl"
-						data-tool={t.name}
-						data-status={t.status}
-						onclick={() => (shown = t.id)}
-					>
-						<span
-							class="bg-overlay relative grid size-6 shrink-0 place-items-center {failed
-								? 'text-destructive'
-								: isRunning(t)
-									? 'text-info'
-									: 'text-muted-foreground'}"
-						>
-							{#if isRunning(t)}<LoaderCircle class="size-[18px] animate-spin" />{:else}<Icon
-									class="size-[18px]"
-								/>{/if}
-						</span>
-						<span class="min-w-0 flex-1">
-							<span class="block text-[15px] {failed ? 'text-destructive' : ''}"
-								>{stepVerb(t.name, isRunning(t))}{failed ? ' (failed)' : ''}</span
-							>
-							<span class="text-muted-foreground block truncate font-mono text-xs"
-								>{summarize(t.name, t.input) || t.name}</span
-							>
-						</span>
-						{#if s && (s.add || s.del)}<span class="meta shrink-0"
-								><span class="text-diff-add-fg">+{s.add}</span>
-								<span class="text-diff-del-fg">−{s.del}</span></span
-							>{/if}
-						<ChevronRight class="text-faint size-4 shrink-0" aria-hidden="true" />
-					</button>
-				</li>
-			{/each}
-		</ol>
-	{/if}
-</Sheet>
+	<!-- The height runs from nothing to the cards' own and back; the margin leaves a focus ring whole. -->
+	<Collapsible.Content
+		class="-mx-1 overflow-hidden px-1 data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down"
+	>
+		{#if made}
+			<div class="grid grid-cols-1 gap-2 pt-1.5 pb-1" data-tool-cards>
+				{#each tools as t (t.id)}
+					<ToolDetail tool={t} />
+				{/each}
+			</div>
+		{/if}
+	</Collapsible.Content>
+</Collapsible.Root>

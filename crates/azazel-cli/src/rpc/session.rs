@@ -223,6 +223,17 @@ pub(crate) fn state_of(
 ) -> State {
     let status = lead.status();
     let (services, router) = (&app.registry.services, &app.router);
+    let clock = services
+        .get::<azazel_core::cache::CacheLedger>()
+        .filter(|_| !busy)
+        .and_then(|ledger| ledger.clock(&session.id()));
+    let (cache_left_secs, cache_ttl_secs) = match clock {
+        Some(azazel_core::cache::CacheClock::Warm { left, ttl, .. }) => {
+            (Some(left.as_secs()), Some(ttl.as_secs()))
+        }
+        Some(azazel_core::cache::CacheClock::Cold) => (Some(0), None),
+        None => (None, None),
+    };
     State {
         session_id: session.id(),
         session_file: session.path().display().to_string(),
@@ -288,6 +299,14 @@ pub(crate) fn state_of(
             .then(|| session.interrupted_run(None))
             .flatten()
             .map(|run| run.describe()),
+        // What the terminal shows now, when this process has one; else the setting.
+        show_thinking: services
+            .get::<crate::settings::ShownThinking>()
+            .map_or(app.config.tui.show_thinking, |shown| {
+                shown.0.load(std::sync::atomic::Ordering::Relaxed)
+            }),
+        cache_left_secs,
+        cache_ttl_secs,
     }
 }
 
@@ -525,6 +544,30 @@ impl Session {
         self.swap(Open::Store(Arc::new(fork)), StartSource::Resume)
             .await?;
         data(self.state())
+    }
+
+    /// Opens the session that continues `from` with `brief` as its first message.
+    pub(super) async fn continue_from(
+        &mut self,
+        from: &str,
+        brief: &str,
+    ) -> Result<azazel_protocol::Handoff, String> {
+        if self.active.session.id() != from {
+            return Err("the session changed meanwhile; nothing was handed off".to_string());
+        }
+        self.idle_to("hand the work off")?;
+        let file = crate::handoff::create_continuation(
+            &self.app.paths.sessions_dir(),
+            &self.app.paths.cwd,
+            &self.active.session,
+            brief,
+        )
+        .map_err(|e| format!("could not start the new session: {e}"))?;
+        self.swap(Open::File(file), StartSource::Resume).await?;
+        Ok(azazel_protocol::Handoff {
+            session_id: self.active.session.id(),
+            from: from.to_string(),
+        })
     }
 
     pub(super) fn list_sessions(&self, query: Option<&str>) -> Result<Value, String> {

@@ -58,6 +58,7 @@ const CONTROL: &[&str] = &[
     "retry",
     "rewind",
     "btw",
+    "handoff",
     "list_providers",
     "refresh_models",
     "apply_preset",

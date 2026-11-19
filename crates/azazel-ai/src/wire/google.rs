@@ -545,6 +545,7 @@ fn usage_from(metadata: &Value) -> Usage {
         cache_write: 0,
         reasoning,
         cost_usd: None,
+        cache_ttl_secs: None,
     }
 }
 

@@ -156,6 +156,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
         },
         (Method::POST, "/api/links") => links(shared, req).await,
         (Method::POST, "/api/folders") => folders(shared, req).await,
+        (Method::POST, "/api/history") => history(shared, req).await,
         (Method::POST, "/api/sessions") => start(shared, req).await,
         (Method::POST, "/api/logout") => match signed_in(shared, &req, true) {
             Ok((token, _)) => {
@@ -175,7 +176,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
         (
             _,
             "/api/pair" | "/api/me" | "/api/sessions" | "/api/links" | "/api/logout" | "/api/folders"
-            | "/api/devices",
+            | "/api/history" | "/api/devices",
         ) => error(405, "that route does not take this method"),
         (_, p) if p.starts_with("/api/ws/") => error(405, "that route does not take this method"),
         _ => error(404, "no such route"),
@@ -257,6 +258,8 @@ async fn pair(shared: &Arc<Shared>, peer: IpAddr, req: Request<Incoming>) -> Res
                 "allow_bypass": shared.grants.allow_bypass || shared.grants.full_access,
                 "full_access": shared.grants.full_access,
                 "can_start": device.access == Access::Control && shared.sessions.can_start(),
+                "protocol": azazel_protocol::PROTOCOL,
+                "version": env!("CARGO_PKG_VERSION"),
             });
             if pair.bearer {
                 answer["token"] = Value::String(token);
@@ -407,6 +410,30 @@ async fn folders(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
     }
 }
 
+#[derive(Deserialize)]
+struct HistoryBody {
+    #[serde(default)]
+    query: Option<String>,
+}
+
+async fn history(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
+    if let Err(res) = controller(shared, &req) {
+        return *res;
+    }
+    let bytes = match body(req).await {
+        Ok(bytes) => bytes,
+        Err(res) => return *res,
+    };
+    let Ok(wanted) = serde_json::from_slice::<HistoryBody>(&bytes) else {
+        return error(400, "send {} or {\"query\": \"<words>\"}");
+    };
+    let query = wanted.query.filter(|query| !query.trim().is_empty());
+    match shared.sessions.history(query.as_deref()).await {
+        Ok(sessions) => json_reply(200, json!({ "sessions": sessions })),
+        Err(why) => start_error(why),
+    }
+}
+
 async fn start(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
     let device = match controller(shared, &req) {
         Ok(device) => device,
@@ -422,7 +449,7 @@ async fn start(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
             "send {\"cwd\": \"<folder>\"}, with `prompt` and `mode` if you like",
         );
     };
-    if new.cwd.trim().is_empty() {
+    if new.cwd.trim().is_empty() && new.resume.is_none() {
         return error(400, "`cwd` names the folder the session works in");
     }
     if let Some(mode) = &new.mode

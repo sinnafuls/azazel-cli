@@ -13,6 +13,7 @@ use azazel_agent::{
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{AiError, Catalog, Message, Provider, RetryPolicy, Router};
 use azazel_core::agents::{DefSource, discover};
+use azazel_core::config::ModelRouting;
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
 use azazel_core::side::{Side, SideCosts};
@@ -20,7 +21,9 @@ use azazel_core::{
     CommandOutcome, Config, ExtCtx, Extension, Headless, LoadOptions, Paths, PermissionGate, PermissionState,
     Post, Registrar, Registry, SessionStore, Ui,
 };
-use azazel_team::{BUILTIN_AGENTS, Delivery, MemberState, Mentioned, Team, TeamDeps, TeamEvent, TeamExt};
+use azazel_team::{
+    BUILTIN_AGENTS, Delivery, MemberState, Mentioned, RoutingSettings, Team, TeamDeps, TeamEvent, TeamExt,
+};
 use azazel_tools::CoreToolsExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -90,6 +93,7 @@ struct Bench {
     registry: Arc<Registry>,
     mock: Arc<MockProvider>,
     lead: AgentHandle,
+    session: Arc<SessionStore>,
     events: UnboundedReceiver<AgentEvent>,
     nap_cancelled: Arc<AtomicBool>,
 }
@@ -105,6 +109,16 @@ fn git(dir: &Path, args: &[&str]) {
 
 impl Bench {
     async fn new(max_parallel: usize, repository: bool) -> Bench {
+        Bench::build(max_parallel, repository, None).await
+    }
+
+    /// A bench whose team routes models with `routing`: `@default` is `mock/mid`, `@smol` (the
+    /// rater) is `mock/smol`.
+    async fn routed(routing: RoutingSettings) -> Bench {
+        Bench::build(4, false, Some(routing)).await
+    }
+
+    async fn build(max_parallel: usize, repository: bool, routing: Option<RoutingSettings>) -> Bench {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         let agents = project.join(".azazel/agents");
@@ -186,11 +200,30 @@ impl Bench {
             ..RetryPolicy::default()
         };
         // The built-in agents the commands start run on roles of their own.
-        let roles = ["reviewer", "scout"]
+        let mut roles = ["reviewer", "scout"]
             .into_iter()
             .map(|role| (role.to_string(), vec![format!("mock/{role}").parse().unwrap()]))
             .collect::<BTreeMap<_, _>>();
-        let router = Arc::new(Router::new(providers, Catalog::default(), roles, policy));
+        if routing.is_some() {
+            roles.insert("default".to_string(), vec!["mock/mid".parse().unwrap()]);
+            roles.insert("smol".to_string(), vec!["mock/smol".parse().unwrap()]);
+            roles.insert("slow".to_string(), vec!["mock/big".parse().unwrap()]);
+        }
+        let mut catalog = Catalog::default();
+        if routing.is_some() {
+            // Priced, so that a move has a saving: `mid` costs 3 per million input tokens, `fast` 1.
+            catalog.merge(["mid", "fast"].map(|id| {
+                let mut info = azazel_ai::ModelInfo::unknown("mock", id);
+                info.cost = Some(azazel_ai::Cost {
+                    input: if id == "mid" { 3.0 } else { 1.0 },
+                    output: 0.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                });
+                info
+            }));
+        }
+        let router = Arc::new(Router::new(providers, catalog, roles, policy));
         let team = Arc::new(Team::new(TeamDeps {
             tools: registry.tools.clone(),
             hooks: registry.agent_hooks(),
@@ -207,6 +240,7 @@ impl Bench {
             max_result_bytes: 50_000,
             compaction: CompactionSettings::default(),
             posix_shell: shell.is_posix(),
+            routing: routing.unwrap_or_default(),
         }));
         services.insert(team.clone());
         services.insert(Arc::new(Side {
@@ -248,7 +282,7 @@ impl Bench {
             limits: Limits::default(),
             compaction: CompactionSettings::default(),
         });
-        team.attach(lead.clone(), session);
+        team.attach(lead.clone(), session.clone());
         let events = lead.subscribe();
         Bench {
             dir,
@@ -256,6 +290,7 @@ impl Bench {
             registry,
             mock,
             lead,
+            session,
             events,
             nap_cancelled,
         }
@@ -1201,4 +1236,223 @@ async fn what_the_user_types_ends_a_wait_and_the_agent_reports_later() {
         "{delivered}"
     );
     assert!(delivered.contains("slow report"));
+}
+
+/// Routing settings whose fast model is a model of its own, so the rater (`@smol`) and the agent
+/// it moves never share a queue.
+fn routing(mode: ModelRouting, allow_deep: bool) -> RoutingSettings {
+    RoutingSettings {
+        mode,
+        fast: "mock/fast".parse().unwrap(),
+        allow_deep,
+        ..RoutingSettings::default()
+    }
+}
+
+/// Starts one `worker` (or with `model`, on that model) and lets it finish; `rating` is what the
+/// rater answers, when it is asked. Returns the bench to look at what went where.
+async fn routed_worker(settings: RoutingSettings, rating: Option<MockStep>, model: Option<&str>) -> Bench {
+    let mut bench = Bench::routed(settings).await;
+    let mut agent = json!({ "agent": "worker", "prompt": "rename `a` to `b` in f.txt" });
+    if let Some(model) = model {
+        agent["model"] = json!(model);
+    }
+    bench.lead_calls("t1", "task", json!({ "agents": [agent] }));
+    bench.mock.push("lead", MockStep::text("ok"));
+    if let Some(rating) = rating {
+        bench.mock.push("smol", rating);
+    }
+    for queue in ["fast", "mid", "big", "w"] {
+        bench
+            .mock
+            .push(queue, MockStep::text(format!("report from {queue}")));
+    }
+    let calls = bench.run("go").await;
+    assert!(!calls[0].1, "{}", calls[0].2);
+    bench
+}
+
+/// The model queues the worker was asked on.
+fn asked(bench: &Bench) -> Vec<&'static str> {
+    ["fast", "mid", "big", "w"]
+        .into_iter()
+        .filter(|queue| !bench.mock.requests_for(queue).is_empty())
+        .collect()
+}
+
+fn rating(tier: &str, confidence: f64) -> MockStep {
+    MockStep::text(format!(
+        "{{\"tier\": \"{tier}\", \"confidence\": {confidence}, \"risky\": 0}}"
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_routing_moves_down_at_the_downgrade_confidence() {
+    let bench = routed_worker(
+        routing(ModelRouting::Auto, false),
+        Some(rating("fast", 0.6)),
+        None,
+    )
+    .await;
+    assert_eq!(asked(&bench), ["fast"]);
+    // The rating is a one-off: the task as data, no tools, no system prompt to cache.
+    let rated = bench.mock.requests_for("smol");
+    assert_eq!(rated.len(), 1);
+    assert_eq!(rated[0].messages.len(), 1);
+    assert!(rated[0].tools.is_empty() && rated[0].system.is_empty());
+    assert!(
+        rated[0].messages[0]
+            .text()
+            .contains("<task>\nrename `a` to `b` in f.txt\n</task>")
+    );
+    let (id, routed) = bench.team.routing().pop().unwrap();
+    assert_eq!(id, "worker-1");
+    assert!(routed.applied);
+    assert_eq!(routed.to.unwrap().to_string(), "mock/fast");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn below_the_downgrade_confidence_the_model_stays() {
+    let bench = routed_worker(
+        routing(ModelRouting::Auto, false),
+        Some(rating("fast", 0.59)),
+        None,
+    )
+    .await;
+    assert_eq!(asked(&bench), ["mid"]);
+    let (_, routed) = bench.team.routing().pop().unwrap();
+    assert!(routed.to.is_none() && !routed.applied);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn moving_up_needs_the_upgrade_confidence_and_allow_deep() {
+    let up = routed_worker(
+        routing(ModelRouting::Auto, true),
+        Some(rating("deep", 0.85)),
+        None,
+    )
+    .await;
+    assert_eq!(asked(&up), ["big"]);
+    let short = routed_worker(
+        routing(ModelRouting::Auto, true),
+        Some(rating("deep", 0.84)),
+        None,
+    )
+    .await;
+    assert_eq!(asked(&short), ["mid"]);
+    let capped = routed_worker(
+        routing(ModelRouting::Auto, false),
+        Some(rating("deep", 0.99)),
+        None,
+    )
+    .await;
+    assert_eq!(asked(&capped), ["mid"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn suggest_records_the_move_without_making_it() {
+    let bench = routed_worker(
+        routing(ModelRouting::Suggest, false),
+        Some(rating("fast", 0.9)),
+        None,
+    )
+    .await;
+    assert_eq!(asked(&bench), ["mid"]);
+    let status = bench.team.status("worker-1").await.unwrap().pop().unwrap();
+    let line = azazel_team::status_text(&status);
+    assert!(line.contains("would move to mock/fast"), "{line}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_explicit_model_is_not_rated() {
+    let bench = routed_worker(routing(ModelRouting::Auto, true), None, Some("mock/w")).await;
+    assert_eq!(asked(&bench), ["w"]);
+    assert!(bench.mock.requests_for("smol").is_empty());
+    assert!(bench.team.routing().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rating_that_comes_too_late_changes_nothing() {
+    let settings = RoutingSettings {
+        timeout: Duration::from_millis(200),
+        ..routing(ModelRouting::Auto, false)
+    };
+    let late = rating("fast", 0.99).delayed(Duration::from_secs(5));
+    let started = Instant::now();
+    let bench = routed_worker(settings, Some(late), None).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(asked(&bench), ["mid"]);
+    let (_, routed) = bench.team.routing().pop().unwrap();
+    assert!(routed.rating.is_none() && routed.to.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_routing_off_no_rating_is_asked_for() {
+    let bench = routed_worker(routing(ModelRouting::Off, true), None, None).await;
+    assert_eq!(asked(&bench), ["mid"]);
+    assert!(bench.mock.requests_for("smol").is_empty());
+    assert!(bench.team.routing().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_that_runs_twice_is_counted_once_in_the_savings() {
+    let used = || azazel_ai::Usage {
+        input: 1_000_000,
+        ..azazel_ai::Usage::default()
+    };
+    let mut bench = Bench::routed(routing(ModelRouting::Auto, false)).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "rename `a` to `b` in f.txt" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("ok"));
+    bench.mock.push("smol", rating("fast", 0.9));
+    bench
+        .mock
+        .push("fast", MockStep::text("first report").with_usage(used()));
+    bench
+        .mock
+        .push("fast", MockStep::text("second report").with_usage(used()));
+    let calls = bench.run("go").await;
+    assert!(!calls[0].1, "{}", calls[0].2);
+
+    let lead = bench.lead.info().clone();
+    bench.team.send(&lead, "worker-1", "once more").unwrap();
+    let started = Instant::now();
+    while bench.team.result("worker-1").map(|done| done.report) != Some("second report".to_string()) {
+        assert!(started.elapsed() < Duration::from_secs(10));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The end of the second run is recorded a moment after its report is there.
+    let entries = || -> Vec<f64> {
+        bench
+            .session
+            .entries()
+            .into_iter()
+            .filter_map(|entry| match entry.kind {
+                azazel_core::EntryKind::Custom { custom_type, data }
+                    if custom_type == "routing" && data["phase"] == "saving" =>
+                {
+                    data["saving_usd"].as_f64()
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let started = Instant::now();
+    while entries().len() < 2 {
+        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", entries());
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // 1M input tokens a run, 3 against 1 per million: each run saved 2, and the two entries add
+    // up to what /cost shows for the agent.
+    let total: f64 = entries().iter().sum();
+    assert!((total - 4.0).abs() < 1e-9, "{:?}", entries());
+    let (_, routed) = bench.team.routing().pop().unwrap();
+    assert!((routed.saving_usd.unwrap() - 4.0).abs() < 1e-9, "{routed:?}");
 }

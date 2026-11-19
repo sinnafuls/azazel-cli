@@ -77,7 +77,7 @@ azazel -c -p "now add tests"    # all of them work with print mode too
 
 | Flag | Behaviour |
 |---|---|
-| `-c`, `--continue` | Opens the newest session. Fails with `this project has no session to continue` when there is none |
+| `-c`, `--continue` | Opens the newest session started in this folder (see [Sessions belong to a folder](#sessions-belong-to-a-folder)). Fails with `this project has no session to continue` when the project has none, and with `no session was started in this folder to continue` when it has some, but none from here |
 | `-r`, `--session <PATH\|ID>` | Opens a session file, or the session whose id starts with `<ID>`. Fails when none or more than one matches. `--resume` is the old name |
 | `--fork <PATH\|ID>` | Copies the session (its current branch) into a new one, whose header names the original, and opens the copy |
 | `--name <NAME>` | Names the session, as `/name` would |
@@ -87,16 +87,45 @@ azazel -c -p "now add tests"    # all of them work with print mode too
 
 To always come back to where you left off, set `[session] resume = "last"` (or `/settings` → Sessions → Open at
 start). Starting the UI in a project without `-c`, `--session`, `--fork`, `--new` or `--no-session` then opens the
-project's newest session as `-c` does, on the same model and thinking level rules; in a project with no session
+newest session of this folder as `-c` does, on the same model and thinking level rules; in a project with no session
 yet it starts a new one. Print mode (`-p`) is not affected: it starts a new session unless `-c` or `--session` is
 given.
+
+### Sessions belong to a folder
+
+A project is the folder with `.git` or `.azazel/` and everything under it, and azazel can be started in any folder of
+it. Sessions are keyed by the folder azazel was started in (the working directory, `--cwd`), as in Claude Code:
+`foo/web` and `foo` each have sessions of their own, though all of the project's are kept in one place so that memory,
+the code index, checkpoints and the prompt history stay shared.
+
+- `-c`, `[session] resume = "last"`, `/resume` and `azazel sessions list` and `search` show the sessions started in the
+  folder you are in. A session started before this existed shows in the folder it was started in, which its header
+  records.
+- To see the others, `/resume` has `ctrl+f` (all folders of the project, and back), and `azazel sessions list` and
+  `search` take `--all-folders`. `--all-projects` includes every folder of every project.
+- `--session <id>`, `--fork` and `azazel export <id>` open any session of the project by id, wherever it began.
+- [Plain `azazel` attaches](background-and-remote.md#one-writer-per-session) only to a background session that was
+  started in the same folder.
+- What stays per project: the configuration in `.azazel/`, rules, commands, agents, skills, MCP servers, trust (trusting
+  the project covers its folders), `AGENTS.md` files (read from the project root down to the folder), git, worktrees,
+  checkpoints and memory. What is per folder: the sessions, the shell and relative paths, and where agents may write
+  without asking ([Permissions](permissions.md#modes)).
 
 The session id is the part of the file name after the underscore; `/export` without a path also puts it in the
 name of the file it writes. A resumed session opens at its last entry and the UI shows the last two messages.
 
 A session that a [background session](background-and-remote.md) has open cannot be opened a second time: it
 fails with `this session is running in the background: azazel attach <id>`. `azazel attach` opens it where it
-runs, and `azazel attach --take` brings it back here.
+runs, and `azazel attach --take` brings it back here. Plain `azazel` that would continue such a session attaches to it
+instead of failing.
+
+### Resuming from the browser
+
+In the page of `azazel remote`, `/resume` (also **Resume…** in the sidebar) lists the earlier sessions of the folders a
+browser may start in, with a search over their names, folders and conversations. Picking one continues it in a
+background session, as `azazel bg` would with `--session`; if a background session has it open already, that one is
+opened, as sessions have one writer. It needs a control device. See
+[starting a session from the browser](remote.md#starting-a-session-from-the-browser).
 
 ### Model and thinking level
 
@@ -229,7 +258,7 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 | `/fix` | Repairs a conversation the provider refuses and lists what it changed. See [repairing a conversation](#repairing-a-conversation) |
 | `/restart` | Starts azazel again in this terminal on this session. See [starting azazel again](#starting-azazel-again) |
 | `/debug` | Shows, full screen, where azazel keeps its files (and which of them are not there), the state of the UI and the session, the variables that describe the terminal, the names of the `AZAZEL_` variables that are set, and the last 200 lines of the log with secrets hidden |
-| `/handoff [what matters]` | Has the current model write a brief of this session (goal, state, decisions, files touched, next steps, open questions), then opens a new session whose first message is that brief and whose header names this session. Nothing runs until you send a message. Both ids are shown |
+| `/handoff [what matters]` | Has the current model write a structured brief of this session, then opens a new session whose first message is that brief and whose header names this session. Nothing runs until you send a message. Both ids are shown. See [handoff](#handoff) |
 | `/consult [question]` | Pick a saved session and ask it a question. The answer comes from that session's conversation in a single request, shows in a panel (`Enter` on a row closes it, copies it or opens it full screen) and is stored in neither session |
 | `/export [path]` | Writes the conversation to `path` (relative to the working directory), or to `azazel-session-<id>.md`. The extension picks the format: `.md`, `.html` or `.jsonl` |
 | `/share` | Uploads the conversation, secrets hidden, as a secret gist and prints its link. It asks first. See [sharing a session](#sharing-a-session) |
@@ -237,6 +266,25 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 | `/compact [what to keep]` | Summarises the conversation now; the optional text is passed to the summariser as extra instructions |
 
 `/tree` moves within the conversation only; files on disk are not changed. Use `/rewind` to move files as well.
+
+### Handoff
+
+`/handoff` (the `handoff` command of [RPC](rpc.md), and `/handoff` in the web page, which switches to the new
+session) moves the work to a fresh session when the context has grown large.
+
+1. A draft brief is written first, without a model, to `handoff-<session id>.md` in the session's folder:
+   the requests you made and whether they were answered, the task list and the last reply, and the files. A
+   request that fails still leaves it, and the error names it. Secrets in it are hidden.
+2. One request goes to the current model, which gets the conversation and writes the brief in sections:
+   Requests (with their status), Where things stand, Rules you set, Files, Errors already solved, Next steps. It
+   is held to about 1500 words and told not to repeat `AGENTS.md`.
+3. The files are ranked by what the session did to them, not left to the model: an edit, write or patch counts
+   3, a read 2, a path named in a shell command 1. The 15 highest that still exist are listed.
+4. The new session starts with the brief (secrets hidden) and the old session's name plus `(continued)`.
+
+With `[session] handoff_at` set, azazel offers `/handoff` once per session when the context passes that many
+tokens, and with `[cache] suggest_handoff_at` it says so when the [prompt cache](models-and-logins.md#prompt-cache)
+is about to run out. Neither makes a request.
 
 ### Branch summaries
 
@@ -302,8 +350,8 @@ passes 6,000.
 
 | Command | What it does |
 |---|---|
-| `azazel sessions list [--all-projects] [--all] [--json]` | One line per session: id, last used, name or first prompt, messages, cost, pinned. [Archived](#archived-sessions) sessions only with `--all` |
-| `azazel sessions search <text> [--all-projects] [--json]` | Sessions whose messages contain the text (case-insensitive), as `date · name · matching line` |
+| `azazel sessions list [--all-projects] [--all-folders] [--all] [--json]` | One line per session started in this folder (`--all-folders`: every folder of the project): id, last used, name or first prompt, messages, cost, pinned. [Archived](#archived-sessions) sessions only with `--all` |
+| `azazel sessions search <text> [--all-projects] [--all-folders] [--json]` | Sessions of this folder (`--all-folders`: of the project) whose messages contain the text (case-insensitive), as `date · name · matching line` |
 | `azazel sessions delete <PATH\|ID> [--yes]` | Deletes the session file and its sub-agents' transcripts. Asks first; without a terminal it needs `--yes` |
 | `azazel sessions prune [--older-than 30d] [--all-projects] [--dry-run]` | Deletes unpinned sessions not used for that long (`h`, `d` or `w`) |
 | `azazel sessions export [PATH\|ID] [--format F] [-o FILE] [--sanitize]` | Same as `azazel export` |

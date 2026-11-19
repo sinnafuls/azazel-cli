@@ -1044,7 +1044,7 @@ impl Tui {
                     self.predictor.cancel();
                 }
             }
-            ("tui.show_thinking", toml::Value::Boolean(on)) => self.show_thinking = *on,
+            ("tui.show_thinking", toml::Value::Boolean(on)) => self.set_show_thinking(*on),
             ("tui.expand_tools", toml::Value::Boolean(on)) => self.expand_tools = *on,
             ("editor.mode", toml::Value::String(mode)) => self.set_vim(mode == "vim"),
             ("editor.command", toml::Value::String(command)) => self.editor_command = command.clone(),

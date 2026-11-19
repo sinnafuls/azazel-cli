@@ -7,8 +7,14 @@
 	import { ui } from '$lib/ui.svelte';
 	import { toasts } from '$lib/toasts.svelte';
 	import { ago } from '$lib/format';
+	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
+	import * as Alert from '$lib/components/ui/alert';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import { Loaded } from './load.svelte';
 	import Unavailable from './Unavailable.svelte';
+	import Section from './Section.svelte';
+	import Row from './Row.svelte';
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import ShieldAlert from '@lucide/svelte/icons/shield-alert';
 
@@ -38,98 +44,84 @@
 	}
 </script>
 
-<h3 class="set-h">Full access</h3>
-{#if app.fullAccess}
-	<div class="alarm flex items-start gap-2.5 rounded-xl p-3" data-full-access-status="on">
-		<ShieldAlert class="mt-0.5 size-4 shrink-0" />
-		<div class="text-[13px] leading-relaxed">
-			<p class="font-semibold">On: this browser can do anything on this computer</p>
-			<p>
+<Section title="Full access">
+	{#if app.fullAccess}
+		<Alert.Root variant="destructive" data-full-access-status="on">
+			<ShieldAlert />
+			<Alert.Title>On: this browser can do anything on this computer</Alert.Title>
+			<Alert.Description>
 				It may change the configuration and the permission rules, save for every session and run
-				every command. Anyone holding this device holds the computer. Turn it off in the terminal (<span
-					class="font-mono">[remote] full_access</span
-				>).
-			</p>
-		</div>
-	</div>
-{:else}
-	<div class="set-row" data-full-access-status="off">
-		<div>
-			<p class="set-label">Off</p>
-			<p class="set-hint">
-				This browser drives sessions but cannot change the configuration, edit permission rules or
-				save for every session. It is turned on at the computer (<span class="font-mono"
-					>[remote] full_access</span
-				>), never from here.
-			</p>
-		</div>
-	</div>
-{/if}
+				every command. Anyone holding this device holds the computer. Turn it off in the terminal
+				([remote] full_access).
+			</Alert.Description>
+		</Alert.Root>
+	{:else}
+		<Row
+			label="Off"
+			hint="This browser drives sessions but cannot change the configuration, edit permission rules or save for every session. It is turned on at the computer ([remote] full_access), never from here."
+			data-full-access-status="off"
+		/>
+	{/if}
+</Section>
 
-<h3 class="set-h">This device</h3>
-<div class="set-row">
-	<div>
-		<p class="set-label">{access}</p>
-		{#if until}<p class="set-hint">Signed in until {until}.</p>{/if}
-	</div>
-	<button type="button" class="btn btn-secondary shrink-0" onclick={() => app.logout()}
-		>Sign out</button
+<Section title="This device">
+	<Row label={access} hint={until ? `Signed in until ${until}.` : undefined}>
+		<Button variant="outline" class="shrink-0" onclick={() => app.logout()}>Sign out</Button>
+	</Row>
+	<Row
+		label="Open on another device"
+		hint="A link or a QR code that works once, for a few minutes."
 	>
-</div>
-<div class="set-row">
-	<div>
-		<p class="set-label">Open on another device</p>
-		<p class="set-hint">A link or a QR code that works once, for a few minutes.</p>
-	</div>
-	<button type="button" class="btn btn-secondary shrink-0" onclick={() => (ui.pairing = true)}
-		><QrCode class="size-4" /> New link</button
-	>
-</div>
+		<Button variant="outline" class="shrink-0" onclick={() => (ui.pairing = true)}
+			><QrCode /> New link</Button
+		>
+	</Row>
+</Section>
 
-<h3 class="set-h">Paired devices</h3>
-{#if devices.state !== 'ready'}
-	<Unavailable of={devices} what="the list of paired devices" />
-{:else}
-	<ul aria-label="Paired devices">
-		{#each devices.data ?? [] as d (d.id)}
-			<li class="set-row">
-				<div class="min-w-0">
-					<p class="set-label truncate">
-						Device {d.id}{#if d.current}<span class="tag ml-1.5 h-[1.125rem] text-[11px]"
-								>this one</span
-							>{/if}
-					</p>
-					<p class="set-hint">
-						{d.access === 'control' ? 'Full control' : 'Watch only'} · paired {ago(d.paired)} · signed
-						in until {new Date(d.expires).toLocaleString([], {
+<Section title="Paired devices">
+	{#if devices.state !== 'ready'}
+		<Unavailable of={devices} what="the list of paired devices" />
+	{:else}
+		<ul aria-label="Paired devices">
+			{#each devices.data ?? [] as d (d.id)}
+				<li class="border-b last:border-b-0">
+					<Row
+						label="Device {d.id}"
+						hint="{d.access === 'control' ? 'Full control' : 'Watch only'} · paired {ago(
+							d.paired
+						)} · signed in until {new Date(d.expires).toLocaleString([], {
 							dateStyle: 'medium',
 							timeStyle: 'short'
-						})}
-					</p>
-				</div>
-			</li>
-		{/each}
-	</ul>
-	{#if app.canControl}
-		{#if confirmAll}
-			<div class="bg-destructive/10 mt-2 rounded-xl p-3" role="alert">
-				<p class="text-[13px] leading-relaxed">
-					Every device is signed out, this one too. You will need a new link from the terminal to
-					get back in.
-				</p>
-				<div class="mt-2.5 flex gap-2">
-					<button type="button" class="btn btn-secondary" onclick={() => (confirmAll = false)}
-						>Cancel</button
+						})}"
+						class="border-b-0"
 					>
-					<button type="button" class="btn btn-destroy" onclick={signOutAll}
-						>Sign everyone out</button
-					>
-				</div>
-			</div>
-		{:else}
-			<button type="button" class="btn btn-secondary mt-3" onclick={() => (confirmAll = true)}
-				>Sign everyone out…</button
+						{#snippet badges()}
+							{#if d.current}<Badge variant="secondary">this one</Badge>{/if}
+						{/snippet}
+					</Row>
+				</li>
+			{/each}
+		</ul>
+		{#if app.canControl}
+			<Button variant="outline" class="mt-3" onclick={() => (confirmAll = true)}
+				>Sign everyone out…</Button
 			>
 		{/if}
 	{/if}
-{/if}
+</Section>
+
+<AlertDialog.Root open={confirmAll} onOpenChange={(v) => !v && (confirmAll = false)}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Sign everyone out?</AlertDialog.Title>
+			<AlertDialog.Description>
+				Every device is signed out, this one too. You will need a new link from the terminal to get
+				back in.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<Button variant="destructive" onclick={signOutAll}>Sign everyone out</Button>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

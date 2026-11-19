@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { app } from '$lib/app.svelte';
 	import Brand from '../Brand.svelte';
+	import * as Item from '$lib/components/ui/item';
+	import * as Field from '$lib/components/ui/field';
+	import Row from './Row.svelte';
 
 	const rows = $derived<[string, string][]>([
 		['Version', app.me?.version ?? 'unknown'],
@@ -18,22 +21,24 @@
 	]);
 </script>
 
-<div class="flex items-center gap-3 py-3">
-	<Brand size={36} word={false} />
-	<div>
-		<p class="text-[15px] font-semibold tracking-[-0.02em]">azazel</p>
-		<p class="text-muted-foreground text-[13px]">
-			A coding agent on your computer, driven from this browser.
-		</p>
-	</div>
-</div>
-<dl>
+<Item.Root class="px-0">
+	<!-- The stock media stands on the title's line; a mark as tall as both lines is centred on them. -->
+	<Item.Media
+		class="group-has-data-[slot=item-description]/item:translate-y-0 group-has-data-[slot=item-description]/item:self-center"
+	>
+		<Brand size={32} word={false} />
+	</Item.Media>
+	<Item.Content>
+		<Item.Title>azazel</Item.Title>
+		<Item.Description>A coding agent on your computer, driven from this browser.</Item.Description>
+	</Item.Content>
+</Item.Root>
+<Field.Group class="gap-0">
 	{#each rows as [k, v] (k)}
 		{#if v}
-			<div class="set-row">
-				<dt class="set-label">{k}</dt>
-				<dd class="text-muted-foreground num font-mono text-[13px]" data-about={k}>{v}</dd>
-			</div>
+			<Row label={k}>
+				<span class="num shrink-0 text-xs text-muted-foreground" data-about={k}>{v}</span>
+			</Row>
 		{/if}
 	{/each}
-</dl>
+</Field.Group>

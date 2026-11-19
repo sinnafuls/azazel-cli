@@ -401,6 +401,10 @@ impl Tool for Wrapped {
         self.inner.offered_to(model)
     }
 
+    fn shape(&self, input: &Value, output: &mut ToolOutput, ctx: &azazel_agent::ShapeCtx<'_>) {
+        self.inner.shape(input, output, ctx);
+    }
+
     async fn call(&self, mut input: Value, ctx: &ToolCtx) -> ToolOutput {
         let mut entered = 0;
         let mut answered = None;

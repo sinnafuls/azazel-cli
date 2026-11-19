@@ -12,6 +12,7 @@ use azazel_core::paths::canonical;
 use azazel_core::session::{Entry, SessionSummary};
 use azazel_core::side::{Side, SideAnswer, SideQuestion};
 use azazel_core::{EntryKind, SessionStore};
+use azazel_tools::TodoStore;
 use azazel_tui::{Glyph, KeyCombo, SelectItem, text};
 use crossterm::event::{KeyCode, KeyModifiers};
 use tokio_util::sync::CancellationToken;
@@ -20,8 +21,9 @@ use super::backend::Go;
 use super::overlay::{Action, Kind, Overlay};
 use super::pager::{self, Source, Start};
 use super::{Internal, Tui, first_line, view};
+use crate::handoff;
 use crate::history;
-use crate::retry::{self, HANDOFF_NOTE};
+use crate::retry;
 use crate::sessions::local_time;
 
 /// Messages shown when `tab` previews a session in a picker.
@@ -32,11 +34,6 @@ const HISTORY_ROWS: usize = 2000;
 const PANEL_ROWS: usize = 12;
 /// Longest session name taken from `/name`.
 const MAX_NAME_CHARS: usize = 80;
-
-const HANDOFF_PROMPT: &str = "Write a hand-off brief for whoever continues this work in a new session that has \
-none of this conversation. Use these headings: Goal, State, Decisions, Files touched, Next steps, Open questions. \
-Be specific: name files, commands and results, and say what was tried and did not work. Leave out what no longer \
-matters. Reply with the brief only.";
 
 const CONSULT_PROMPT: &str = "The question below is asked from another session, about the saved conversation \
 above. Answer from that conversation only, and say so when it does not hold the answer.";
@@ -68,7 +65,10 @@ pub enum SideWhat {
         /// What the consulted session is called.
         session: String,
     },
-    Handoff,
+    Handoff {
+        /// The brief made without a model, kept in case the request fails.
+        draft: Option<PathBuf>,
+    },
 }
 
 /// A request on the side whose reply is arriving in the panel.
@@ -103,8 +103,7 @@ pub(super) enum SideEvent {
 
 /// What the keys of a session picker do. It is shown above the list: the rule below the list
 /// has no room for five keys.
-const SESSION_KEYS: &str =
-    "ctrl+r rename · ctrl+d delete · ctrl+p pin or unpin · ctrl+n named only · tab preview";
+const SESSION_KEYS: &str = "ctrl+r rename · ctrl+d delete · ctrl+p pin or unpin · ctrl+n named only · ctrl+f all folders · tab preview";
 const TREE_KEYS: &str = "alt+l labels an entry · ctrl+l labelled only · ctrl+u your prompts only";
 
 /// The keys of a session picker, in the order [`Tui::session_hotkey`] reads them.
@@ -116,6 +115,7 @@ fn session_keys() -> Vec<(KeyCombo, &'static str)> {
         (ctrl('p'), ""),
         (ctrl('n'), ""),
         (KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE), ""),
+        (ctrl('f'), ""),
     ]
 }
 
@@ -236,23 +236,6 @@ fn clean_name(typed: &str) -> Option<String> {
     (!line.is_empty()).then(|| text::truncate(line, MAX_NAME_CHARS, "…"))
 }
 
-/// A conversation as context for a request on the side. A reply that was cut off while it was
-/// calling tools has no results to go with the calls, and a provider rejects that; it is left out.
-fn closed_context(session: &SessionStore) -> Vec<Message> {
-    let mut messages: Vec<Message> = session
-        .build_context(None)
-        .into_iter()
-        .map(|entry| entry.message)
-        .collect();
-    while messages
-        .last()
-        .is_some_and(|last| last.role == MessageRole::Assistant && last.tool_calls().next().is_some())
-    {
-        messages.pop();
-    }
-    messages
-}
-
 /// The last `rows` rows of `said`, wrapped to `width`.
 fn tail_rows(said: &str, width: usize, rows: usize) -> Vec<String> {
     let mut lines = wrapped(said, width);
@@ -345,21 +328,28 @@ impl Tui {
         let listed = match everywhere {
             true => super::places::every_session(&self.env.paths),
             false => match self.backend.sessions(None).await {
-                Ok(listed) => listed.into_iter().map(|(session, _)| session).collect(),
+                Ok(listed) => self.in_launch_folder(listed.into_iter().map(|(session, _)| session).collect()),
                 Err(why) => return self.fail(&why),
             },
         };
+        let narrowed = !everywhere && self.launch_folder().is_some() && !self.all_folders;
         let rows = picker_rows(listed, named_only, &open, !matches!(purpose, PickFor::Consult(_)));
         if rows.is_empty() {
             self.overlay = None;
             if let Some(note) = note {
                 self.info(&note);
             }
-            return self.info(match (named_only, everywhere) {
-                (true, false) => "no session of this project has a name",
-                (true, true) => "no session has a name",
-                (false, false) => "this project has no other sessions",
-                (false, true) => "there are no other sessions",
+            return self.info(match (named_only, everywhere, narrowed) {
+                (true, false, true) => {
+                    "no session of this folder has a name; ctrl+f lists every folder of the project"
+                }
+                (true, false, false) => "no session of this project has a name",
+                (true, true, _) => "no session has a name",
+                (false, false, true) => {
+                    "this folder has no other sessions; ctrl+f lists every folder of the project"
+                }
+                (false, false, false) => "this project has no other sessions",
+                (false, true, _) => "there are no other sessions",
             });
         }
         let home = &self.env.paths.home;
@@ -377,6 +367,13 @@ impl Tui {
         let mut body = vec![SESSION_KEYS.to_string()];
         if named_only {
             body.push("Named sessions only; ctrl+n shows all of them.".to_string());
+        }
+        if !everywhere && self.launch_folder().is_some() {
+            body.push(if self.all_folders {
+                "Every folder of the project; ctrl+f shows this folder's sessions only.".to_string()
+            } else {
+                "Sessions started in this folder; ctrl+f shows every folder of the project.".to_string()
+            });
         }
         body.extend(note);
         let title = match purpose {
@@ -411,6 +408,27 @@ impl Tui {
             }
         }
         self.overlay = Some(overlay);
+    }
+
+    /// The folder this run was started in, when the pickers narrow the project's sessions to it:
+    /// a session of this process whose sessions are kept in the project's directory.
+    fn launch_folder(&self) -> Option<PathBuf> {
+        self.backend
+            .local()
+            .and_then(|local| local.app.paths.session_folder().map(PathBuf::from))
+    }
+
+    /// `sessions` without those started in another folder of the project, unless `ctrl+f` asked
+    /// for them. The open session stays, wherever it was started.
+    fn in_launch_folder(&self, sessions: Vec<SessionSummary>) -> Vec<SessionSummary> {
+        let Some(folder) = self.launch_folder().filter(|_| !self.all_folders) else {
+            return sessions;
+        };
+        let open = self.session.id();
+        sessions
+            .into_iter()
+            .filter(|session| session.id == open || session.worked_in(&folder))
+            .collect()
     }
 
     /// Appends to a session of a picker: the open one through its store, another through its file.
@@ -478,7 +496,7 @@ impl Tui {
         let label = session_label(&row);
         let open = row.id == self.session.id();
         // Renaming, deleting, pinning and previewing work on the session files themselves.
-        if key != 3 && self.backend.local().is_none() {
+        if key != 3 && key != 5 && self.backend.local().is_none() {
             let note = "Only a session that runs in this process can rename, delete, pin or preview others."
                 .to_string();
             return self
@@ -538,6 +556,10 @@ impl Tui {
             3 => {
                 self.open_sessions(purpose, !named_only, Some(&row.id), None)
                     .await
+            }
+            5 => {
+                self.all_folders = !self.all_folders;
+                self.open_sessions(purpose, named_only, Some(&row.id), None).await
             }
             _ => {
                 let width = self.width();
@@ -668,10 +690,13 @@ impl Tui {
         if query.trim().is_empty() {
             return self.fail("usage: /search <text>");
         }
-        let found = match self.backend.sessions(Some(query.trim())).await {
+        let mut found = match self.backend.sessions(Some(query.trim())).await {
             Ok(found) => found,
             Err(why) => return self.fail(&why),
         };
+        if let Some(folder) = self.launch_folder().filter(|_| !self.all_folders) {
+            found.retain(|(session, _)| session.worked_in(&folder));
+        }
         if found.is_empty() {
             return self.info(&format!("no session of this project mentions `{}`", query.trim()));
         }
@@ -884,7 +909,15 @@ impl Tui {
                 };
                 let answer = match result {
                     Ok(answer) => answer,
-                    Err(why) => return self.fail(&format!("the request failed: {why}")),
+                    Err(why) => {
+                        let kept = match &side.what {
+                            SideWhat::Handoff { draft: Some(draft) } => {
+                                format!("; a draft brief made without the model is in {}", draft.display())
+                            }
+                            _ => String::new(),
+                        };
+                        return self.fail(&format!("the request failed: {why}{kept}"));
+                    }
                 };
                 if answer.text.trim().is_empty() {
                     let tools = answer.dropped_tools.join(", ");
@@ -895,7 +928,7 @@ impl Tui {
                     });
                 }
                 match side.what {
-                    SideWhat::Handoff => self.finish_handoff(answer.text.trim()).await,
+                    SideWhat::Handoff { draft } => self.finish_handoff(answer.text.trim(), draft).await,
                     SideWhat::Consult { question, session } => {
                         let items = ["Close", "Copy the answer", "Read it full screen"]
                             .iter()
@@ -932,7 +965,7 @@ impl Tui {
             Ok(saved) => saved,
             Err(e) => return self.fail(&format!("could not read {}: {e}", row.path.display())),
         };
-        let context = closed_context(&saved);
+        let context = handoff::closed_context(&saved);
         if context.is_empty() {
             return self.info("that session has no messages to ask about");
         }
@@ -949,22 +982,33 @@ impl Tui {
         );
     }
 
-    /// `/handoff [focus]`: has the model write a brief of this session, then opens a new session
-    /// that starts from the brief.
+    /// `/handoff [focus]`: keeps a draft brief made without a model, has the model write the
+    /// brief, then opens a new session that starts from it.
     pub(super) fn handoff(&mut self, focus: &str) {
         if !self.here_only("/handoff") || !self.idle_to("hand the work off") {
             return;
         }
-        let context = closed_context(&self.session);
+        let Some(local) = self.backend.local() else {
+            return;
+        };
+        let context = handoff::closed_context(&self.session);
         if context.is_empty() {
             return self.info("there is nothing to hand off yet");
         }
-        let mut question = HANDOFF_PROMPT.to_string();
-        if !focus.trim().is_empty() {
-            question.push_str(&format!("\n\nPut the weight on: {}", focus.trim()));
-        }
+        let cwd = local.app.paths.cwd.clone();
+        let todos = local
+            .app
+            .registry
+            .services
+            .get::<TodoStore>()
+            .map(|store| store.get(&local.active.lead.id))
+            .unwrap_or_default();
+        let id = self.session.id();
+        let draft = handoff::draft(&self.session, &todos, &cwd);
+        let draft = handoff::save_draft(&local.app.paths.sessions_dir().join(&id), &id, &draft).ok();
+        let question = handoff::prompt(focus, &handoff::ranked_files(&self.session, &cwd));
         self.start_side(
-            SideWhat::Handoff,
+            SideWhat::Handoff { draft },
             "Writing the hand-off brief".to_string(),
             context,
             question,
@@ -972,36 +1016,27 @@ impl Tui {
         );
     }
 
-    async fn finish_handoff(&mut self, brief: &str) {
+    async fn finish_handoff(&mut self, brief: &str, draft: Option<PathBuf>) {
         let Some(local) = self.backend.local() else {
             return;
         };
         let old = local.active.session.clone();
-        let made = SessionStore::create(
-            &local.app.paths.sessions_dir(),
-            &local.app.paths.cwd,
-            Some(&old.path()),
-        );
-        let new = match made {
-            Ok(new) => new,
+        let made =
+            handoff::create_continuation(&local.app.paths.sessions_dir(), &local.app.paths.cwd, &old, brief);
+        let file = match made {
+            Ok(file) => file,
             Err(e) => return self.fail(&format!("could not start the new session: {e}")),
         };
-        let (old_id, new_id) = (old.id(), new.id());
-        // The brief is the new session's first message. Nothing answers it until you write.
-        new.append(EntryKind::Message {
-            message: Message::user(format!("{HANDOFF_NOTE}{old_id}:\n\n{brief}")),
-        });
-        if let Some(name) = old.name() {
-            new.append(EntryKind::SessionInfo {
-                name: text::truncate(&format!("{name} (continued)"), MAX_NAME_CHARS, "…"),
-            });
-        }
+        let old_id = old.id();
         // Read back from its file, like any session that was not open here.
-        let file = new.path();
-        drop(new);
         if !self.go(Go::File(file)).await {
             return;
         }
+        // The draft is only for a hand-off that failed.
+        if let Some(draft) = draft {
+            let _ = std::fs::remove_file(draft);
+        }
+        let new_id = self.session.id();
         self.info(&format!(
             "handed off: session {old_id} continues as {new_id}. The brief is its first message; \
              send a message to start from it."
@@ -1297,7 +1332,7 @@ mod tests {
             signature: None,
         });
         store.append(EntryKind::Message { message: reply });
-        let context = closed_context(&store);
+        let context = handoff::closed_context(&store);
         assert_eq!(context.len(), 2);
         assert_eq!(context[1].text(), "looking");
     }

@@ -7,10 +7,20 @@
 	import { toasts } from '$lib/toasts.svelte';
 	import { ui } from '$lib/ui.svelte';
 	import type { SaveTo, SettingChanged, SettingList, SettingRow } from '$lib/protocol';
+	import { Switch } from '$lib/components/ui/switch';
+	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Input } from '$lib/components/ui/input';
+	import * as NativeSelect from '$lib/components/ui/native-select';
+	import * as InputGroup from '$lib/components/ui/input-group';
+	import * as CodeBlock from '$lib/components/ui/code-block';
+	import * as Field from '$lib/components/ui/field';
+	import Tip from '$lib/components/Tip.svelte';
 	import { Loaded } from './load.svelte';
 	import Unavailable from './Unavailable.svelte';
 	import ListEditor from './ListEditor.svelte';
 	import ScopeSelect from './ScopeSelect.svelte';
+	import Row from './Row.svelte';
 	import Search from '@lucide/svelte/icons/search';
 	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
@@ -87,35 +97,35 @@
 {#if rows.state !== 'ready'}
 	<Unavailable of={rows} what="settings" />
 {:else}
-	<div class="bg-background sticky top-0 z-10 -mx-1 space-y-2 px-1 pt-1 pb-2">
+	<!-- Stays in view while the list scrolls under it; the pane's own top padding is taken back. -->
+	<div class="sticky -top-4 z-10 -mx-1 -mt-4 grid gap-2 bg-popover px-1 pt-4 pb-2">
 		<div class="flex flex-wrap items-center gap-2">
-			<label class="relative min-w-40 flex-1">
-				<Search
-					class="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2"
-				/>
-				<input
-					class="field h-8 pl-8 text-[13px]"
+			<InputGroup.Root class="min-w-40 flex-1">
+				<InputGroup.Addon><Search /></InputGroup.Addon>
+				<InputGroup.Input
 					type="search"
 					bind:value={query}
-					placeholder="Search {all.length} settings"
+					placeholder="Search {all.length} settings…"
 					aria-label="Search settings"
 				/>
-			</label>
-			{#if app.canControl}<ScopeSelect
-					bind:value={scope}
-					project={rows.data?.project ?? false}
-				/>{/if}
+			</InputGroup.Root>
+			{#if app.canControl}
+				<ScopeSelect bind:value={scope} project={rows.data?.project ?? false} />
+			{/if}
 		</div>
-		<div class="no-scrollbar -mx-1 flex gap-1 overflow-x-auto px-1" role="group" aria-label="Pages">
+		<!-- Wrapped, not scrolled sideways: every page is in view without a gesture. -->
+		<div class="flex flex-wrap gap-1" role="group" aria-label="Pages">
 			{#each ['', ...pages] as p (p)}
-				<button
-					type="button"
-					class="page-chip"
-					aria-pressed={page === p && !query.trim()}
+				{@const on = page === p && !query.trim()}
+				<Button
+					variant={on ? 'secondary' : 'ghost'}
+					size="sm"
+					class="shrink-0 font-normal {on ? '' : 'text-muted-foreground'}"
+					aria-pressed={on}
 					onclick={() => {
 						page = p;
 						query = '';
-					}}>{p || 'All'}</button
+					}}>{p || 'All'}</Button
 				>
 			{/each}
 		</div>
@@ -124,149 +134,121 @@
 	{#each tree as p (p.page)}
 		<section aria-label={p.page} data-settings-page={p.page}>
 			{#if !page || query.trim()}
-				<h3 class="mt-4 mb-1 text-[15px] font-semibold tracking-[-0.01em]">{p.page}</h3>
+				<h3 class="mt-4 mb-1 text-base font-semibold tracking-tight">{p.page}</h3>
 			{/if}
 			{#each p.groups as g (g.group)}
-				{#if g.group !== p.page || p.groups.length > 1}<h4 class="set-h">{g.group}</h4>{/if}
-				{#each g.rows as r (r.path)}
-					{@const id = idOf(r)}
-					{@const wide = r.kind === 'list' || r.kind === 'role' || r.kind === 'table'}
-					<div
-						class="set-row {wide ? 'flex-col items-stretch! gap-y-2!' : 'stacks'}"
-						data-setting={r.path}
-						data-kind={r.kind}
-					>
-						<div class="min-w-0 flex-1">
-							<p class="set-label" id="{id}-l">
-								{r.label}
-								{#if r.source}<span class="tag ml-1 h-[1.125rem] align-[1px] text-[11px]"
-										>{SOURCE[r.source] ?? r.source}</span
-									>{/if}
-								{#if r.gated}<span
-										class="tag ml-1 h-[1.125rem] align-[1px] text-[11px]"
+				{#if g.group !== p.page || p.groups.length > 1}
+					<h4 class="mt-4 flex min-h-8 items-center text-xs font-medium text-muted-foreground">
+						{g.group}
+					</h4>
+				{/if}
+				<Field.Group class="gap-0">
+					{#each g.rows as r (r.path)}
+						{@const id = idOf(r)}
+						{@const wide = r.kind === 'list' || r.kind === 'role' || r.kind === 'table'}
+						<Row
+							label={r.label}
+							hint={r.description}
+							id="{id}-l"
+							orientation={wide ? 'vertical' : 'responsive'}
+							data-setting={r.path}
+							data-kind={r.kind}
+						>
+							{#snippet badges()}
+								{#if r.source}<Badge variant="secondary">{SOURCE[r.source] ?? r.source}</Badge>{/if}
+								{#if r.gated}
+									<Badge
+										variant="outline"
 										title="A project's config may set this only once the project is trusted."
-										>needs trust</span
-									>{/if}
-							</p>
-							<p class="set-hint">{r.description}</p>
-							<p class="text-faint mt-0.5 font-mono text-[11px]">
-								{r.path}{r.live ? '' : ' · applies on restart'}
-							</p>
-						</div>
-						<div class="flex min-w-0 shrink-0 items-center gap-1.5 {wide ? '' : 'max-w-[55%]'}">
-							{#if r.kind === 'switch'}
-								<button
-									type="button"
-									class="switch"
-									role="switch"
-									aria-checked={r.value === true}
-									aria-labelledby="{id}-l"
-									disabled={locked(r)}
-									onclick={() => set(r, r.value !== true)}
-								></button>
-							{:else if (r.kind === 'choice' || r.kind === 'theme') && r.choices?.length}
-								<select
-									class="select"
-									aria-labelledby="{id}-l"
-									value={String(r.value ?? '')}
-									disabled={locked(r)}
-									onchange={(e) => set(r, e.currentTarget.value)}
-								>
-									{#each r.choices as c (c)}<option value={c}>{c}</option>{/each}
-								</select>
-							{:else if r.kind === 'number'}
-								<input
-									class="field num h-8 w-24 text-right font-mono text-[13px]"
-									type="number"
-									step="any"
-									aria-labelledby="{id}-l"
-									value={Number(r.value ?? 0)}
-									disabled={locked(r)}
-									onchange={(e) => {
-										const n = e.currentTarget.valueAsNumber;
-										if (Number.isFinite(n)) void set(r, n);
-										else e.currentTarget.value = String(r.value ?? 0);
-									}}
-								/>
-							{:else if r.kind === 'role'}
-								<button
-									type="button"
-									class="btn btn-secondary"
-									onclick={() => (ui.settings = 'models')}>Edit in Models</button
-								>
-							{:else if r.kind === 'list'}
-								<ListEditor
-									items={list(r.value)}
-									label={r.label}
-									disabled={locked(r)}
-									onchange={(v) => set(r, v)}
-								/>
-							{:else if r.kind === 'table'}
-								<pre
-									class="well text-ink-2 scroll-thin max-h-40 w-full overflow-auto p-2.5 text-xs">{JSON.stringify(
-										r.value,
-										null,
-										2
-									)}</pre>
-							{:else}
-								<input
-									class="field h-8 w-48 max-w-full font-mono text-[13px]"
-									aria-labelledby="{id}-l"
-									value={String(r.value ?? '')}
-									disabled={locked(r)}
-									spellcheck="false"
-									onchange={(e) => set(r, e.currentTarget.value)}
-								/>
-							{/if}
-							{#if app.canControl && r.kind !== 'role' && r.source === scope}
-								<button
-									type="button"
-									class="icon-btn"
-									aria-label="Reset {r.label}: remove it from {SOURCE[scope]}"
-									title="Remove it from {SOURCE[scope]}"
-									onclick={() => set(r, null)}><RotateCcw class="size-3.5" /></button
-								>
-							{/if}
-						</div>
-					</div>
-				{/each}
+										>needs trust</Badge
+									>
+								{/if}
+							{/snippet}
+							{#snippet extra()}
+								<p class="font-mono text-xs break-all text-muted-foreground">
+									{r.path}{r.live ? '' : ' · applies on restart'}
+								</p>
+							{/snippet}
+							<div class="flex min-w-0 items-center gap-1.5 {wide ? 'w-full' : 'shrink-0'}">
+								{#if r.kind === 'switch'}
+									<Switch
+										aria-labelledby="{id}-l"
+										checked={r.value === true}
+										disabled={locked(r)}
+										onCheckedChange={(v) => set(r, v)}
+									/>
+								{:else if (r.kind === 'choice' || r.kind === 'theme') && r.choices?.length}
+									<NativeSelect.Root
+										aria-labelledby="{id}-l"
+										value={String(r.value ?? '')}
+										disabled={locked(r)}
+										onchange={(e) => set(r, e.currentTarget.value)}
+									>
+										{#each r.choices as c (c)}
+											<NativeSelect.Option value={c}>{c}</NativeSelect.Option>
+										{/each}
+									</NativeSelect.Root>
+								{:else if r.kind === 'number'}
+									<Input
+										class="num w-24 text-right"
+										type="number"
+										step="any"
+										aria-labelledby="{id}-l"
+										value={Number(r.value ?? 0)}
+										disabled={locked(r)}
+										onchange={(e) => {
+											const n = e.currentTarget.valueAsNumber;
+											if (Number.isFinite(n)) void set(r, n);
+											else e.currentTarget.value = String(r.value ?? 0);
+										}}
+									/>
+								{:else if r.kind === 'role'}
+									<Button variant="outline" onclick={() => (ui.settings = 'models')}
+										>Edit in Models</Button
+									>
+								{:else if r.kind === 'list'}
+									<div class="min-w-0 flex-1">
+										<ListEditor
+											items={list(r.value)}
+											label={r.label}
+											disabled={locked(r)}
+											onchange={(v) => set(r, v)}
+										/>
+									</div>
+								{:else if r.kind === 'table'}
+									<CodeBlock.Root size="sm" class="min-w-0 flex-1">
+										<CodeBlock.Content
+											code={JSON.stringify(r.value, null, 2)}
+											class="scroll-thin max-h-40"
+										/>
+									</CodeBlock.Root>
+								{:else}
+									<Input
+										class="w-48 max-w-full font-mono text-xs md:text-xs"
+										aria-labelledby="{id}-l"
+										value={String(r.value ?? '')}
+										disabled={locked(r)}
+										spellcheck="false"
+										onchange={(e) => set(r, e.currentTarget.value)}
+									/>
+								{/if}
+								{#if app.canControl && r.kind !== 'role' && r.source === scope}
+									<Tip
+										text="Remove it from {SOURCE[scope]}"
+										class="shrink-0"
+										aria-label="Reset {r.label}: remove it from {SOURCE[scope]}"
+										onclick={() => set(r, null)}><RotateCcw /></Tip
+									>
+								{/if}
+							</div>
+						</Row>
+					{/each}
+				</Field.Group>
 			{/each}
 		</section>
 	{:else}
-		<p class="text-muted-foreground py-8 text-center text-[13px]">
+		<p class="py-8 text-center text-sm text-muted-foreground">
 			No setting matches “{query.trim()}”.
 		</p>
 	{/each}
 {/if}
-
-<style>
-	.page-chip {
-		flex-shrink: 0;
-		height: 1.625rem;
-		padding: 0 0.625rem;
-		border-radius: 999px;
-		font-size: 0.75rem;
-		font-weight: 500;
-		color: var(--muted-foreground);
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out);
-	}
-	.page-chip[aria-pressed='true'] {
-		background: var(--active);
-		color: var(--foreground);
-	}
-	@media (hover: hover) {
-		.page-chip:hover {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-	}
-	@media (pointer: coarse) {
-		.page-chip {
-			height: 2.25rem;
-			padding: 0 0.875rem;
-			font-size: 0.8125rem;
-		}
-	}
-</style>

@@ -30,6 +30,11 @@ impl Sandbox {
     }
 
     fn azazel(&self, script: &Value, args: &[&str]) -> Output {
+        self.azazel_in(&self.project(), script, args)
+    }
+
+    /// `azazel` started in `cwd`, a folder of the project or the project itself.
+    fn azazel_in(&self, cwd: &std::path::Path, script: &Value, args: &[&str]) -> Output {
         let script_path = self.dir.path().join("script.json");
         std::fs::write(&script_path, script.to_string()).unwrap();
         let _ = std::fs::remove_file(self.dir.path().join("requests.jsonl"));
@@ -39,7 +44,7 @@ impl Sandbox {
             .env("AZAZEL_MOCK_SCRIPT", &script_path)
             .env("AZAZEL_MOCK_REQUESTS", self.dir.path().join("requests.jsonl"))
             .arg("--cwd")
-            .arg(self.project())
+            .arg(cwd)
             .args(args)
             .write_stdin("")
             .output()
@@ -377,4 +382,94 @@ fn sessions_are_listed_searched_exported_pruned_and_deleted_from_the_shell() {
     assert!(deleted.status.success(), "{}", stderr(&deleted));
     let list = sandbox.azazel(&script, &["sessions", "list", "--json"]);
     assert!(stdout(&list).trim().is_empty());
+}
+
+/// The first line of the reply the scripted provider gave in the last run, as `-p` prints it.
+fn printed(output: &Output) -> String {
+    assert!(output.status.success(), "{}", stderr(output));
+    stdout(output).trim().to_string()
+}
+
+/// Sessions belong to the folder they were started in: `-c` and `azazel sessions` of a folder
+/// of a project see that folder's sessions, `--all-folders` those of the whole project, and a
+/// session started at the root is what the root continues.
+#[test]
+fn sessions_belong_to_the_folder_they_were_started_in() {
+    let sandbox = Sandbox::new();
+    let web = sandbox.project().join("web");
+    std::fs::create_dir_all(&web).unwrap();
+    let reply = |text: &str| json!({ "lead": [{ "reply": { "text": text } }] });
+    let flags = ["--no-memory", "--set", "session.auto_name=false"];
+    let run = |cwd: &std::path::Path, text: &str, extra: &[&str]| {
+        let mut args = vec!["-p", "go"];
+        args.extend(flags);
+        args.extend(extra);
+        printed(&sandbox.azazel_in(cwd, &reply(text), &args))
+    };
+
+    // The folder's session is older than the project root's.
+    run(&web, "web answer", &["--name", "in-web"]);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    run(&sandbox.project(), "root answer", &["--name", "in-root"]);
+
+    let names = |cwd: &std::path::Path, extra: &[&str]| -> Vec<String> {
+        let mut args = vec!["sessions", "list", "--json"];
+        args.extend(extra);
+        let listed = sandbox.azazel_in(cwd, &reply("unused"), &args);
+        assert!(listed.status.success(), "{}", stderr(&listed));
+        let mut names: Vec<String> = stdout(&listed)
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["name"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&web, &[]), ["in-web"]);
+    assert_eq!(names(&sandbox.project(), &[]), ["in-root"]);
+    assert_eq!(names(&web, &["--all-folders"]), ["in-root", "in-web"]);
+
+    // `-c` continues the folder's own session, though the project root's is newer.
+    let continued = |cwd: &std::path::Path| {
+        let output = sandbox.azazel_in(
+            cwd,
+            &reply("again"),
+            &[
+                "-p",
+                "more",
+                "-c",
+                "--no-memory",
+                "--set",
+                "session.auto_name=false",
+            ],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+        std::fs::read_to_string(sandbox.dir.path().join("requests.jsonl")).unwrap_or_default()
+    };
+    let in_web = continued(&web);
+    assert!(
+        in_web.contains("go") && !in_web.contains("root answer"),
+        "{in_web}"
+    );
+    assert!(in_web.contains("web answer"), "{in_web}");
+    let in_root = continued(&sandbox.project());
+    assert!(
+        in_root.contains("root answer") && !in_root.contains("web answer"),
+        "{in_root}"
+    );
+
+    // A folder that never ran a session has none to continue; `--session` opens any by id.
+    let other = sandbox.project().join("docs");
+    std::fs::create_dir_all(&other).unwrap();
+    let none = sandbox.azazel_in(&other, &reply("x"), &["-p", "more", "-c"]);
+    assert_eq!(none.status.code(), Some(1), "{}", stdout(&none));
+    assert!(
+        stderr(&none).contains("no session was started in this folder"),
+        "{}",
+        stderr(&none)
+    );
 }

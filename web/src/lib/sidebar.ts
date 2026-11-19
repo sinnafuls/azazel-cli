@@ -2,15 +2,6 @@
 import type { SessionInfo } from '$lib/protocol';
 import { basename } from '$lib/format';
 
-export const SIDEBAR_MIN = 220;
-export const SIDEBAR_MAX = 480;
-export const SIDEBAR_DEFAULT = 260;
-export const SIDEBAR_RAIL = 48;
-
-export function clampWidth(w: number): number {
-	return Math.round(Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, Number.isFinite(w) ? w : 260)));
-}
-
 export interface ProjectGroup {
 	/** The folder, as the session reports it: the key the collapsed state is remembered by. */
 	cwd: string;

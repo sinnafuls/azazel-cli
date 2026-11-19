@@ -7,6 +7,7 @@ use std::time::Duration;
 use azazel_ai::Usage;
 use serde_json::Value;
 
+use crate::routing::Routing;
 use crate::team::MemberState;
 
 /// Lines of what the agent said that a status shows.
@@ -52,6 +53,8 @@ pub struct MemberStatus {
     pub cost_usd: Option<f64>,
     /// What the questions it asked other agents on the side (`agent_send` with `ask`) cost.
     pub asked: Option<Usage>,
+    /// What model routing made of its task, when it rated one.
+    pub routing: Option<Routing>,
 }
 
 /// The paths a call of a file-changing tool names. Other tools change no file the harness
@@ -172,6 +175,13 @@ pub fn status_text(status: &MemberStatus) -> String {
             "\nside questions it asked (btw): {} tokens{}",
             asked.input + asked.cache_read + asked.cache_write + asked.output,
             money(asked.cost_usd)
+        ));
+    }
+    if let Some(routing) = &status.routing {
+        out.push_str(&format!(
+            "
+{}",
+            routing.line()
         ));
     }
     out

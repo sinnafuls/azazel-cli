@@ -1,7 +1,8 @@
 <script lang="ts">
 	// One WebSocket per open session, shared by the chat and the agent views, with the right-hand pane
-	// (agents and usage) on desktop and a bottom sheet for them on a phone.
-	import { onMount, type Snippet } from 'svelte';
+	// (agents and usage) on desktop, which slides open and shut, and a bottom sheet for them on a phone.
+	import { onMount, type Snippet, untrack } from 'svelte';
+	import type { Pane } from 'paneforge';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { app } from '$lib/app.svelte';
@@ -14,14 +15,23 @@
 	import { homePath } from '$lib/sidebar';
 	import { viewport } from '$lib/media.svelte';
 	import { newChat } from '$lib/newchat.svelte';
-	import StatusBar from '$lib/components/StatusBar.svelte';
+	import { resume } from '$lib/resume.svelte';
+	import Segmented from '$lib/components/Segmented.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import * as Tabs from '$lib/components/ui/tabs';
+	import * as Resizable from '$lib/components/ui/resizable';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import * as Sidebar from '$lib/components/ui/sidebar';
+	import * as Field from '$lib/components/ui/field';
+	import { Input } from '$lib/components/ui/input';
+	import PanelRight from '@lucide/svelte/icons/panel-right';
 	import AgentHub from '$lib/components/AgentHub.svelte';
 	import UsagePanel from '$lib/components/UsagePanel.svelte';
 	import StateDot from '$lib/components/StateDot.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
-	import Menu, { type MenuItem } from '$lib/components/Menu.svelte';
+	import Tip from '$lib/components/Tip.svelte';
 	import SquarePen from '@lucide/svelte/icons/square-pen';
-	import PanelLeft from '@lucide/svelte/icons/panel-left';
 	import Ellipsis from '@lucide/svelte/icons/ellipsis';
 	import Pencil from '@lucide/svelte/icons/pencil';
 	import GitFork from '@lucide/svelte/icons/git-fork';
@@ -41,7 +51,6 @@
 		onTheme: (t) => app.setTerminalTheme(t)
 	});
 	setSession(session);
-
 	onMount(() => {
 		session.start();
 		ui.session = session;
@@ -66,7 +75,51 @@
 	const stateName = $derived(waiting ? 'waiting for you' : session.busy ? 'working' : 'idle');
 	const agentId = $derived(page.params.agent ?? null);
 	let panel = $state<'agents' | 'usage' | null>(null);
-	let rightTab = $state<'agents' | 'usage'>('agents');
+
+	// The right pane opens and closes as the sidebar does: its width runs for 200ms while the chat
+	// takes or gives the room. It is a collapsible pane of the resizable group, so the handle stays.
+	const SLIDE = 200;
+	let pane = $state<Pane>();
+	let paneEl = $state<HTMLElement | null>(null);
+	let groupEl = $state<HTMLElement | null>(null);
+	/** While the pane is on its way: its content keeps `slideWidth`, so nothing in it reflows. */
+	let sliding = $state(false);
+	let slideWidth = $state(0);
+	let slideTimer: ReturnType<typeof setTimeout> | undefined;
+	// Set by the button: the next change of `ui.rightOpen` is shown moving. What the stored layout
+	// or a drag of the handle does is not.
+	let animate = false;
+	// The group tells every pane its size once, when it has laid them out; only what happens after
+	// that (a drag that folds the pane away) is taken as the reader's choice.
+	let synced = false;
+	function toggleRight() {
+		animate = true;
+		ui.setRight(!ui.rightOpen);
+	}
+	$effect(() => {
+		const open = ui.rightOpen;
+		// Until the group has a layout there is nothing to fold; this runs again when it has.
+		if (!pane || typeof pane.getSize() !== 'number') return;
+		const folded = pane.isCollapsed();
+		untrack(() => {
+			synced = true;
+			if (open !== folded) return;
+			const moving = animate;
+			animate = false;
+			if (moving) {
+				if (!open) slideWidth = paneEl?.offsetWidth ?? 0;
+				sliding = true;
+				clearTimeout(slideTimer);
+				slideTimer = setTimeout(() => (sliding = false), SLIDE + 40);
+			}
+			if (open) pane!.expand();
+			else pane!.collapse();
+			// The width the pane is on its way to: its share of the group, less the handle's hairline.
+			if (moving && open)
+				slideWidth = Math.round((((groupEl?.clientWidth ?? 0) - 1) * pane!.getSize()) / 100);
+		});
+	});
+	const slide = $derived(sliding ? 'transition-[flex-grow] duration-200 ease-linear' : '');
 	const live = $derived(
 		session.model.roster.filter(
 			(m) => m.id !== 'lead' && (m.state === 'running' || m.state === 'queued')
@@ -90,153 +143,228 @@
 			working = false;
 		}
 	}
-	const actions = $derived<MenuItem[]>([
-		{
-			label: 'Rename',
-			icon: Pencil,
-			onselect: () => {
-				name = title;
-				ask = 'rename';
-			}
-		},
-		{
-			label: 'Fork',
-			icon: GitFork,
-			onselect: () => run(() => session.fork(), 'Forked: this session continues in a copy.')
-		},
-		{ label: 'Rewind…', icon: History, onselect: () => (ui.rewind = {}) },
-		{
-			label: 'Compact',
-			icon: Shrink,
-			disabled: session.busy,
-			onselect: () => run(() => session.compact(), 'Compacting the conversation.')
-		},
-		{
-			label: 'Export',
-			icon: Download,
-			onselect: () =>
-				run(async () => {
-					const r = await session.exportTo();
-					toasts.push(`Exported to ${r.path}`, 'success', 9000);
-				})
-		},
-		'sep',
-		{ label: 'End session', icon: CircleStop, danger: true, onselect: () => (ask = 'end') }
-	]);
 </script>
 
 <svelte:head><title>{waiting ? '(!) ' : ''}{title} · azazel</title></svelte:head>
 
-<div class="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
-	<div class="flex min-h-0 min-w-0 flex-col">
-		<header class="shrink-0 pt-[env(safe-area-inset-top)]">
-			<div class="flex h-12 items-center gap-1 px-2 md:px-3">
-				{#if !viewport.wide}
-					<button
-						type="button"
-						class="icon-btn"
-						aria-label="Open the sidebar"
-						onclick={() => (ui.drawer = true)}><PanelLeft class="size-[18px]" /></button
-					>
-				{/if}
-				<div class="flex min-w-0 flex-1 items-baseline gap-2.5 px-1.5">
-					<h1 class="flex min-w-0 items-center gap-2 text-sm leading-5 font-medium">
-						<StateDot state={stateName} />
-						<span class="truncate">{title}</span>
-						{#if agentId}<span class="text-muted-foreground shrink-0 font-normal">/ {agentId}</span
-							>{/if}
-					</h1>
-					{#if where}
-						<p
-							class="text-muted-foreground hidden min-w-0 truncate font-mono text-xs leading-4 md:block"
-							title={where}
-						>
-							{homePath(where)}{#if session.state?.branch}<span class="text-faint"
-									>{` · ${session.state.branch}`}</span
-								>{/if}
-						</p>
-					{/if}
-				</div>
-				{#if newChat.available && where}
-					<button
-						type="button"
-						class="icon-btn"
-						aria-label="New chat in this folder"
-						title="New chat in this folder"
-						onclick={() => newChat.show(where)}><SquarePen class="size-4" /></button
-					>
-				{/if}
-				<button
-					type="button"
-					class="icon-btn xl:hidden {live ? 'w-auto gap-1 px-1.5' : ''}"
-					aria-label="Agents and usage"
-					title="Agents and usage"
-					onclick={() => (panel = 'agents')}
+{#snippet notice(role: 'status' | 'alert')}
+	<div
+		class="flex min-h-9 shrink-0 flex-wrap items-center gap-x-1.5 border-b bg-muted/50 px-4 py-1 text-xs text-muted-foreground"
+		{role}
+	>
+		{#if session.status === 'reconnecting' || session.status === 'connecting'}
+			<WifiOff class="size-3.5 shrink-0" />
+			<span
+				>{session.status === 'connecting' ? 'Connecting…' : 'Connection lost. Reconnecting…'}</span
+			>
+		{:else if session.status === 'ended'}
+			<span>This session has ended.</span>
+			{#if resume.available && session.state?.session_id}
+				<Button
+					variant="link"
+					size="xs"
+					class="px-0"
+					onclick={() =>
+						resume
+							.continueWith(session.state!.session_id)
+							.catch((e) => toasts.push(e instanceof Error ? e.message : String(e), 'error'))}
+					>Continue</Button
 				>
-					<Users class="size-4" />
-					{#if live}<span class="text-info num text-xs font-medium">{live}</span>{/if}
-				</button>
+				<span>or</span>
+			{/if}
+			<Button variant="link" size="xs" class="px-0" href="/">Back to the list</Button>
+		{:else if session.status === 'missing'}
+			<span>This session is not running any more.</span>
+			{#if resume.available}
+				<Button variant="link" size="xs" class="px-0" onclick={() => resume.show()}
+					>Resume a session</Button
+				>
+				<span>or</span>
+			{/if}
+			<Button variant="link" size="xs" class="px-0" href="/">Back to the list</Button>
+		{:else}
+			<span class="text-destructive">This device was signed out.</span>
+			<Button variant="link" size="xs" class="px-0" onclick={() => app.init()}>Check again</Button>
+		{/if}
+	</div>
+{/snippet}
+
+{#snippet chat()}
+	<div class="flex min-h-0 min-w-0 flex-1 flex-col">
+		<!-- One quiet bar, as the page header of sin-api's shell: the title at the left, icons right. -->
+		<header
+			class="flex h-14 shrink-0 items-center gap-2 border-b px-4 pt-[env(safe-area-inset-top)]"
+			data-session-header
+		>
+			{#if !viewport.wide}
+				<Sidebar.Trigger class="-ml-1.5" aria-label="Open the sidebar" />
+			{/if}
+			<h1
+				class="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium"
+				title={where
+					? homePath(where) + (session.state?.branch ? ` · ${session.state.branch}` : '')
+					: undefined}
+			>
+				<StateDot state={stateName} />
+				<span class="truncate">{title}</span>
+				{#if agentId}<span class="shrink-0 font-normal text-muted-foreground">/ {agentId}</span
+					>{/if}
+			</h1>
+			<div class="-mr-1.5 flex shrink-0 items-center gap-0.5">
+				{#if newChat.available && where}
+					<Tip
+						text="New chat in this folder"
+						side="bottom"
+						aria-label="New chat in this folder"
+						onclick={() => newChat.show(where)}><SquarePen /></Tip
+					>
+				{/if}
+				{#if !viewport.lg}
+					<Tip
+						text="Agents and usage"
+						side="bottom"
+						size={live ? 'sm' : 'icon-sm'}
+						aria-label="Agents and usage"
+						onclick={() => (panel = 'agents')}
+					>
+						<Users />
+						{#if live}<span class="num text-xs text-success">{live}</span>{/if}
+					</Tip>
+				{:else}
+					<Tip
+						text={ui.rightOpen ? 'Hide the side panel' : 'Show the side panel'}
+						side="bottom"
+						size={live && !ui.rightOpen ? 'sm' : 'icon-sm'}
+						aria-label={ui.rightOpen ? 'Hide the side panel' : 'Show the side panel'}
+						aria-pressed={ui.rightOpen}
+						onclick={toggleRight}
+					>
+						<PanelRight />
+						{#if live && !ui.rightOpen}<span class="num text-xs text-success">{live}</span>{/if}
+					</Tip>
+				{/if}
 				{#if app.canControl}
-					<Menu label="Session actions" items={actions}><Ellipsis class="size-4" /></Menu>
+					<DropdownMenu.Root>
+						<DropdownMenu.Trigger>
+							{#snippet child({ props })}
+								<Button {...props} variant="ghost" size="icon-sm" aria-label="Session actions">
+									<Ellipsis />
+								</Button>
+							{/snippet}
+						</DropdownMenu.Trigger>
+						<DropdownMenu.Content align="end" class="min-w-44">
+							<DropdownMenu.Item
+								onSelect={() => {
+									name = title;
+									ask = 'rename';
+								}}><Pencil /> Rename</DropdownMenu.Item
+							>
+							<DropdownMenu.Item
+								onSelect={() =>
+									run(() => session.fork(), 'Forked: this session continues in a copy.')}
+								><GitFork /> Fork</DropdownMenu.Item
+							>
+							<DropdownMenu.Item onSelect={() => (ui.rewind = {})}
+								><History /> Rewind…</DropdownMenu.Item
+							>
+							<DropdownMenu.Item
+								disabled={session.busy}
+								onSelect={() => run(() => session.compact(), 'Compacting the conversation.')}
+								><Shrink /> Compact</DropdownMenu.Item
+							>
+							<DropdownMenu.Item
+								onSelect={() =>
+									run(async () => {
+										const r = await session.exportTo();
+										toasts.push(`Exported to ${r.path}`, 'success', 9000);
+									})}><Download /> Export</DropdownMenu.Item
+							>
+							<DropdownMenu.Separator />
+							<DropdownMenu.Item variant="destructive" onSelect={() => (ask = 'end')}
+								><CircleStop /> End session</DropdownMenu.Item
+							>
+						</DropdownMenu.Content>
+					</DropdownMenu.Root>
 				{/if}
 			</div>
-			<StatusBar {session} canControl={app.canControl} />
 		</header>
 
-		{#if session.status === 'reconnecting' || session.status === 'connecting'}
-			<div
-				class="bg-inset text-muted-foreground flex items-center gap-2 border-y px-4 py-2 text-xs"
-				role="status"
-			>
-				<WifiOff class="size-3.5 shrink-0" />
-				{session.status === 'connecting' ? 'Connecting…' : 'Connection lost. Reconnecting…'}
-			</div>
-		{:else if session.status === 'ended'}
-			<div class="bg-inset border-y px-4 py-2 text-xs" role="status">
-				This session has ended. <a class="text-accent-text underline underline-offset-2" href="/"
-					>Back to the list</a
-				>
-			</div>
-		{:else if session.status === 'missing'}
-			<div class="bg-inset border-y px-4 py-2 text-xs" role="alert">
-				This session is not running any more. <a
-					class="text-accent-text underline underline-offset-2"
-					href="/">Back to the list</a
-				>
-			</div>
-		{:else if session.status === 'unauthorized'}
-			<div class="bg-inset text-destructive border-y px-4 py-2 text-xs" role="alert">
-				This device was signed out. <button
-					class="underline underline-offset-2"
-					onclick={() => app.init()}>Check again</button
-				>
-			</div>
+		{#if session.status === 'reconnecting' || session.status === 'connecting' || session.status === 'ended'}
+			{@render notice('status')}
+		{:else if session.status === 'missing' || session.status === 'unauthorized'}
+			{@render notice('alert')}
 		{/if}
 
 		{@render children()}
 	</div>
+{/snippet}
 
-	<aside class="hidden min-h-0 flex-col border-l xl:flex" aria-label="Agents and usage">
-		<div class="flex h-12 shrink-0 items-center px-3">
-			<div class="seg w-full" role="tablist">
-				{#each ['agents', 'usage'] as t (t)}
-					<button
-						role="tab"
-						aria-selected={rightTab === t}
-						class="capitalize"
-						onclick={() => (rightTab = t as 'agents' | 'usage')}>{t}</button
-					>
-				{/each}
-			</div>
+{#snippet side()}
+	<Tabs.Root bind:value={ui.rightTab} class="flex h-full min-h-0 flex-col gap-0">
+		<div class="flex h-14 shrink-0 items-center border-b px-4">
+			<!-- The line under the chosen tab is drawn in the accent. -->
+			<Tabs.List variant="line">
+				<Tabs.Trigger value="agents" class="after:bg-brand">Agents</Tabs.Trigger>
+				<Tabs.Trigger value="usage" class="after:bg-brand">Usage</Tabs.Trigger>
+			</Tabs.List>
 		</div>
 		<div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
-			{#if rightTab === 'agents'}<AgentHub
-					{session}
-					canControl={app.canControl}
-					active={agentId ?? 'lead'}
-				/>{:else}<UsagePanel {session} />{/if}
+			<Tabs.Content value="agents">
+				<AgentHub {session} canControl={app.canControl} active={agentId ?? 'lead'} />
+			</Tabs.Content>
+			<Tabs.Content value="usage"><UsagePanel {session} /></Tabs.Content>
 		</div>
-	</aside>
+	</Tabs.Root>
+{/snippet}
+
+<div class="flex min-h-0 flex-1">
+	{#if viewport.lg}
+		<Resizable.PaneGroup
+			bind:ref={groupEl}
+			direction="horizontal"
+			autoSaveId="azazel-right-pane"
+			class="min-h-0 flex-1"
+		>
+			<Resizable.Pane defaultSize={72} minSize={40} order={1} class="flex! min-w-0 {slide}">
+				{@render chat()}
+			</Resizable.Pane>
+			<!-- Folded away, the pane is still there at no width: its handle and its content are not. -->
+			<Resizable.Handle
+				aria-label="Resize the side panel"
+				class={ui.rightOpen ? '' : 'hidden'}
+				disabled={!ui.rightOpen}
+			/>
+			<Resizable.Pane
+				bind:this={pane}
+				bind:ref={paneEl}
+				defaultSize={28}
+				minSize={20}
+				maxSize={50}
+				collapsible
+				collapsedSize={0}
+				onCollapse={() => synced && pane?.isCollapsed() && ui.rightOpen && ui.setRight(false)}
+				onExpand={() => synced && pane?.isExpanded() && !ui.rightOpen && ui.setRight(true)}
+				class="min-w-0 overflow-hidden {slide}"
+				id="right"
+				order={2}
+				data-right-pane={ui.rightOpen ? 'open' : 'closed'}
+				data-sliding={sliding || undefined}
+			>
+				{#if ui.rightOpen || sliding}
+					<aside
+						class="h-full min-h-0"
+						style:width={sliding && slideWidth ? `${slideWidth}px` : undefined}
+						aria-label="Agents and usage"
+						inert={!ui.rightOpen}
+					>
+						{@render side()}
+					</aside>
+				{/if}
+			</Resizable.Pane>
+		</Resizable.PaneGroup>
+	{:else}
+		{@render chat()}
+	{/if}
 </div>
 
 <Sheet
@@ -244,16 +372,16 @@
 	title={panel === 'usage' ? 'Usage' : 'Agents'}
 	onclose={() => (panel = null)}
 >
-	<div class="seg mb-4" role="tablist">
-		{#each ['agents', 'usage'] as t (t)}
-			<button
-				role="tab"
-				aria-selected={panel === t}
-				class="capitalize"
-				onclick={() => (panel = t as 'agents' | 'usage')}>{t}</button
-			>
-		{/each}
-	</div>
+	<Segmented
+		class="mb-4"
+		label="Panel"
+		value={panel ?? 'agents'}
+		onchange={(v) => (panel = v)}
+		options={[
+			{ value: 'agents', label: 'Agents' },
+			{ value: 'usage', label: 'Usage' }
+		]}
+	/>
 	{#if panel === 'usage'}<UsagePanel {session} />{:else}<AgentHub
 			{session}
 			canControl={app.canControl}
@@ -265,53 +393,55 @@
 	open={ask === 'rename'}
 	title="Rename session"
 	onclose={() => (ask = null)}
-	class="md:max-w-md"
+	class="sm:max-w-md"
 >
 	<form
-		class="space-y-4"
+		id="rename-open-session"
 		onsubmit={(e) => {
 			e.preventDefault();
 			if (name.trim()) void run(() => session.setName(name.trim()).then(() => sessions.refresh()));
 		}}
 	>
-		<label class="block">
-			<span class="label mb-1.5 block">Name</span>
-			<!-- svelte-ignore a11y_autofocus -->
-			<input class="field" bind:value={name} maxlength="120" autocomplete="off" autofocus />
-		</label>
-		<div class="flex justify-end gap-2">
-			<button type="button" class="btn btn-secondary" onclick={() => (ask = null)}>Cancel</button>
-			<button type="submit" class="btn btn-primary" disabled={working || !name.trim()}
-				>Rename</button
-			>
-		</div>
+		<Field.Field>
+			<Field.Label for="rename-open-session-name">Name</Field.Label>
+			<Input
+				id="rename-open-session-name"
+				bind:value={name}
+				maxlength={120}
+				autocomplete="off"
+				autofocus
+			/>
+		</Field.Field>
 	</form>
+	{#snippet footer()}
+		<Button variant="outline" onclick={() => (ask = null)}>Cancel</Button>
+		<Button type="submit" form="rename-open-session" disabled={working || !name.trim()}
+			>Rename</Button
+		>
+	{/snippet}
 </Sheet>
 
-<Sheet
-	open={ask === 'end'}
-	title="End this session?"
-	onclose={() => (ask = null)}
-	class="md:max-w-md"
->
-	<div class="space-y-4">
-		<p class="text-muted-foreground text-sm leading-relaxed">
-			<span class="text-foreground font-medium">{title}</span> stops now and leaves the list. Its conversation
-			stays on the computer and can be resumed from the terminal.
-		</p>
-		<div class="flex justify-end gap-2">
-			<button type="button" class="btn btn-secondary" onclick={() => (ask = null)}>Cancel</button>
-			<button
-				type="button"
-				class="btn btn-destroy"
+<AlertDialog.Root open={ask === 'end'} onOpenChange={(v) => !v && (ask = null)}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>End this session?</AlertDialog.Title>
+			<AlertDialog.Description>
+				<span class="font-medium text-foreground">{title}</span> stops now and leaves the list. Its conversation
+				stays on the computer and can be resumed from the terminal.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<Button
+				variant="destructive"
 				disabled={working}
 				onclick={() =>
 					run(async () => {
 						await session.end(true).catch(() => {});
 						await sessions.refresh();
 						await goto('/');
-					})}>End session</button
+					})}>End session</Button
 			>
-		</div>
-	</div>
-</Sheet>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

@@ -39,7 +39,8 @@ impl Sandbox {
         std::fs::read_to_string(self.path(relative)).ok()
     }
 
-    fn command(&self) -> Command {
+    /// `azazel` started in `cwd`, a path relative to the sandbox.
+    fn command_in(&self, cwd: &str) -> Command {
         let mut command = Command::cargo_bin("azazel").unwrap();
         command
             .env("AZAZEL_HOME", self.path("home"))
@@ -49,15 +50,19 @@ impl Sandbox {
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .arg("--cwd")
-            .arg(self.path("project"));
+            .arg(self.path(cwd));
         command
     }
 
     /// A print-mode run answering from `script`, with every request recorded.
     fn run(&self, script: &Value, args: &[&str]) -> Output {
+        self.run_in("project", script, args)
+    }
+
+    fn run_in(&self, cwd: &str, script: &Value, args: &[&str]) -> Output {
         self.write("script.json", &script.to_string());
         let _ = std::fs::remove_file(self.path("requests.jsonl"));
-        self.command()
+        self.command_in(cwd)
             .env("AZAZEL_MOCK_SCRIPT", self.path("script.json"))
             .env("AZAZEL_MOCK_REQUESTS", self.path("requests.jsonl"))
             .args(args)
@@ -206,6 +211,138 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules() {
         results[4].contains("denied by rule `read(vault/**)`"),
         "{}",
         results[4]
+    );
+}
+
+/// A session started in a folder of the project writes in that folder; the project's other
+/// folders and its parent are outside the roots until `--add-dir` (or `/add-dir`) names them.
+#[test]
+fn a_session_started_in_a_sub_folder_writes_there_and_asks_before_leaving_it() {
+    let sandbox = Sandbox::new();
+    sandbox.write("project/web/.keep", "");
+    let script = json!({ "lead": [
+        call("c1", "write", json!({ "path": "inside.txt", "content": "in
+" })),
+        call("c2", "write", json!({ "path": "../outside.txt", "content": "out
+" })),
+        text("done"),
+    ] });
+    let unproven = ["--set", "guards.done_check=false"];
+    let mut args = vec!["-p", "write", "--mode", "accept-edits"];
+    args.extend(unproven);
+    let output = sandbox.run_in("project/web", &script, &args);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        sandbox.read("project/web/inside.txt").as_deref(),
+        Some(
+            "in
+"
+        )
+    );
+    let results = sandbox.results();
+    assert!(
+        results[2].contains("permission required for write"),
+        "{results:?}"
+    );
+    assert!(!sandbox.path("project/outside.txt").exists());
+
+    // With the parent added, the same write goes through.
+    args.extend(["--add-dir", ".."]);
+    let output = sandbox.run_in("project/web", &script, &args);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        sandbox.read("project/outside.txt").as_deref(),
+        Some(
+            "out
+"
+        )
+    );
+
+    // A session started at the project root still writes anywhere in the project.
+    let script = json!({ "lead": [
+        call("c1", "write", json!({ "path": "web/from_root.txt", "content": "r
+" })),
+        text("done"),
+    ] });
+    let output = sandbox.run_in(
+        "project",
+        &script,
+        &[
+            "-p",
+            "write",
+            "--mode",
+            "auto",
+            "--set",
+            "guards.done_check=false",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        sandbox.read("project/web/from_root.txt").as_deref(),
+        Some(
+            "r
+"
+        )
+    );
+}
+
+/// What the project's root holds still applies in a sub-folder: its `AGENTS.md` is in the
+/// prompt, and trusting the root covers the folder, so its configuration applies unasked.
+#[test]
+fn a_sub_folder_keeps_the_roots_context_files_and_trust() {
+    let sandbox = Sandbox::new();
+    sandbox.write(
+        "project/AGENTS.md",
+        "Root rule: use tabs.
+",
+    );
+    sandbox.write("project/web/.keep", "");
+    sandbox.write(
+        "project/.azazel/config.toml",
+        "[permissions]
+mode = \"bypass\"
+[guards]
+done_check = false
+",
+    );
+    let script = json!({ "lead": [
+        call("c1", "write", json!({ "path": "made.txt", "content": "x
+" })),
+        text("done"),
+    ] });
+    let untrusted = sandbox.run_in("project/web", &script, &["-p", "make a file"]);
+    assert!(untrusted.status.success(), "{}", stderr(&untrusted));
+    assert!(
+        sandbox
+            .read("requests.jsonl")
+            .unwrap()
+            .contains("Root rule: use tabs.")
+    );
+    // The project's mode is not taken before the project is trusted.
+    assert!(
+        sandbox.results()[1].contains("permission required for write"),
+        "{:?}",
+        sandbox.results()
+    );
+    assert!(!sandbox.path("project/web/made.txt").exists());
+
+    TrustStore::new(sandbox.path("home/trust.json"))
+        .set(&sandbox.path("project"), true)
+        .unwrap();
+    let trusted = sandbox.run_in("project/web", &script, &["-p", "make a file"]);
+    assert!(trusted.status.success(), "{}", stderr(&trusted));
+    assert_eq!(
+        sandbox.read("project/web/made.txt").as_deref(),
+        Some(
+            "x
+"
+        )
+    );
+    assert!(
+        sandbox
+            .read("requests.jsonl")
+            .unwrap()
+            .contains("Root rule: use tabs.")
     );
 }
 

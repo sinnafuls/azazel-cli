@@ -1,8 +1,18 @@
 <script lang="ts">
+	// The conversation: your messages, the agent's replies, its runs of tool calls and what slash
+	// commands answered. It follows its own bottom while you are there and leaves you alone when you
+	// scrolled up.
 	import type { Item, ToolItem } from '$lib/session/reduce';
 	import Markdown from './Markdown.svelte';
 	import ToolSteps from './ToolSteps.svelte';
 	import Brand from './Brand.svelte';
+	import Tip from './Tip.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Spinner } from '$lib/components/ui/spinner';
+	import * as Alert from '$lib/components/ui/alert';
+	import * as Empty from '$lib/components/ui/empty';
+	import * as Collapsible from '$lib/components/ui/collapsible';
+	import * as CodeBlock from '$lib/components/ui/code-block';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import Copy from '@lucide/svelte/icons/copy';
@@ -14,6 +24,8 @@
 	import Terminal from '@lucide/svelte/icons/terminal';
 	import { tokens } from '$lib/format';
 	import { tick } from 'svelte';
+	import { app } from '$lib/app.svelte';
+	import { ui } from '$lib/ui.svelte';
 
 	let {
 		items,
@@ -108,61 +120,65 @@
 				.slice(0, 300);
 	});
 
+	// The terminal's `tui.show_thinking`, unless Settings > General > Thinking says otherwise.
+	const showThinking = $derived(app.showsThinking(ui.session?.state?.show_thinking));
 	let thinkingOpen = $state<Record<string, boolean>>({});
 	const isOpen = (id: string, streaming: boolean) => thinkingOpen[id] ?? streaming;
+
+	// The actions of a message: there on hover and on focus, always there on touch.
+	const quiet =
+		'opacity-0 transition-opacity duration-150 group-focus-within/msg:opacity-100 group-hover/msg:opacity-100 pointer-coarse:opacity-100';
 </script>
 
 {#snippet copyBtn(id: string, text: string)}
-	<button
-		type="button"
-		class="icon-btn"
+	<Tip
+		text={copied === id ? 'Copied' : 'Copy'}
 		aria-label={copied === id ? 'Copied' : 'Copy'}
-		title="Copy"
 		onclick={() => copy(id, text)}
-		>{#if copied === id}<Check class="text-success size-3.5" />{:else}<Copy
-				class="size-3.5"
-			/>{/if}</button
+		>{#if copied === id}<Check class="text-success" />{:else}<Copy />{/if}</Tip
 	>
 {/snippet}
 {#snippet act(label: string, Icon: typeof Copy, run: () => void)}
-	<button type="button" class="icon-btn" aria-label={label} title={label} onclick={run}
-		><Icon class="size-3.5" /></button
-	>
+	<Tip text={label} aria-label={label} onclick={run}><Icon /></Tip>
 {/snippet}
 
 <div class="relative min-h-0 flex-1">
 	<div
 		bind:this={scroller}
 		{onscroll}
-		class="fade-foot scroll-thin absolute inset-0 overflow-y-auto overscroll-contain"
+		class="scroll-thin absolute inset-0 overflow-y-auto overscroll-contain"
 		data-transcript
 	>
-		<div class="col flex min-h-full flex-col gap-4 py-6 md:py-8">
+		<div class="mx-auto flex min-h-full w-full max-w-3xl flex-col gap-4 px-4 py-6 md:px-6">
 			{#if canLoadEarlier}
-				<button
-					type="button"
-					class="btn btn-secondary mx-auto text-xs"
+				<Button
+					variant="outline"
+					size="sm"
+					class="mx-auto"
 					disabled={loadingEarlier}
 					onclick={onEarlier}
 				>
+					{#if loadingEarlier}<Spinner />{/if}
 					{loadingEarlier ? 'Loading…' : 'Load earlier messages'}
-				</button>
+				</Button>
 			{/if}
 
 			{#if items.length === 0}
-				<div class="grid flex-1 place-items-center py-16">
-					<div class="flex flex-col items-center gap-5 text-center">
-						<Brand size={36} word={false} />
-						<p class="text-muted-foreground max-w-[18rem] text-sm leading-relaxed">{empty}</p>
-					</div>
-				</div>
+				<Empty.Root class="flex-1">
+					<Empty.Header>
+						<Empty.Media><Brand size={32} word={false} /></Empty.Media>
+						<Empty.Description>{empty}</Empty.Description>
+					</Empty.Header>
+				</Empty.Root>
 			{/if}
 
 			{#each parts as item (item.id)}
 				{#if item.kind === 'user'}
-					<div class="msg flex animate-enter flex-col items-end" data-item="user">
+					<div class="group/msg flex flex-col items-end" data-item="user">
+						<!-- The person's own message: no component is a chat bubble, so this is the secondary
+						     surface at the card's radius. -->
 						<div
-							class="bg-bubble text-bubble-foreground max-w-[86%] rounded-3xl px-4 py-2.5 md:max-w-[78%]"
+							class="max-w-[86%] rounded-xl bg-secondary px-3 py-2 text-secondary-foreground md:max-w-[78%]"
 						>
 							{#if item.previews?.length}
 								<div class="mb-2 flex flex-wrap justify-end gap-2" data-previews>
@@ -175,18 +191,16 @@
 									{/each}
 								</div>
 							{/if}
-							<p class="text-base leading-6 break-words whitespace-pre-wrap md:text-[15px]">
-								{item.text}
-							</p>
+							<p class="text-sm leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
 						</div>
-						<div class="text-faint meta mt-1.5 flex gap-2 px-1 empty:hidden">
-							{#if item.via !== 'prompt'}<span class="text-ember-text"
+						<div class="mt-1.5 flex gap-2 px-1 text-xs text-muted-foreground empty:hidden">
+							{#if item.via !== 'prompt'}<span class="text-warning"
 									>{item.via === 'steer' ? 'steering' : 'follow-up'}</span
 								>{/if}
 							{#if showAgent && item.agent !== 'lead'}<span>{item.agent}</span>{/if}
 							{#if item.images}<span>{item.images} image{item.images > 1 ? 's' : ''}</span>{/if}
 						</div>
-						<div class="msg-actions mt-1 flex gap-0.5" data-actions>
+						<div class="-mr-1.5 mt-1 flex items-center gap-0.5 {quiet}" data-actions>
 							{@render copyBtn(item.id, item.text)}
 							{#if onaction && item.agent === 'lead'}
 								{#if item === lastUser && !busy}
@@ -198,44 +212,50 @@
 						</div>
 					</div>
 				{:else if item.kind === 'assistant'}
-					<div class="msg animate-enter space-y-3" data-item="assistant">
-						{#if showAgent && item.agent !== 'lead'}<div class="text-muted-foreground meta">
-								{item.agent}
-							</div>{/if}
+					<!-- One column that cannot grow past the chat: a long code line scrolls inside its block. -->
+					<div class="group/msg grid grid-cols-1 gap-3" data-item="assistant">
+						{#if showAgent && item.agent !== 'lead'}
+							<div class="text-xs text-muted-foreground">{item.agent}</div>
+						{/if}
 						{#each item.blocks as b (b.index + b.type)}
 							{#if b.type === 'thinking'}
-								<div>
-									<button
-										type="button"
-										class="text-muted-foreground hover:text-foreground -my-1.5 flex min-h-11 items-center gap-1.5 rounded-md text-xs transition-colors duration-100 fine:my-0 fine:min-h-7"
-										aria-expanded={isOpen(item.id, item.streaming)}
-										onclick={() => (thinkingOpen[item.id] = !isOpen(item.id, item.streaming))}
+								{#if showThinking}
+									{@const waiting = item.streaming && !item.blocks.some((x) => x.type === 'text')}
+									<Collapsible.Root
+										open={isOpen(item.id, item.streaming)}
+										onOpenChange={(v) => (thinkingOpen[item.id] = v)}
 									>
-										<ChevronRight
-											class="size-3.5 transition-transform duration-150 {isOpen(
-												item.id,
-												item.streaming
-											)
-												? 'rotate-90'
-												: ''}"
-										/>
-										<span
-											class={item.streaming && !item.blocks.some((x) => x.type === 'text')
-												? 'shimmer'
-												: ''}
-											>{item.streaming && !item.blocks.some((x) => x.type === 'text')
-												? 'Thinking'
-												: 'Thought'}</span
-										>
-									</button>
-									{#if isOpen(item.id, item.streaming)}
-										<p
-											class="text-muted-foreground border-border-strong mt-1 ml-[6.5px] animate-enter border-l pl-4 text-sm leading-[1.65] whitespace-pre-wrap"
-										>
-											{b.text}
-										</p>
-									{/if}
-								</div>
+										<Collapsible.Trigger>
+											{#snippet child({ props })}
+												<Button
+													{...props}
+													variant="ghost"
+													size="xs"
+													class="-ml-2 font-normal text-muted-foreground"
+												>
+													<ChevronRight
+														class="transition-transform duration-200 {isOpen(
+															item.id,
+															item.streaming
+														)
+															? 'rotate-90'
+															: ''}"
+													/>
+													<span class={waiting ? 'animate-pulse' : ''}
+														>{waiting ? 'Thinking' : 'Thought'}</span
+													>
+												</Button>
+											{/snippet}
+										</Collapsible.Trigger>
+										<Collapsible.Content>
+											<p
+												class="mt-1 ml-1 border-l pl-3 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground"
+											>
+												{b.text}
+											</p>
+										</Collapsible.Content>
+									</Collapsible.Root>
+								{/if}
 							{:else}
 								<Markdown
 									text={b.text}
@@ -244,20 +264,13 @@
 							{/if}
 						{/each}
 						{#if item.streaming && item.blocks.length === 0}
-							<span class="shimmer text-xs">Waiting for the model</span>
-						{/if}
-						{#if item.tokens && !item.streaming}
-							<div class="text-faint meta">
-								{tokens(item.tokens.input)} in · {tokens(item.tokens.output)} out{item.model
-									? ` · ${item.model}`
-									: ''}
-							</div>
+							<span class="flex items-center gap-2 text-xs text-muted-foreground"
+								><Spinner class="size-3.5" aria-hidden="true" /> Waiting for the model</span
+							>
 						{/if}
 						{#if !item.streaming && item.blocks.some((b) => b.type === 'text')}
 							<div
-								class="msg-actions -ml-1 flex gap-0.5 {item === lastReply && !busy
-									? 'is-shown'
-									: ''}"
+								class="-ml-1.5 flex items-center gap-0.5 {item === lastReply && !busy ? '' : quiet}"
 								data-actions
 							>
 								{@render copyBtn(item.id, replyText(item.blocks))}
@@ -267,106 +280,89 @@
 									{/if}
 									{@render act('Fork from here', GitFork, () => onaction('fork', item))}
 								{/if}
+								{#if item.tokens}
+									<!-- What the turn cost: beside the icons, shown with them on hover or focus. -->
+									<span
+										class="num ml-2 text-xs text-muted-foreground opacity-0 transition-opacity duration-150 group-focus-within/msg:opacity-100 group-hover/msg:opacity-100 pointer-coarse:hidden"
+										data-turn-meta
+										>{tokens(item.tokens.input)} in · {tokens(item.tokens.output)} out{item.model
+											? ` · ${item.model}`
+											: ''}</span
+									>
+								{/if}
 							</div>
 						{/if}
 					</div>
 				{:else if item.kind === 'steps'}
-					<div class="animate-enter"><ToolSteps tools={item.tools} /></div>
+					<ToolSteps tools={item.tools} />
 				{:else if item.kind === 'command'}
 					<!-- What a slash command answered: shown here only, it is not part of the conversation. -->
-					<section
-						class="msg bg-card animate-enter overflow-hidden rounded-2xl shadow-[inset_0_0_0_1px_var(--border)]"
+					<CodeBlock.Root
+						size="sm"
+						role="group"
 						aria-label="Result of /{item.name}"
 						data-item="command"
 						data-command={item.name}
 					>
-						<header class="flex h-9 items-center gap-2 border-b pr-1.5 pl-3.5">
-							<Terminal class="text-muted-foreground size-3.5 shrink-0" />
-							<span class="min-w-0 flex-1 truncate font-mono text-xs"
-								><span class="text-foreground">/{item.name.replace(/^skill:/, '')}</span
-								>{#if item.args}<span class="text-muted-foreground">{` ${item.args}`}</span
-									>{/if}</span
-							>
-							<span class="text-faint hidden text-xs sm:inline">Only you see this</span>
-							{@render copyBtn(item.id, item.text)}
-						</header>
+						<CodeBlock.Header>
+							<CodeBlock.Title class="font-mono font-normal">
+								<Terminal /><span>/{item.name.replace(/^skill:/, '')}</span>{#if item.args}<span
+										class="text-muted-foreground">{` ${item.args}`}</span
+									>{/if}
+							</CodeBlock.Title>
+							<span class="ml-auto hidden text-xs sm:inline">Only you see this</span>
+							<CodeBlock.Actions class="ms-0 sm:ms-0">
+								<CodeBlock.CopyButton value={item.text} />
+							</CodeBlock.Actions>
+						</CodeBlock.Header>
 						{#if item.name === 'btw'}
-							<div class="px-3.5 py-3"><Markdown text={item.text} /></div>
+							<div class="px-2.5 pt-1.5 pb-2.5"><Markdown text={item.text} /></div>
 						{:else}
-							<pre
-								class="scroll-thin text-ink-2 max-h-[28rem] overflow-auto px-3.5 py-3 font-mono text-[13px] leading-[1.6]">{item.text}</pre>
+							<CodeBlock.Content code={item.text} class="scroll-thin max-h-96" />
 						{/if}
-					</section>
+					</CodeBlock.Root>
 				{:else if item.summary}
 					<!-- What happened on the branch that was left, told to the agent: a quiet note, not a message of yours. -->
 					<aside
-						class="text-muted-foreground border-border-strong animate-enter border-l-2 py-1 pl-3.5 text-[13px] leading-relaxed"
+						class="border-l-2 py-1 pl-3 text-xs leading-relaxed text-muted-foreground"
 						aria-label="Summary of the branch you left"
 						data-item="branch-summary"
 					>
-						<p class="text-faint meta mb-0.5">
+						<p class="mb-0.5 font-medium">
 							The agent was told what happened on the branch you left
 						</p>
 						<p class="break-words whitespace-pre-wrap">{item.text}</p>
 					</aside>
 				{:else}
-					<div
-						class="rounded-2xl px-4 py-3 text-sm leading-relaxed break-words {item.level === 'error'
-							? 'bg-destructive/10 text-destructive'
-							: item.level === 'warn'
-								? 'bg-ember/10 text-ember-text'
-								: 'bg-hover text-muted-foreground'}"
-						role={item.level === 'error' ? 'alert' : undefined}
+					<Alert.Root
+						variant={item.level === 'error' ? 'destructive' : 'default'}
+						role={item.level === 'error' ? 'alert' : 'note'}
+						data-level={item.level}
 					>
-						{item.text}
-					</div>
+						<Alert.Description class="break-words {item.level === 'warn' ? 'text-warning' : ''}"
+							>{item.text}</Alert.Description
+						>
+					</Alert.Root>
 				{/if}
 			{/each}
 
 			{#if busy && items[items.length - 1]?.kind !== 'assistant'}
-				<div class="flex items-center gap-3 py-1" aria-hidden="true">
-					<span class="dots"><span></span><span></span><span></span></span>
-					<span class="shimmer text-sm">Working</span>
+				<div class="flex items-center gap-2 text-sm text-muted-foreground" aria-hidden="true">
+					<Spinner /> <span>Working</span>
 				</div>
 			{/if}
 		</div>
 	</div>
 
 	{#if !pinned}
-		<button
-			type="button"
-			class="float latest absolute bottom-3 left-1/2 z-10 flex min-h-11 items-center gap-1.5 rounded-full pr-4 pl-3 text-xs font-medium fine:min-h-8"
+		<Button
+			variant="secondary"
+			size="sm"
+			class="absolute bottom-3 left-1/2 z-10 -translate-x-1/2"
 			onclick={() => toBottom(true)}
 		>
-			<ArrowDown class="size-3.5" /> Latest
-		</button>
+			<ArrowDown /> Latest
+		</Button>
 	{/if}
 	<div class="sr-only" aria-live="polite" aria-atomic="true">{announce}</div>
 </div>
-
-<style>
-	/* What scrolls fades out just above the message box instead of being cut by a hard edge. */
-	.fade-foot {
-		mask-image: linear-gradient(to bottom, black calc(100% - 28px), transparent);
-	}
-	/* Centred with a margin, so the entrance can move it without fighting a translate. */
-	.latest {
-		translate: -50% 0;
-		animation: pop-in var(--dur) var(--ease-out) both;
-	}
-	/* The actions of a message: there on hover and on focus; always there on touch and on the last reply. */
-	.msg-actions {
-		opacity: 0;
-		transition: opacity var(--dur-fast) var(--ease-out);
-	}
-	.msg:hover .msg-actions,
-	.msg:focus-within .msg-actions,
-	.msg-actions.is-shown {
-		opacity: 1;
-	}
-	@media (hover: none), (pointer: coarse) {
-		.msg-actions {
-			opacity: 1;
-		}
-	}
-</style>

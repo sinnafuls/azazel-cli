@@ -1,240 +1,180 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
 
-/* Where controls take their compact height: a wide screen with a mouse. Matches .btn and .field. */
-@custom-variant fine (@media (min-width: 768px) and (pointer: fine));
+@custom-variant dark (&:is(.dark *));
+
+/* bits-ui exposes state through data-state / data-orientation; the nova components read these. */
+@custom-variant data-open (&:where([data-state='open']), &:where([data-open]:not([data-open='false'])));
+@custom-variant data-closed (&:where([data-state='closed']), &:where([data-closed]:not([data-closed='false'])));
+@custom-variant data-checked (&:where([data-state='checked']), &:where([data-checked]:not([data-checked='false'])));
+@custom-variant data-unchecked (&:where([data-state='unchecked']), &:where([data-unchecked]:not([data-unchecked='false'])));
+@custom-variant data-active (&:where([data-state='active']), &:where([data-active]:not([data-active='false'])));
+@custom-variant data-disabled (&:where([data-disabled]:not([data-disabled='false'])));
+@custom-variant data-horizontal (&:where([data-orientation='horizontal']));
+@custom-variant data-vertical (&:where([data-orientation='vertical']));
 
 /*
- * azazel web: design tokens.
+ * Geist monochrome, the tokens of sin-api (src/routes/layout.css there), value for value. One accent
+ * (emerald, --brand) for focus, what is running or chosen, and meter fills. --destructive is the
+ * only other hue of the interface. Shape rule: status badges are pills, everything else derives
+ * from --radius.
  *
- * Register: a calm desktop app. Neutral greys carry everything; colour is information only.
- *   - surfaces are a ladder of pure greys: rail (the sidebar) < canvas (the chat) < card < overlay
- *     (menus, popovers, the settings window), with `inset` as the well code sits in;
- *   - a row under the pointer or chosen takes a translucent wash, never a box;
- *   - the main action is ink (near-white on dark, near-black on light); blue is the accent for
- *     links, the focus ring and what is selected; amber means "this needs you";
- *   - green, amber and red carry state and never decorate;
- *   - shapes: menu rows 12, cards 16, the composer and a bubble 24; top-bar buttons are 24px glyphs;
- *   - Geist for the interface, Geist Mono for paths, commands and numbers.
+ * Code is the one exception: --syn-* colours syntax inside code blocks only.
  *
- * Dark is the default; `html.light` is the light theme. "Match terminal" sets the same variables
- * inline from the terminal's theme (src/lib/theme.ts), after a contrast check per pair.
- * The built-in values are mirrored as hex in src/lib/theme.ts (BUILTIN); tests/unit/theme.test.ts
- * fails when the two drift apart or a pair drops under its contrast floor.
+ * Light is `:root`, dark is `.dark` on <html> (the default: app.html starts with it). "Match
+ * terminal" sets the same variables inline from the terminal's theme (src/lib/theme.ts), after a
+ * contrast check per pair. The values are mirrored in src/lib/theme.ts (TOKENS);
+ * tests/unit/theme.test.ts fails when the two drift apart or a pair drops under its floor.
  */
-
-@font-face {
-	font-family: 'Geist';
-	src: url('./lib/fonts/geist-latin-wght-normal.woff2') format('woff2-variations');
-	font-weight: 100 900;
-	font-style: normal;
-	font-display: swap;
-}
-@font-face {
-	font-family: 'Geist Mono';
-	src: url('./lib/fonts/geist-mono-latin-wght-normal.woff2') format('woff2-variations');
-	font-weight: 100 900;
-	font-style: normal;
-	font-display: swap;
-}
-
 :root {
-	color-scheme: dark;
-
-	/* surface ladder */
-	--rail: light-dark(oklch(0.97 0 0), oklch(0.16 0 0));
-	--background: light-dark(oklch(1 0 0), oklch(0.2 0 0));
-	--card: light-dark(oklch(0.98 0 0), oklch(0.235 0 0));
-	--raised: light-dark(oklch(0.945 0 0), oklch(0.27 0 0));
-	--overlay: light-dark(oklch(1 0 0), oklch(0.27 0 0));
-	--inset: light-dark(oklch(0.965 0 0), oklch(0.165 0 0));
-	--field: light-dark(oklch(1 0 0), oklch(0.18 0 0));
-	--composer: light-dark(oklch(1 0 0), oklch(0.235 0 0));
-	/* what the person said */
-	--bubble: light-dark(oklch(0.945 0 0), oklch(0.27 0 0));
-	--bubble-foreground: light-dark(oklch(0.2 0 0), oklch(0.95 0 0));
-
-	/* a wash over whatever is beneath: the hover and the chosen state of a row */
-	--hover: light-dark(oklch(0 0 0 / 0.05), oklch(1 0 0 / 0.06));
-	--active: light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.1));
-
-	/* hairlines are alpha, so they sit right on every step; --input is a control's edge at 3:1 */
-	--border: light-dark(oklch(0 0 0 / 0.09), oklch(1 0 0 / 0.08));
-	--border-strong: light-dark(oklch(0 0 0 / 0.15), oklch(1 0 0 / 0.14));
-	--input: light-dark(oklch(0.58 0 0), oklch(0.63 0 0));
-
-	/* ink: four strengths, the last only for meta */
-	--foreground: light-dark(oklch(0.2 0 0), oklch(0.95 0 0));
-	--ink-2: light-dark(oklch(0.33 0 0), oklch(0.86 0 0));
-	--muted-foreground: light-dark(oklch(0.43 0 0), oklch(0.77 0 0));
-	--faint: light-dark(oklch(0.47 0 0), oklch(0.74 0 0));
-	--thinking: var(--muted-foreground);
-
-	/* the main action: ink */
-	--primary: light-dark(oklch(0.2 0 0), oklch(0.96 0 0));
-	--primary-hover: light-dark(oklch(0.32 0 0), oklch(0.86 0 0));
-	--primary-foreground: light-dark(oklch(0.985 0 0), oklch(0.18 0 0));
-
-	/* the accent: links, what is selected, keyboard focus */
-	--accent-text: light-dark(oklch(0.45 0.16 255), oklch(0.8 0.1 250));
-	--ring: light-dark(oklch(0.5 0.18 255), oklch(0.74 0.13 250));
-
-	/* attention: this needs you */
-	--ember: light-dark(oklch(0.62 0.14 60), oklch(0.8 0.13 75));
-	--ember-text: light-dark(oklch(0.45 0.1 60), oklch(0.84 0.11 80));
-	--ember-foreground: oklch(0.2 0.04 60);
-
-	/* status */
-	--info: light-dark(oklch(0.46 0.16 255), oklch(0.78 0.11 250));
-	--success: light-dark(oklch(0.45 0.12 155), oklch(0.8 0.14 155));
-	--destructive: light-dark(oklch(0.48 0.19 25), oklch(0.76 0.14 22));
-	--destructive-foreground: light-dark(oklch(0.99 0 0), oklch(0.16 0.03 22));
-	/* the strip that says this browser may do anything: the same loud red in both themes */
-	--alarm: oklch(0.5 0.2 27);
-	--alarm-foreground: oklch(0.99 0 0);
-
-	/* how a session's mode is marked */
-	--mode-plan: var(--info);
-	--mode-edits: var(--success);
-	--mode-auto: var(--ember-text);
-	--bash: var(--ink-2);
-
-	/* diff: a tint behind the line, the sign carries the colour */
-	--diff-add: light-dark(oklch(0.955 0.04 155), oklch(0.27 0.04 155));
-	--diff-del: light-dark(oklch(0.96 0.028 22), oklch(0.27 0.045 22));
-	--diff-add-fg: light-dark(oklch(0.38 0.11 155), oklch(0.86 0.11 155));
-	--diff-del-fg: light-dark(oklch(0.44 0.15 22), oklch(0.86 0.09 22));
-
-	/* syntax: quiet, the accent stays out of code */
-	--syn-key: light-dark(oklch(0.45 0.1 300), oklch(0.82 0.09 300));
+	--radius: 0.375rem;
+	--brand: oklch(0.6 0.15 162);
+	--background: oklch(0.985 0 0);
+	--foreground: oklch(0.145 0 0);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.145 0 0);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.145 0 0);
+	--primary: oklch(0.145 0 0);
+	--primary-foreground: oklch(0.985 0 0);
+	--secondary: oklch(0.96 0 0);
+	--secondary-foreground: oklch(0.145 0 0);
+	--muted: oklch(0.96 0 0);
+	--muted-foreground: oklch(0.5 0 0);
+	--accent: oklch(0.94 0 0);
+	--accent-foreground: oklch(0.145 0 0);
+	--destructive: oklch(0.58 0.22 27);
+	--border: oklch(0 0 0 / 9%);
+	--input: oklch(0 0 0 / 12%);
+	--ring: oklch(0.6 0.15 162);
+	--chart-1: var(--brand);
+	--chart-2: oklch(0.36 0 0);
+	--chart-3: oklch(0.48 0 0);
+	--chart-4: oklch(0.62 0 0);
+	--chart-5: oklch(0.8 0 0);
+	--sidebar: oklch(0.97 0 0);
+	--sidebar-foreground: oklch(0.145 0 0);
+	--sidebar-primary: oklch(0.145 0 0);
+	--sidebar-primary-foreground: oklch(0.985 0 0);
+	--sidebar-accent: oklch(0.93 0 0);
+	--sidebar-accent-foreground: oklch(0.145 0 0);
+	--sidebar-border: oklch(0 0 0 / 9%);
+	--sidebar-ring: oklch(0.6 0.15 162);
+	--syn-text: oklch(0.3 0 0);
+	--syn-key: oklch(0.5 0.12 162);
+	--syn-string: oklch(0.5 0.09 70);
+	--syn-number: oklch(0.54 0.14 40);
+	--syn-keyword: oklch(0.5 0.13 255);
+	--syn-fn: oklch(0.46 0.1 220);
 
 	/*
-	 * depth: the ladder does most of it. e1 a card, e2 the composer (one soft, wide shadow),
-	 * e3 what floats (menu, dialog, toast).
+	 * What this page adds to sin-api's tokens, and why:
+	 *   --success  the emerald at text strength: --brand is 3.4:1 on the light ground, enough for a
+	 *              ring or a meter but not for a word or a small mark on a hovered row;
+	 *   --warning  amber, "this needs you": a waiting session, a queued message, a cold cache;
+	 *   --text-scale  Settings > General > Text size: every rem follows it.
 	 */
-	--highlight: inset 0 1px 0 0 light-dark(oklch(1 0 0 / 0), oklch(1 0 0 / 0.04));
-	--elev-1: 0 1px 2px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 24%));
-	--elev-2:
-		0 1px 2px light-dark(oklch(0 0 0 / 4%), oklch(0 0 0 / 20%)),
-		0 10px 30px -8px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 38%));
-	--elev-3:
-		0 2px 6px light-dark(oklch(0 0 0 / 6%), oklch(0 0 0 / 30%)),
-		0 20px 48px -12px light-dark(oklch(0 0 0 / 18%), oklch(0 0 0 / 60%));
-	--glow: 0 0 0 3px color-mix(in oklab, var(--ring) 28%, transparent);
-	--scrim: light-dark(oklch(0.2 0 0 / 0.35), oklch(0 0 0 / 0.6));
-	--edge-hi: light-dark(oklch(1 0 0 / 0), oklch(1 0 0 / 0.05));
-
-	/* motion: `out` for what enters and answers a press, `pane` for what slides (sidebar, drawer) */
-	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-	--ease-pane: cubic-bezier(0.32, 0.72, 0, 1);
-	--ease-ui: cubic-bezier(0.23, 1, 0.32, 1);
-	--dur-press: 90ms;
-	--dur-fast: 120ms;
-	--dur: 160ms;
-	--dur-slow: 240ms;
-
-	/* General > Text size: every rem follows it */
+	--success: oklch(0.5 0.12 162);
+	--warning: oklch(0.5 0.11 70);
 	--text-scale: 100%;
 }
-:root.light {
-	color-scheme: light;
-}
-:root.dark {
-	color-scheme: dark;
-}
-html {
-	font-size: var(--text-scale);
+
+.dark {
+	--brand: oklch(0.7 0.15 162);
+	--background: oklch(0.145 0 0);
+	--foreground: oklch(0.96 0 0);
+	--card: oklch(0.17 0 0);
+	--card-foreground: oklch(0.96 0 0);
+	--popover: oklch(0.17 0 0);
+	--popover-foreground: oklch(0.96 0 0);
+	--primary: oklch(0.96 0 0);
+	--primary-foreground: oklch(0.145 0 0);
+	--secondary: oklch(0.21 0 0);
+	--secondary-foreground: oklch(0.96 0 0);
+	--muted: oklch(0.21 0 0);
+	--muted-foreground: oklch(0.66 0 0);
+	--accent: oklch(0.24 0 0);
+	--accent-foreground: oklch(0.96 0 0);
+	--destructive: oklch(0.64 0.21 25);
+	--border: oklch(1 0 0 / 9%);
+	--input: oklch(1 0 0 / 12%);
+	--ring: oklch(0.7 0.15 162);
+	--chart-2: oklch(0.8 0 0);
+	--chart-3: oklch(0.62 0 0);
+	--chart-4: oklch(0.48 0 0);
+	--chart-5: oklch(0.36 0 0);
+	--sidebar: oklch(0.16 0 0);
+	--sidebar-foreground: oklch(0.96 0 0);
+	--sidebar-primary: oklch(0.96 0 0);
+	--sidebar-primary-foreground: oklch(0.145 0 0);
+	--sidebar-accent: oklch(0.22 0 0);
+	--sidebar-accent-foreground: oklch(0.96 0 0);
+	--sidebar-border: oklch(1 0 0 / 9%);
+	--sidebar-ring: oklch(0.7 0.15 162);
+	--syn-text: oklch(0.86 0 0);
+	--syn-key: oklch(0.78 0.12 162);
+	--syn-string: oklch(0.84 0.08 85);
+	--syn-number: oklch(0.8 0.11 50);
+	--syn-keyword: oklch(0.78 0.09 250);
+	--syn-fn: oklch(0.84 0.07 210);
+
+	--success: oklch(0.7 0.15 162);
+	--warning: oklch(0.8 0.13 80);
 }
 
 @theme inline {
+	--font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+	--font-mono: 'Geist Mono Variable', ui-monospace, monospace;
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius);
+	--radius-xl: calc(var(--radius) + 4px);
+	--color-brand: var(--brand);
 	--color-background: var(--background);
-	--color-rail: var(--rail);
-	--color-sidebar: var(--rail);
 	--color-foreground: var(--foreground);
 	--color-card: var(--card);
-	--color-card-foreground: var(--foreground);
-	--color-popover: var(--overlay);
-	--color-popover-foreground: var(--foreground);
-	--color-raised: var(--raised);
-	--color-overlay: var(--overlay);
-	--color-inset: var(--inset);
-	--color-hover: var(--hover);
-	--color-border: var(--border);
-	--color-border-strong: var(--border-strong);
-	--color-input: var(--input);
-	--color-ink-2: var(--ink-2);
-	--color-muted: var(--raised);
-	--color-muted-foreground: var(--muted-foreground);
-	--color-faint: var(--faint);
-	--color-secondary: var(--raised);
-	--color-secondary-foreground: var(--foreground);
-	--color-accent: var(--raised);
-	--color-accent-foreground: var(--foreground);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
 	--color-primary: var(--primary);
 	--color-primary-foreground: var(--primary-foreground);
-	--color-ember: var(--ember);
-	--color-ember-foreground: var(--ember-foreground);
-	--color-accent-text: var(--accent-text);
-	--color-ring: var(--ring);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
 	--color-destructive: var(--destructive);
-	--color-destructive-foreground: var(--destructive-foreground);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	--color-chart-1: var(--chart-1);
+	--color-chart-2: var(--chart-2);
+	--color-chart-3: var(--chart-3);
+	--color-chart-4: var(--chart-4);
+	--color-chart-5: var(--chart-5);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
+	--color-sidebar-primary: var(--sidebar-primary);
+	--color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-ring: var(--sidebar-ring);
 	--color-success: var(--success);
-	--color-info: var(--info);
-	--color-diff-add: var(--diff-add);
-	--color-diff-del: var(--diff-del);
-	--color-diff-add-fg: var(--diff-add-fg);
-	--color-diff-del-fg: var(--diff-del-fg);
-	--color-composer: var(--composer);
-	--color-bubble: var(--bubble);
-	--color-bubble-foreground: var(--bubble-foreground);
-	--color-ember-text: var(--ember-text);
-	--color-alarm: var(--alarm);
-	--color-alarm-foreground: var(--alarm-foreground);
-	--color-thinking: var(--thinking);
-	--color-active: var(--active);
-	--color-field: var(--field);
-
-	--font-sans:
-		'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto,
-		sans-serif;
-	--font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
-
-	/* type scale: 12 mono meta and badges, 13 meta, 14 interface, 15 reading, then headings */
-	--text-2xs: 0.75rem;
-	--text-2xs--line-height: 1rem;
-	--text-xs: 0.8125rem;
-	--text-xs--line-height: 1.125rem;
-	--text-sm: 0.875rem;
-	--text-sm--line-height: 1.25rem;
-	--text-base: 0.9375rem;
-	--text-base--line-height: 1.5rem;
-	--text-lg: 1.0625rem;
-	--text-lg--line-height: 1.5rem;
-	--text-xl: 1.25rem;
-	--text-xl--line-height: 1.75rem;
-	--text-2xl: 1.5rem;
-	--text-2xl--line-height: 2rem;
-
-	/* radius: small marks 6, fields 10, rows of a menu 12, cards 16, the composer and a bubble 24 */
-	--radius-xs: 6px;
-	--radius-sm: 8px;
-	--radius-md: 10px;
-	--radius-lg: 12px;
-	--radius-xl: 12px;
-	--radius-2xl: 16px;
-	--radius-3xl: 24px;
-	--radius-pill: 999px;
-
-	--shadow-e1: var(--elev-1), var(--highlight);
-	--shadow-e2: var(--elev-2), var(--highlight);
-	--shadow-e3: var(--elev-3), var(--highlight);
-
-	--animate-enter: enter var(--dur-slow) var(--ease-out) both;
-	--animate-ping-soft: ping-soft 2.4s var(--ease-out) infinite;
+	--color-warning: var(--warning);
 }
 
 @layer base {
 	* {
-		border-color: var(--border);
+		@apply border-border outline-ring/50;
+	}
+	html {
+		color-scheme: light;
+		font-size: var(--text-scale);
+	}
+	html.dark {
+		color-scheme: dark;
 	}
 	html,
 	body {
@@ -242,1004 +182,68 @@ html {
 		overscroll-behavior: none;
 	}
 	body {
-		background: var(--background);
-		color: var(--foreground);
-		font-family: var(--font-sans);
-		font-size: 15px;
-		line-height: 1.5;
-		letter-spacing: -0.011em;
-		-webkit-font-smoothing: antialiased;
-		-moz-osx-font-smoothing: grayscale;
-		text-rendering: optimizeLegibility;
+		@apply bg-background font-sans text-sm text-foreground antialiased;
 		-webkit-text-size-adjust: 100%;
 		-webkit-tap-highlight-color: transparent;
 	}
-	code,
-	kbd,
-	pre,
-	samp {
-		font-family: var(--font-mono);
-		letter-spacing: 0;
-		font-feature-settings: 'liga' 0;
-	}
-	/* The ring is drawn in full in the frame the focus lands, and keeps the control's own shape. */
-	:focus-visible {
-		outline: 2px solid var(--ring);
-		outline-offset: 2px;
-	}
-	button,
-	[role='button'],
-	summary,
-	label[for] {
+	button:not(:disabled),
+	[role='button']:not(:disabled) {
 		cursor: pointer;
-	}
-	button:disabled {
-		cursor: not-allowed;
-	}
-	::selection {
-		background: color-mix(in oklab, var(--ring) 36%, transparent);
-	}
-	@media (pointer: coarse) {
-		input:not([type='checkbox']),
-		textarea,
-		select {
-			font-size: 16px;
-		}
 	}
 }
 
 @layer components {
-	.scroll-thin {
-		scrollbar-width: thin;
-		scrollbar-color: var(--border-strong) transparent;
-	}
-	.no-scrollbar {
-		scrollbar-width: none;
-	}
-	.no-scrollbar::-webkit-scrollbar {
-		display: none;
+	.cn-rtl-flip:dir(rtl) {
+		transform: scaleX(-1);
 	}
 	.num {
-		font-variant-numeric: tabular-nums;
-	}
-	/* The reading column: the transcript, the composer and a docked request share its edges. */
-	.col {
-		width: 100%;
-		max-width: 58rem;
-		margin-inline: auto;
-		padding-inline: 1rem;
-	}
-	@media (min-width: 768px) {
-		.col {
-			padding-inline: 2rem;
-		}
-	}
-	/* A panel heading: quieter than what it labels. */
-	.label {
-		font-size: 0.8125rem;
-		line-height: 1.125rem;
-		font-weight: 500;
-		color: var(--muted-foreground);
-	}
-	/* Mono metadata: a path, a count, a duration. */
-	.meta {
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
-		line-height: 1rem;
-		letter-spacing: 0;
-		font-variant-numeric: tabular-nums;
+		@apply font-mono tabular-nums;
 	}
 
-	/* The ground of a full-screen state (not paired, connecting): the canvas, nothing on it. */
-	.ground-lit {
-		background-color: var(--background);
-	}
-	/* A hairline that is brighter at the top: light falls on what stands off the page. */
-	.edge-lit {
-		position: relative;
-	}
-	.edge-lit::before {
-		content: '';
-		position: absolute;
-		inset: 0;
-		border-radius: inherit;
-		padding: 1px;
-		background: linear-gradient(
-			180deg,
-			light-dark(
-				color-mix(in oklab, var(--foreground) 14%, transparent),
-				color-mix(in oklab, var(--foreground) 22%, transparent)
-			),
-			light-dark(
-					color-mix(in oklab, var(--foreground) 7%, transparent),
-					color-mix(in oklab, var(--foreground) 6%, transparent)
-				)
-				45%,
-			light-dark(
-				color-mix(in oklab, var(--foreground) 10%, transparent),
-				color-mix(in oklab, var(--foreground) 5%, transparent)
-			)
-		);
-		mask:
-			linear-gradient(#000 0 0) content-box,
-			linear-gradient(#000 0 0);
-		mask-composite: exclude;
+	/* A modal dialog sets pointer-events: none on the body; a toast must stay clickable above it, but
+	   the empty box of the toaster must not swallow clicks meant for the page. */
+	[data-sonner-toaster] {
 		pointer-events: none;
 	}
-	/* A link in running text: a faint hairline that an ink line draws over on hover. */
-	.link {
-		background:
-			linear-gradient(currentColor, currentColor) 0 100% / 0 1px no-repeat,
-			linear-gradient(
-					color-mix(in oklab, currentColor 30%, transparent),
-					color-mix(in oklab, currentColor 30%, transparent)
-				)
-				0 100% / 100% 1px no-repeat;
-		transition: background-size 150ms var(--ease-ui);
-	}
-	@media (hover: hover) {
-		.link:hover {
-			background-size:
-				100% 1px,
-				100% 1px;
-		}
-	}
-	/* The first screen enters once: its parts in order, then it stands. */
-	.enter-seq > * {
-		animation: rise 700ms var(--ease-out) both;
-	}
-	.enter-seq > :nth-child(2) {
-		animation-delay: 70ms;
-	}
-	.enter-seq > :nth-child(3) {
-		animation-delay: 140ms;
-	}
-	.enter-seq > :nth-child(4) {
-		animation-delay: 210ms;
-	}
-	.enter-seq > :nth-child(n + 5) {
-		animation-delay: 280ms;
-	}
-
-	/* A card on the canvas: one step up the ladder, held by a hairline, a soft stack and a top light. */
-	.surface {
-		background: var(--card);
-		border: 1px solid var(--border);
-		box-shadow: var(--elev-1), var(--highlight);
-	}
-	/* The composer and a docked request: nearer than a card. */
-	.surface-2 {
-		background: var(--card);
-		border: 1px solid var(--border-strong);
-		box-shadow: var(--elev-2), var(--highlight);
-	}
-	/* The message box: the nearest thing on the page, soft-cornered, on one wide shadow. */
-	.composer {
-		background: var(--composer);
-		/* a control's edge: --input holds 3:1 against the page in every theme */
-		border: 1px solid var(--input);
-		border-radius: var(--radius-3xl);
-		box-shadow: var(--elev-2);
-		transition:
-			border-color var(--dur) var(--ease-out),
-			box-shadow var(--dur) var(--ease-out);
-	}
-	.composer:focus-within {
-		border-color: var(--ring);
-	}
-	/* A menu that opens above the composer. */
-	.menu {
-		transform-origin: bottom center;
-		animation: pop-in var(--dur) var(--ease-out) both;
-	}
-	/* What floats over the page: a menu, a sheet, a toast. */
-	.float {
-		background: var(--overlay);
-		border: 1px solid var(--border-strong);
-		box-shadow: var(--elev-3), var(--highlight);
-	}
-	/* A field of dots that fades out: the backdrop of an empty or a waiting screen. */
-	.dotgrid {
-		position: absolute;
-		inset: 0;
-		pointer-events: none;
-		background-image: radial-gradient(circle at 1px 1px, var(--border-strong) 1px, transparent 0);
-		background-size: 22px 22px;
-		mask-image: radial-gradient(ellipse 58% 52% at 50% 46%, black 12%, transparent 72%);
+	[data-sonner-toast] {
+		pointer-events: auto;
 	}
 
 	/*
-	 * Buttons: one shape, one height (44 on touch and narrow screens, 32 with a fine pointer),
-	 * three roles. Exactly one .btn-primary marks the main action of a view.
+	 * Rendered model markdown (src/lib/markdown.ts). It is sanitised HTML put in with {@html}, so no
+	 * component can own it: these rules give its elements the look of the components beside them
+	 * (a code block is ui/code-block, a table is ui/table, a link is underlined ink).
 	 */
-	.btn {
-		display: inline-flex;
-		flex-shrink: 0;
-		align-items: center;
-		justify-content: center;
-		gap: 0.5rem;
-		height: 2.75rem;
-		padding: 0 1.125rem;
-		border: 1px solid transparent;
-		border-radius: var(--radius-pill);
-		font-size: 0.9375rem;
-		font-weight: 500;
-		line-height: 1;
-		letter-spacing: -0.006em;
-		white-space: nowrap;
-		user-select: none;
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			border-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out),
-			box-shadow var(--dur-fast) var(--ease-out),
-			transform var(--dur-press) var(--ease-out);
-	}
-	.btn:active:not(:disabled) {
-		transform: translateY(1px) scale(0.985);
-		transition-duration: var(--dur-press);
-	}
-	.btn:disabled {
-		opacity: 0.45;
-	}
-	.btn-icon {
-		width: 2.75rem;
-		padding: 0;
-	}
-	@media (min-width: 768px) and (pointer: fine) {
-		.btn {
-			height: 2.25rem;
-			padding: 0 0.875rem;
-			font-size: 0.875rem;
-		}
-		.btn-icon {
-			width: 2.25rem;
-			padding: 0;
-		}
-	}
-	/* A round control that sits on the page by itself: a header button, a sheet's close. */
-	.btn-round {
-		background: var(--raised);
-		color: var(--foreground);
-		box-shadow:
-			inset 0 0 0 1px var(--border),
-			var(--highlight);
-	}
-	@media (hover: hover) {
-		.btn-round:hover:not(:disabled) {
-			background: color-mix(in oklab, var(--raised) 80%, var(--foreground));
-		}
-	}
-	.btn-primary {
-		background: var(--primary);
-		color: var(--primary-foreground);
-		font-weight: 500;
-	}
-	/* Off, the main action goes neutral instead of a dimmed ink. */
-	.btn-primary:disabled {
-		background: var(--raised);
-		color: var(--faint);
-		box-shadow: none;
-		opacity: 1;
-	}
-	.btn-secondary {
-		background: var(--card);
-		border-color: var(--input);
-		color: var(--foreground);
-		box-shadow: var(--elev-1), var(--highlight);
-	}
-	.btn-danger {
-		background: color-mix(in oklab, var(--destructive) 7%, transparent);
-		border-color: color-mix(in oklab, var(--destructive) 38%, transparent);
-		color: var(--destructive);
-	}
-	/* The one filled red: a destructive answer that was asked for twice. */
-	.btn-destroy {
-		background: var(--destructive);
-		color: var(--destructive-foreground);
-		box-shadow: var(--elev-1);
-	}
-	/* Toolbar glyphs and rows of a menu: no box until the pointer or the focus is on them. */
-	.btn-quiet {
-		color: var(--muted-foreground);
-	}
-	@media (hover: hover) {
-		.btn-primary:hover:not(:disabled) {
-			background: var(--primary-hover);
-		}
-		.btn-secondary:hover:not(:disabled) {
-			background: var(--raised);
-			border-color: var(--muted-foreground);
-		}
-		.btn-danger:hover:not(:disabled) {
-			background: color-mix(in oklab, var(--destructive) 14%, transparent);
-			border-color: color-mix(in oklab, var(--destructive) 70%, transparent);
-		}
-		.btn-destroy:hover:not(:disabled) {
-			filter: brightness(1.08);
-		}
-		.btn-quiet:hover:not(:disabled) {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-	}
-
-	/* Text fields: the same height as a button; focus is the accent edge and a soft ring. */
-	.field {
-		width: 100%;
-		height: 2.75rem;
-		padding: 0 0.75rem;
-		background: var(--field);
-		border: 1px solid var(--input);
-		border-radius: var(--radius-md);
-		font-size: 0.9375rem;
-		outline: none;
-		box-shadow: inset 0 1px 2px light-dark(oklch(0.25 0.02 260 / 4%), oklch(0 0 0 / 30%));
-		transition:
-			border-color var(--dur-fast) var(--ease-out),
-			box-shadow var(--dur-fast) var(--ease-out);
-	}
-	textarea.field {
-		height: auto;
-		padding: 0.625rem 0.75rem;
-		line-height: 1.5;
-	}
-	.field::placeholder {
-		color: var(--faint);
-	}
-	.field:focus-visible {
-		border-color: var(--ring);
-		box-shadow: var(--glow);
-	}
-	@media (min-width: 768px) and (pointer: fine) {
-		.field:not(textarea) {
-			height: 2.25rem;
-			font-size: 0.875rem;
-		}
-	}
-
-	/* A segmented choice of two or three: a track with the chosen one raised out of it. */
-	.seg {
-		display: grid;
-		grid-auto-flow: column;
-		grid-auto-columns: 1fr;
-		gap: 2px;
-		padding: 3px;
-		background: var(--inset);
-		border-radius: var(--radius-pill);
-		box-shadow:
-			inset 0 0 0 1px var(--input),
-			inset 0 1px 2px light-dark(oklch(0.25 0.02 260 / 5%), oklch(0 0 0 / 34%));
-	}
-	.seg > button {
-		min-height: 2.5rem;
-		padding-inline: 0.5rem;
-		border-radius: var(--radius-pill);
-		font-size: 0.8125rem;
-		font-weight: 500;
-		color: var(--muted-foreground);
-		transition:
-			background-color var(--dur) var(--ease-out),
-			box-shadow var(--dur) var(--ease-out),
-			color var(--dur-fast) var(--ease-out);
-	}
-	.seg > button[aria-selected='true'],
-	.seg > button[aria-checked='true'] {
-		background: var(--raised);
-		color: var(--foreground);
-		box-shadow:
-			0 0 0 1px var(--input),
-			var(--elev-1),
-			var(--highlight);
-	}
-	:root.light .seg > button[aria-selected='true'],
-	:root.light .seg > button[aria-checked='true'] {
-		background: var(--card);
-	}
-	@media (prefers-color-scheme: light) {
-		:root:not(.dark) .seg > button[aria-selected='true'],
-		:root:not(.dark) .seg > button[aria-checked='true'] {
-			background: var(--card);
-		}
-	}
-	.seg > button:disabled {
-		opacity: 0.45;
-	}
-	@media (hover: hover) {
-		.seg > button:hover:not(:disabled):not([aria-selected='true']):not([aria-checked='true']) {
-			color: var(--foreground);
-		}
-	}
-	@media (min-width: 768px) and (pointer: fine) {
-		.seg > button {
-			min-height: 1.875rem;
-		}
-	}
-
-	/* An answer to pick: a radio or a checkbox drawn as a row. The accent marks what is chosen. */
-	.choice {
-		background: var(--card);
-		border: 1px solid var(--input);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--elev-1), var(--highlight);
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			border-color var(--dur-fast) var(--ease-out),
-			box-shadow var(--dur-fast) var(--ease-out);
-	}
-	.choice[aria-checked='true'] {
-		border-color: var(--ring);
-		background: color-mix(in oklab, var(--ring) 10%, var(--card));
-		box-shadow: 0 0 0 1px var(--ring);
-	}
-	@media (hover: hover) {
-		.choice:hover:not([aria-checked='true']) {
-			background: var(--raised);
-			border-color: var(--muted-foreground);
-		}
-	}
-
-	/* A row of a picker: a model, a level, a mode. */
-	.opt {
-		display: flex;
-		width: 100%;
-		min-height: 2.75rem;
-		align-items: center;
-		gap: 0.75rem;
-		padding: 0.5rem 0.75rem;
-		border-radius: var(--radius-md);
-		text-align: left;
-		font-size: 0.9375rem;
-		transition: background-color var(--dur-fast) var(--ease-out);
-	}
-	.opt[aria-current='true'],
-	.opt.is-active {
-		background: var(--hover);
-	}
-	@media (hover: hover) {
-		.opt:hover {
-			background: var(--hover);
-		}
-	}
-	@media (min-width: 768px) and (pointer: fine) {
-		.opt {
-			min-height: 2.375rem;
-		}
-	}
-
-	/*
-	 * A setting in the status bar: a hairline pill. On touch the target is 44 tall and the pill
-	 * is drawn 32 tall inside it.
-	 */
-	.chip {
-		position: relative;
-		isolation: isolate;
-		display: inline-flex;
-		flex-shrink: 0;
-		align-items: center;
-		gap: 0.375rem;
-		height: 2.75rem;
-		padding: 0 0.75rem;
-		font-size: 0.8125rem;
-		color: var(--ink-2);
-		white-space: nowrap;
-		transition: color var(--dur-fast) var(--ease-out);
-	}
-	.chip::before {
-		content: '';
-		position: absolute;
-		inset: 6px 0;
-		z-index: -1;
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-pill);
-		background: transparent;
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			border-color var(--dur-fast) var(--ease-out);
-	}
-	.chip:focus-visible {
-		outline: none;
-	}
-	.chip:focus-visible::before {
-		outline: 2px solid var(--ring);
-		outline-offset: 2px;
-	}
-	.chip:disabled {
-		cursor: default;
-	}
-	.chip:disabled::before {
-		border-color: var(--border-strong);
-		background: transparent;
-		box-shadow: none;
-	}
-	@media (hover: hover) {
-		.chip:hover:not(:disabled) {
-			color: var(--foreground);
-		}
-		.chip:hover:not(:disabled)::before {
-			background: var(--hover);
-		}
-	}
-	@media (min-width: 768px) and (pointer: fine) {
-		.chip {
-			height: 1.625rem;
-			padding: 0 0.625rem;
-			font-size: 0.75rem;
-		}
-		.chip::before {
-			inset: 0;
-		}
-	}
-
-	/* A small marker: a state, a risk, a count. */
-	.tag {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.375rem;
-		height: 1.375rem;
-		padding: 0 0.5rem;
-		border-radius: 999px;
-		background: var(--hover);
-		box-shadow: inset 0 0 0 1px var(--border);
-		color: var(--ink-2);
-		font-size: 0.75rem;
-		font-weight: 500;
-		line-height: 1;
-		white-space: nowrap;
-	}
-	.tag-danger {
-		background: color-mix(in oklab, var(--destructive) 12%, transparent);
-		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--destructive) 32%, transparent);
-		color: var(--destructive);
-	}
-	.tag-ember {
-		background: color-mix(in oklab, var(--ember) 13%, transparent);
-		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ember) 34%, transparent);
-		color: var(--ember-text);
-	}
-	.tag-info {
-		background: color-mix(in oklab, var(--info) 12%, transparent);
-		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--info) 30%, transparent);
-		color: var(--info);
-	}
-
-	/* A key cap. */
-	.kbd {
-		display: inline-grid;
-		min-width: 1.375rem;
-		height: 1.375rem;
-		place-items: center;
-		padding: 0 0.3125rem;
-		border: 1px solid var(--border-strong);
-		border-bottom-width: 2px;
-		border-radius: var(--radius-xs);
-		background: var(--card);
-		font-family: var(--font-mono);
-		font-size: 0.75rem;
-		line-height: 1;
-		color: var(--ink-2);
-	}
-
-	/* A well of mono text: a command's output, a tool's input. */
-	.well {
-		background: var(--inset);
-		border-radius: var(--radius-lg);
-		font-family: var(--font-mono);
-		font-size: 0.8125rem;
-		line-height: 1.55;
-		white-space: pre-wrap;
-		overflow-wrap: anywhere;
-	}
-
-	/*
-	 * A glyph button: the top bar, a row's ••• and the actions under a message. 24px with a fine
-	 * pointer; on touch the box is 36 and the target 44.
-	 */
-	.icon-btn {
-		position: relative;
-		display: inline-grid;
-		flex-shrink: 0;
-		place-items: center;
-		width: 1.5rem;
-		height: 1.5rem;
-		border-radius: var(--radius-sm);
-		color: var(--muted-foreground);
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out);
-	}
-	.icon-btn[aria-expanded='true'],
-	.icon-btn[aria-pressed='true'] {
-		background: var(--active);
-		color: var(--foreground);
-	}
-	.icon-btn:disabled {
-		opacity: 0.45;
-	}
-	@media (hover: hover) {
-		.icon-btn:hover:not(:disabled) {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-	}
-	@media (pointer: coarse) {
-		.icon-btn {
-			width: 2.25rem;
-			height: 2.25rem;
-			border-radius: var(--radius-md);
-		}
-		.icon-btn::after {
-			content: '';
-			position: absolute;
-			inset: -0.25rem;
-		}
-	}
-
-	/* A popover: a menu, the `/` list, a picker. 13px rows, 27 tall, each a rounded row. */
-	.pop {
-		background: var(--overlay);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--radius-2xl);
-		box-shadow: var(--elev-3);
-		padding: 0.25rem;
-		font-size: 0.8125rem;
-		line-height: 1.125rem;
-		color: var(--foreground);
-		animation: pop var(--dur) var(--ease-out) both;
-	}
-	.pop-item {
-		display: flex;
-		width: 100%;
-		min-height: 1.6875rem;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.25rem 0.5rem;
-		border-radius: var(--radius-xl);
-		color: var(--ink-2);
-		text-align: left;
-		transition: background-color var(--dur-fast) var(--ease-out);
-	}
-	.pop-item[data-active='true'],
-	.pop-item[aria-selected='true'] {
-		background: var(--hover);
-		color: var(--foreground);
-	}
-	.pop-item:focus-visible {
-		outline-offset: -2px;
-	}
-	.pop-item:disabled,
-	.pop-item[aria-disabled='true'] {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.pop-item.is-danger {
-		color: var(--destructive);
-	}
-	@media (hover: hover) {
-		.pop-item:hover:not(:disabled) {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-		.pop-item.is-danger:hover:not(:disabled) {
-			color: var(--destructive);
-		}
-	}
-	@media (pointer: coarse) {
-		.pop-item {
-			min-height: 2.75rem;
-			padding-inline: 0.75rem;
-			font-size: 0.9375rem;
-		}
-	}
-	.pop-label {
-		padding: 0.375rem 0.5rem 0.125rem;
-		font-size: 0.75rem;
-		line-height: 1rem;
-		font-weight: 500;
-		color: var(--muted-foreground);
-	}
-	.pop-sep {
-		height: 1px;
-		margin: 0.25rem 0.5rem;
-		background: var(--border);
-	}
-
-	/* A row of the sidebar: a session, a folder, an action. A wash marks hover and the open one. */
-	.side-row {
-		display: flex;
-		width: 100%;
-		min-height: 2rem;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0 0.5rem;
-		border-radius: var(--radius-xl);
-		font-size: 0.8125rem;
-		line-height: 1.125rem;
-		color: var(--ink-2);
-		text-align: left;
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out);
-	}
-	.side-row[aria-current='page'],
-	.side-row.is-open {
-		background: var(--active);
-		color: var(--foreground);
-	}
-	.side-row:focus-visible {
-		outline-offset: -2px;
-	}
-	@media (hover: hover) {
-		.side-row:hover {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-		.side-row[aria-current='page']:hover {
-			background: var(--active);
-		}
-	}
-	@media (pointer: coarse) {
-		.side-row {
-			min-height: 2.75rem;
-			font-size: 0.9375rem;
-		}
-	}
-
-	/* An on/off control. Off is a hairline track, on is ink; the thumb slides. */
-	.switch {
-		position: relative;
-		flex-shrink: 0;
-		width: 2.25rem;
-		height: 1.25rem;
-		border-radius: 999px;
-		background: var(--hover);
-		box-shadow: inset 0 0 0 1px var(--input);
-		transition:
-			background-color var(--dur) var(--ease-out),
-			box-shadow var(--dur) var(--ease-out);
-	}
-	.switch::before {
-		content: '';
-		position: absolute;
-		top: 3px;
-		left: 3px;
-		width: 0.875rem;
-		height: 0.875rem;
-		border-radius: 999px;
-		background: var(--muted-foreground);
-		transition:
-			transform var(--dur) var(--ease-out),
-			background-color var(--dur) var(--ease-out);
-	}
-	.switch[aria-checked='true'] {
-		background: var(--primary);
-		box-shadow: none;
-	}
-	.switch[aria-checked='true']::before {
-		transform: translateX(1rem);
-		background: var(--primary-foreground);
-	}
-	.switch:disabled {
-		opacity: 0.45;
-	}
-	.switch::after {
-		content: '';
-		position: absolute;
-		inset: -0.5rem -0.25rem;
-	}
-
-	/* A <select> drawn like a field. */
-	.select {
-		height: 2.25rem;
-		padding: 0 1.75rem 0 0.625rem;
-		background: var(--field)
-			url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
-			no-repeat right 0.5rem center;
-		border: 1px solid var(--input);
-		border-radius: var(--radius-md);
-		font-size: 0.8125rem;
-		color: var(--foreground);
-		appearance: none;
-		max-width: 100%;
-	}
-	.select:disabled {
-		opacity: 0.5;
-	}
-	@media (pointer: coarse) {
-		.select {
-			height: 2.75rem;
-			font-size: 1rem;
-		}
-	}
-
-	/* The settings window: a heading per group, then rows of a label and its control. */
-	.set-h {
-		margin: 1.5rem 0 0.375rem;
-		font-size: 0.75rem;
-		line-height: 1rem;
-		font-weight: 500;
-		color: var(--muted-foreground);
-	}
-	.set-h:first-child {
-		margin-top: 0.25rem;
-	}
-	.set-row {
-		display: flex;
-		min-height: 3rem;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.75rem 1.5rem;
-		padding: 0.5rem 0;
-		border-top: 1px solid var(--border);
-	}
-	.set-h + .set-row,
-	.set-h + dl > .set-row:first-child,
-	.set-row:first-child {
-		border-top: 0;
-	}
-	.set-label {
-		font-size: 0.8125rem;
-		line-height: 1.125rem;
-		font-weight: 500;
-		color: var(--foreground);
-	}
-	.set-hint {
-		margin-top: 0.125rem;
-		font-size: 0.75rem;
-		line-height: 1.0625rem;
-		color: var(--muted-foreground);
-		text-wrap: pretty;
-	}
-	@media (max-width: 30rem) {
-		/* On a phone a row is its label, then its control at full width (utilities set otherwise). */
-		.set-row.stacks {
-			flex-direction: column;
-			align-items: stretch !important;
-		}
-		.set-row.stacks > * {
-			width: auto !important;
-			max-width: none !important;
-		}
-	}
-
-	/* The strip that says this browser may do anything. Always on screen, never dismissable. */
-	.alarm {
-		background: var(--alarm);
-		color: var(--alarm-foreground);
-	}
-
-	/* Shimmer for text that stands for work in progress. */
-	.shimmer {
-		background: linear-gradient(
-				100deg,
-				var(--muted-foreground) 35%,
-				var(--foreground) 50%,
-				var(--muted-foreground) 65%
-			)
-			0 0 / 220% 100%;
-		-webkit-background-clip: text;
-		background-clip: text;
-		color: transparent;
-		animation: shimmer 2.4s linear infinite;
-	}
-	/* A block that stands for content on its way. */
-	.skeleton {
-		background: linear-gradient(100deg, var(--hover) 30%, var(--active) 50%, var(--hover) 70%) 0 0 /
-			220% 100%;
-		animation: shimmer 1.8s linear infinite;
-	}
-
-	/*
-	 * A grouped card: rows of one kind held in one soft object (settings, folders, a tool's
-	 * steps). Hairlines divide the rows; the card itself has no shadow on the canvas.
-	 */
-	.group-card {
-		background: var(--card);
-		border-radius: var(--radius-2xl);
-		box-shadow: inset 0 0 0 1px var(--border);
-		overflow: hidden;
-	}
-	/* A section label above a grouped card. */
-	.group-label {
-		padding-inline: 0.25rem;
-		margin-bottom: 0.5rem;
-		font-size: 0.8125rem;
-		font-weight: 500;
-		color: var(--muted-foreground);
-	}
-
-	/* A quiet row in the transcript that stands for work: a tool call, or a run of them. */
-	.step {
-		display: flex;
-		width: 100%;
-		min-height: 2.75rem;
-		align-items: center;
-		gap: 0.75rem;
-		margin-inline: -0.5rem;
-		padding: 0.375rem 0.5rem;
-		border-radius: var(--radius-md);
-		color: var(--muted-foreground);
-		text-align: left;
-		transition:
-			background-color var(--dur-fast) var(--ease-out),
-			color var(--dur-fast) var(--ease-out);
-	}
-	.step:active {
-		background: var(--active);
-	}
-	@media (hover: hover) {
-		.step:hover {
-			background: var(--hover);
-			color: var(--foreground);
-		}
-	}
-	@media (min-width: 768px) and (pointer: fine) {
-		.step {
-			min-height: 2.25rem;
-		}
-	}
-
-	/* Three dots that rise in turn: the lead is working. */
-	.dots {
-		display: inline-flex;
-		gap: 3px;
-	}
-	.dots > span {
-		width: 5px;
-		height: 5px;
-		border-radius: 999px;
-		background: var(--muted-foreground);
-		animation: dot-rise 1.2s var(--ease-out) infinite;
-	}
-	.dots > span:nth-child(2) {
-		animation-delay: 0.15s;
-	}
-	.dots > span:nth-child(3) {
-		animation-delay: 0.3s;
-	}
-
-	/* Rendered model markdown. Everything inside is sanitised first. */
 	.md {
-		font-size: 1rem;
-		line-height: 1.7;
-		letter-spacing: -0.008em;
+		@apply text-sm leading-relaxed text-foreground;
 		overflow-wrap: anywhere;
-		color: var(--foreground);
-	}
-	@media (max-width: 767px) {
-		.md {
-			font-size: 1.0625rem;
-		}
 	}
 	.md > * + * {
-		margin-top: 0.85em;
+		margin-top: 0.75rem;
 	}
 	.md h1,
 	.md h2,
 	.md h3,
 	.md h4 {
-		font-weight: 600;
-		line-height: 1.3;
-		letter-spacing: -0.022em;
-		margin-top: 1.6em;
+		@apply font-semibold tracking-tight;
+		margin-top: 1.5rem;
 	}
 	.md > :first-child {
 		margin-top: 0;
 	}
 	.md h1 {
-		font-size: 1.25rem;
-		letter-spacing: -0.03em;
+		@apply text-lg;
 	}
 	.md h2 {
-		font-size: 1.0625rem;
+		@apply text-base;
 	}
 	.md h3,
 	.md h4 {
-		font-size: 0.9375rem;
+		@apply text-sm;
 	}
 	.md ul,
 	.md ol {
-		padding-left: 1.35em;
+		padding-left: 1.25rem;
 	}
 	.md ul {
 		list-style: disc;
@@ -1248,220 +252,104 @@ html {
 		list-style: decimal;
 	}
 	.md li + li {
-		margin-top: 0.3em;
+		margin-top: 0.25rem;
 	}
 	.md li::marker {
-		color: var(--faint);
+		color: var(--muted-foreground);
 	}
 	.md strong {
-		font-weight: 600;
+		@apply font-semibold;
 	}
 	.md a {
-		color: var(--accent-text);
-		text-decoration: underline;
-		text-underline-offset: 3px;
-		text-decoration-thickness: 1px;
-		text-decoration-color: color-mix(in oklab, var(--accent-text) 45%, transparent);
-		transition: text-decoration-color var(--dur-fast) var(--ease-out);
+		@apply underline underline-offset-4;
+		text-decoration-color: color-mix(in oklab, currentColor 40%, transparent);
 	}
 	.md a:hover {
 		text-decoration-color: currentColor;
 	}
 	.md blockquote {
-		border-left: 2px solid var(--border-strong);
-		padding-left: 0.9em;
-		color: var(--muted-foreground);
+		@apply border-l-2 pl-3 text-muted-foreground;
 	}
 	.md hr {
-		border: 0;
-		border-top: 1px solid var(--border);
-		margin: 1.5em 0;
+		@apply my-6 border-t;
 	}
 	.md code {
-		font-size: 0.8667em;
-		background: var(--hover);
-		box-shadow: inset 0 0 0 1px var(--border);
-		border-radius: var(--radius-xs);
-		padding: 0.12em 0.36em;
+		@apply rounded-sm bg-muted px-1 py-0.5 font-mono text-xs;
 	}
 	.md pre {
-		background: var(--inset);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		padding: 0.85rem 1rem;
-		overflow-x: auto;
-		font-size: 0.8125rem;
-		line-height: 1.6;
+		@apply overflow-x-auto rounded-lg border border-input px-3 py-2.5 font-mono text-xs leading-5 dark:bg-input/30;
 		scrollbar-width: thin;
-		scrollbar-color: var(--border-strong) transparent;
+		scrollbar-color: var(--input) transparent;
+		color: var(--syn-text);
 	}
 	.md pre code {
-		background: none;
-		box-shadow: none;
-		padding: 0;
-		font-size: inherit;
+		@apply bg-transparent p-0;
+		color: inherit;
 	}
 	.md table {
-		display: block;
-		overflow-x: auto;
+		@apply block w-max max-w-full overflow-x-auto text-sm;
 		border-collapse: collapse;
-		font-size: 0.875rem;
-		width: max-content;
-		max-width: 100%;
 	}
 	.md th,
 	.md td {
-		border-bottom: 1px solid var(--border);
-		padding: 0.45rem 1.5rem 0.45rem 0;
-		text-align: left;
-		font-variant-numeric: tabular-nums;
+		@apply border-b py-2 pr-6 text-left;
 	}
 	.md th {
-		font-family: var(--font-mono);
-		font-weight: 400;
-		color: var(--muted-foreground);
-		font-size: 0.75rem;
-		border-bottom-color: var(--border-strong);
+		@apply h-8 py-0 font-medium whitespace-nowrap text-muted-foreground;
 	}
+
+	/* Token classes of highlight.js, on sin-api's --syn-* colours. */
 	.hljs-comment,
 	.hljs-quote {
-		color: var(--faint);
+		color: var(--muted-foreground);
 		font-style: italic;
 	}
 	.hljs-keyword,
 	.hljs-selector-tag,
-	.hljs-built_in,
 	.hljs-literal {
-		color: var(--syn-key);
+		color: var(--syn-keyword);
 	}
-	.hljs-string,
-	.hljs-regexp,
-	.hljs-addition {
-		color: var(--success);
-	}
-	.hljs-number,
-	.hljs-attr,
-	.hljs-symbol,
-	.hljs-bullet {
-		color: var(--info);
-	}
+	.hljs-built_in,
 	.hljs-title,
 	.hljs-section,
 	.hljs-name,
 	.hljs-type {
-		font-weight: 600;
+		color: var(--syn-fn);
+	}
+	.hljs-string,
+	.hljs-regexp,
+	.hljs-addition {
+		color: var(--syn-string);
+	}
+	.hljs-number,
+	.hljs-symbol,
+	.hljs-bullet {
+		color: var(--syn-number);
+	}
+	.hljs-attr,
+	.hljs-attribute,
+	.hljs-property {
+		color: var(--syn-key);
 	}
 	.hljs-deletion {
 		color: var(--destructive);
 	}
 }
 
-/* Motion explains a change of state; it moves transform and opacity only. */
-@keyframes enter {
-	from {
-		opacity: 0;
-		transform: translateY(6px);
-	}
-}
-@keyframes drop-in {
-	from {
-		opacity: 0;
-		transform: translateY(-8px) scale(0.98);
-	}
-}
-@keyframes pop-in {
-	from {
-		opacity: 0;
-		transform: translateY(6px) scale(0.985);
-	}
-}
-@keyframes pop {
-	from {
-		opacity: 0;
-		transform: scale(0.96);
-	}
-}
-@keyframes slide-in-left {
-	from {
-		transform: translateX(-100%);
-	}
-}
-@keyframes fade-in {
-	from {
-		opacity: 0;
-	}
-}
-@keyframes ping-soft {
-	0% {
-		transform: scale(1);
-		opacity: 0.5;
-	}
-	70%,
-	100% {
-		transform: scale(2.6);
-		opacity: 0;
-	}
-}
-@keyframes shimmer {
-	to {
-		background-position: -220% 0;
-	}
-}
-@keyframes rise {
-	from {
-		opacity: 0;
-		transform: translateY(10px);
-		filter: blur(4px);
-	}
-}
-@keyframes dot-rise {
-	0%,
-	60%,
-	100% {
-		transform: translateY(0);
-		opacity: 0.45;
-	}
-	30% {
-		transform: translateY(-4px);
-		opacity: 1;
-	}
-}
-@keyframes caret {
-	50% {
-		opacity: 0;
-	}
-}
-@keyframes hold {
-	from {
-		transform: scaleX(0);
-	}
-	to {
-		transform: scaleX(1);
-	}
+/* A region that scrolls natively (the transcript follows its own bottom, a code block scrolls
+   sideways): the browser's thin scrollbar in the hairline colour. */
+@utility scroll-thin {
+	scrollbar-width: thin;
+	scrollbar-color: var(--input) transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,
 	*::after {
-		animation-duration: 0.001ms !important;
+		transition-duration: 0ms !important;
+		animation-duration: 0ms !important;
 		animation-iteration-count: 1 !important;
-		transition-duration: 0.001ms !important;
 		scroll-behavior: auto !important;
-	}
-	.btn:active:not(:disabled) {
-		transform: none !important;
-	}
-	.enter-seq > * {
-		animation: none;
-	}
-	.shimmer {
-		animation: none;
-		color: var(--muted-foreground);
-		background: none;
-	}
-	.skeleton {
-		animation: none;
-		background: var(--hover);
 	}
 }

@@ -5,6 +5,36 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-19
+
+### Added
+
+- `azazel remote`: the web page can continue an earlier session. `/resume`, "Resume…" in the sidebar, the New chat sheet and "Continue" on an ended session open a searchable list of earlier sessions; picking one continues it in the background (needs a control link; `POST /api/history`, and `resume` in `POST /api/sessions`).
+- `azazel remote`: Settings, General, **Thinking** (Follow terminal, Show, Hide). The page follows the terminal's `tui.show_thinking`, which the RPC `State` now carries as `show_thinking`, so view links get it too (#5).
+- The `cache` segment of the status line counts down the time left in the prompt cache (`cache 87% 4:12`, then `cold`), and the web status bar shows the same countdown. `get_state` carries `cache_left_secs` and `cache_ttl_secs`.
+- `/handoff` writes a structured brief (requests with their status, where things stand, rules you set, ranked files, errors already solved, next steps). A draft made without a model, with secrets removed, is saved first, so a failed request still leaves a brief; it is removed once the hand-off succeeds. `/handoff` works from the web page and over RPC (`handoff`); while the brief is written the session counts as busy and refuses new prompts, and Stop (`abort`) cancels it.
+- `[session] handoff_at` offers `/handoff` once per session when the context passes that many tokens; `[cache] suggest_handoff_at` suggests `/handoff` or `/compact` a minute before a warm cache runs out under a large context. Both are off by default and make no request.
+- Sub-agent model routing: set `[team] model_routing` to `suggest` or `auto` and the `smol` role rates each sub-agent's task as fast, balanced or deep and picks its model (`routing_fast`, `routing_balanced`, `routing_deep`, `allow_deep`, `min_upgrade_confidence`, `min_downgrade_confidence`). A model you set yourself is never changed. Each decision and its estimated saving appear in `/agents` and `/cost`.
+- `[tools] slim_results` (on by default) drops `node_id`, HTML copies and empty fields from large JSON results of MCP tools and web fetches, and avatars, colours and API links from GitHub- and Linear-shaped results, before the model sees them. When anything is dropped, the result says so and the original is saved as `artifact://slim-<call id>`.
+- `[tools] digest = "smol"` replaces a large MCP, web or PDF result with notes from the `smol` model and saves the full text as `artifact://digest-<call id>`; tune it with `digest_min_chars` and `digest_min_pages`. Off by default.
+- `[browser] screenshot_scale` (for example `0.5`) scales screenshots before the model gets them, about a quarter of the image tokens at `0.5`; `click` and `hover` coordinates are read in pixels of the image.
+- `[browser] snapshot_diff` (on by default) keeps refs stable within a tab and sends a snapshot of a page the model has already seen as what changed.
+
+### Changed
+
+- `azazel remote`: the web page has a new design: neutral dark and light themes, the Geist fonts and shadcn-svelte components throughout (sidebar, menus, dialogs, pickers, settings); tool calls that open in place in the transcript, one card per call with its command, the change with line numbers and scrollable output with copy buttons, and `Failed` on a failed call's row; a resizable Agents/Usage pane that slides open and shut; an Accent colour (Emerald, Blue, Violet, Rose, Orange, Amber, Neutral) and a preview of each theme in Settings, General; status pickers inside the message box; full session titles in the sidebar; and rows, icons and menus that line up at every width, which a layout test measures at four widths in both themes.
+- The cache lifetime is read from the provider's usage when it reports one (Anthropic's five-minute or one-hour cache) and counted from when the request was sent.
+- Sessions belong to the folder you start azazel in. In a sub-folder of a project, `-c`, `[session] resume = "last"`, `/resume`, `azazel sessions` and attaching to a background session see only that folder's sessions (`ctrl+f` in `/resume` and `azazel sessions --all-folders` show the whole project), and agents write without asking only inside that folder; `--add-dir ..` or `/add-dir ..` widens it. Configuration, rules, trust, `AGENTS.md`, memory and checkpoints still come from the project root.
+- The Windows `azazel.exe` has the azazel logo as its icon and file details in its Properties dialog (description, product name, version, copyright, and https://sinister.codes).
+
+### Fixed
+
+- Running `azazel` in a folder whose session runs in the background (for example one started from the browser) attaches to it instead of stopping with "running in the background"; a prompt on the command line is sent to it, and flags that cannot change a running session (`--model`, `--thinking`, `--mode`, `--name`, `--continue-run`) are refused with what to do instead. Quitting `azazel remote` lists the sessions started from the browser that are still running and how to reach them (`azazel attach <id>`, `azazel kill <id>`).
+- `azazel remote`: Settings, About shows the version on a device that has just paired, instead of `unknown`.
+- `azazel remote --tailscale` finds Tailscale on Windows where its installer puts it (`C:\Program Files\Tailscale`, which is not on `PATH`) instead of saying it is not set up.
+- `azazel remote`: clicking outside a menu, picker, sheet or dialog closes it (#5).
+- `azazel remote`: the session menu in the sidebar opens next to its row, and notices stay clickable above an open dialog.
+
 ## [0.14.0] - 2026-11-18
 
 ### Added

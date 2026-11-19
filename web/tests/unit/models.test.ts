@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { modelLabel, pickableRoles, splitModel } from '$lib/models';
+import { modelLabel, pickableRoles, shortModel, splitModel } from '$lib/models';
 import type { Roles } from '$lib/protocol';
 
 describe('the model chip', () => {
@@ -63,5 +63,14 @@ describe('a run of tool calls', () => {
 		);
 		expect(stepVerb('edit', true)).toBe('Editing');
 		expect(stepVerb('shell', false)).toBe('Ran');
+	});
+});
+
+describe('the short model name on the chip', () => {
+	it('drops the vendor prefix, the organisation path and the version suffix', () => {
+		expect(shortModel('anthropic.claude-sonnet-4-20250514-v1:0')).toBe('claude-sonnet-4');
+		expect(shortModel('us.anthropic.claude-opus-4-v1:0')).toBe('claude-opus-4');
+		expect(shortModel('meta-llama/llama-3.1-70b')).toBe('llama-3.1-70b');
+		expect(shortModel('gpt-5')).toBe('gpt-5');
 	});
 });

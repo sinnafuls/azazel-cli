@@ -140,10 +140,28 @@ anywhere, the entry leaves the list.
 
 ### One writer per session
 
-A background session locks the session it has open. Opening that session anywhere else (`-c`,
-`--session`, `/resume`) fails with `this session is running in the background: azazel attach <id>`, and
+A background session locks the session it has open. Opening that session anywhere else in print mode, RPC or
+`/resume` fails with `this session is running in the background: azazel attach <id>`, and
 `/resume` marks such sessions in its list. `azazel attach --take` is how you get it back. The clients
 attached to a background session are not writers: they all speak to the one process that is.
+
+Plain `azazel` never ends there. When the session it would continue (the newest one started in this folder, with
+`[session] resume = "last"`, or the one `-c` names) runs in the background, as one started from the browser by
+`azazel remote` does, the UI attaches to it as `azazel attach <id>` would, and says so first. A prompt on the
+command line (`azazel -c "fix it"`) is sent to the session once attached. Options that only shape a new session
+cannot apply to one that is already running: `--model`, `--thinking`, `--mode`, `--name`, `--continue-run` and
+`azazel open` are refused with a message naming the option. Run `azazel attach <id>` and use the slash command
+(`/model`, `/thinking`, `/mode`, `/name`, `/continue`, `/open`) instead, or end the session first with
+`azazel kill <id>`. If the background session ended meanwhile, the session opens normally. Print mode, RPC and the
+other modes that cannot attach still fail with the message above. A background session belongs to the folder it was
+started in: plain `azazel` in `foo/web` does not attach to one started in `foo`, and starts its own session.
+
+### Sessions started from the browser
+
+A session a browser starts through `azazel remote` is a background session. Quitting `azazel remote` with `q` ends the
+server, not those sessions: it prints how many are still running, each with its id, name, folder and state, and says
+that `azazel attach <id>` opens one, `azazel kill <id>` stops it and `azazel` in its folder continues it. Only the
+sessions that server started are listed; `azazel ps` shows them all.
 
 ### Files
 

@@ -56,6 +56,28 @@ export async function loadLanguages(source: string): Promise<boolean> {
 	return wanted.size > 0;
 }
 
+/** Loads the highlighter of one language (`bash`, `ts`). Resolves true when it was not there before. */
+export async function loadLanguage(lang: string): Promise<boolean> {
+	const name = alias.get(lang.toLowerCase());
+	if (!name || loaded.has(name)) return false;
+	const mod = await languages[name].load();
+	if (loaded.has(name)) return true;
+	hljs.registerLanguage(name, mod.default);
+	loaded.add(name);
+	cache.clear();
+	return true;
+}
+
+/** Code as safe HTML, coloured when its language is loaded (`loadLanguage`) and plain until then. */
+export function highlightCode(text: string, lang: string): string {
+	const name = alias.get(lang.toLowerCase());
+	return sanitize(
+		name && loaded.has(name)
+			? hljs.highlight(text, { language: name, ignoreIllegals: true }).value
+			: escape(text)
+	);
+}
+
 const escape = (s: string) =>
 	s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 

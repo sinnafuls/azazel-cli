@@ -510,6 +510,7 @@ impl ConverseDecoder {
                         cache_write: usage.cache_write_input_tokens.map_or(0, count),
                         reasoning: 0,
                         cost_usd: None,
+                        cache_ttl_secs: None,
                     };
                 }
                 self.done(&mut out);

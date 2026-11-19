@@ -1,13 +1,23 @@
 // Page-wide state: who this device is, the theme and the other choices of Settings > General.
 import { api, ApiError, pairSecret } from '$lib/api';
 import type { Me, TerminalTheme } from '$lib/protocol';
-import { MAPPED_VARS, mapTheme, toHex, type Mapped } from '$lib/theme';
+import {
+	ACCENTS,
+	accentVars,
+	DEFAULT_ACCENT,
+	MAPPED_VARS,
+	mapTheme,
+	toHex,
+	type Accent,
+	type Mapped
+} from '$lib/theme';
 
 export type Auth = 'checking' | 'pairing' | 'ok' | 'needs-link' | 'error';
 export type ThemeChoice = 'terminal' | 'dark' | 'light';
 export type TextSize = 'small' | 'default' | 'large';
 /** What Enter does in the message box; `auto` sends with a keyboard and makes a line on touch. */
 export type EnterKey = 'auto' | 'send' | 'newline';
+export type ThinkingView = 'follow' | 'show' | 'hide';
 
 export const THEMES: { value: ThemeChoice; label: string; hint: string }[] = [
 	{ value: 'terminal', label: 'Match terminal', hint: 'The colours of the azazel theme in use' },
@@ -18,10 +28,12 @@ const TEXT_SCALE: Record<TextSize, string> = { small: '93.75%', default: '100%',
 
 const KEYS = {
 	theme: 'azazel-theme',
+	accent: 'azazel-accent',
 	terminal: 'azazel-terminal-theme',
 	text: 'azazel-text-size',
 	enter: 'azazel-enter',
-	notify: 'azazel-notify'
+	notify: 'azazel-notify',
+	thinking: 'azazel-thinking'
 };
 const read = (k: string) => {
 	try {
@@ -47,6 +59,8 @@ class App {
 	error = $state<string | null>(null);
 
 	theme = $state<ThemeChoice>('dark');
+	/** The colour of focus, of what is running or chosen and of the meters, in the dark and light themes. */
+	accent = $state<Accent>(DEFAULT_ACCENT);
 	/** The terminal's theme, as the last session reported it; kept so the next visit starts in it. */
 	terminal = $state.raw<TerminalTheme | null>(null);
 	/** What "Match terminal" made of it: which variables it set and which fell back. */
@@ -54,13 +68,21 @@ class App {
 	textSize = $state<TextSize>('default');
 	enter = $state<EnterKey>('auto');
 	notify = $state(false);
+	/** Whether the transcript shows the model's thinking: the terminal's setting, or this page's own. */
+	thinking = $state<ThinkingView>('follow');
 
 	/** Reads the stored choices and paints; called once, before the first frame. */
 	applyTheme() {
 		this.theme = oneOf(read(KEYS.theme), ['terminal', 'dark', 'light'] as const, 'dark');
+		this.accent = oneOf(
+			read(KEYS.accent),
+			ACCENTS.map((a) => a.value),
+			DEFAULT_ACCENT
+		);
 		this.textSize = oneOf(read(KEYS.text), ['small', 'default', 'large'] as const, 'default');
 		this.enter = oneOf(read(KEYS.enter), ['auto', 'send', 'newline'] as const, 'auto');
 		this.notify = read(KEYS.notify) === '1';
+		this.thinking = oneOf(read(KEYS.thinking), ['follow', 'show', 'hide'] as const, 'follow');
 		try {
 			const t = JSON.parse(read(KEYS.terminal) ?? 'null') as TerminalTheme | null;
 			if (t && typeof t.roles === 'object') this.terminal = t;
@@ -74,6 +96,11 @@ class App {
 		store(KEYS.theme, t);
 		this.paint();
 	}
+	setAccent(a: Accent) {
+		this.accent = a;
+		store(KEYS.accent, a === DEFAULT_ACCENT ? null : a);
+		this.paint();
+	}
 	/** A session told us the terminal's theme (`get_theme`, or a `theme` frame when it changes). */
 	setTerminalTheme(t: TerminalTheme | null | undefined) {
 		if (!t || typeof t.roles !== 'object' || !t.roles) return;
@@ -85,6 +112,14 @@ class App {
 		this.textSize = s;
 		store(KEYS.text, s === 'default' ? null : s);
 		this.paint();
+	}
+	setThinking(v: ThinkingView) {
+		this.thinking = v;
+		store(KEYS.thinking, v === 'follow' ? null : v);
+	}
+	/** Whether thinking is drawn, given what the terminal's `tui.show_thinking` says. */
+	showsThinking(terminal: boolean | undefined): boolean {
+		return this.thinking === 'follow' ? (terminal ?? true) : this.thinking === 'show';
 	}
 	setEnter(e: EnterKey) {
 		this.enter = e;
@@ -109,17 +144,23 @@ class App {
 		return true;
 	}
 
+	/** Whether the page is painted light: the choice, or what the matched terminal theme is. */
+	light = $state(false);
+
 	private paint() {
 		const el = document.documentElement;
 		const mapped = this.theme === 'terminal' && this.terminal ? mapTheme(this.terminal) : null;
 		const light = this.theme === 'light' || (this.theme === 'terminal' && !!mapped?.light);
 		this.mapped = mapped;
+		this.light = light;
 		el.classList.toggle('light', light);
 		el.classList.toggle('dark', !light);
 		for (const v of MAPPED_VARS) el.style.removeProperty(v);
-		if (mapped) for (const [k, v] of Object.entries(mapped.vars)) el.style.setProperty(k, v);
+		// A matched terminal theme brings its own accent; the dark and light themes take the chosen one.
+		const vars = mapped ? mapped.vars : accentVars(this.accent, light);
+		for (const [k, v] of Object.entries(vars)) el.style.setProperty(k, v);
 		el.style.setProperty('--text-scale', TEXT_SCALE[this.textSize]);
-		const canvas = mapped ? toHex(mapped.palette.background) : light ? '#ffffff' : '#161616';
+		const canvas = mapped ? toHex(mapped.palette.background) : light ? '#fafafa' : '#0a0a0a';
 		document.querySelector('meta[name=theme-color]')?.setAttribute('content', canvas);
 	}
 

@@ -149,7 +149,7 @@ thinking = "low"
 |---|---|---|---|
 | `[permissions]` | `mode` | `"manual"` | `plan`, `manual`, `accept-edits`, `auto` or `bypass`; see [permissions](permissions.md#modes). `ask`, the name `manual` had before 0.5, is refused with a message that says so. A project may set `bypass` only once it is trusted |
 | | `allow`, `ask`, `deny` | `[]` | Rules such as `"shell(cargo build:*)"` |
-| | `additional_dirs` | `[]` | Directories outside the project agents may work in (relative to the project root) |
+| | `additional_dirs` | `[]` | Directories outside the folder azazel was started in that agents may work in (relative to the project root) |
 | | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`, `curl … \| sh`) needs in every mode but `bypass`: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
 | | `secret_paths` | `[]` | Patterns, written like the path of a rule, added to the built-in list of [secret files](permissions.md#secret-files): reading or writing one is asked about in every mode but `bypass` |
 | `[checkpoints]` | `enabled` | `true` | Snapshot the project before each prompt; see [sessions and checkpoints](sessions-and-checkpoints.md) |
@@ -157,11 +157,12 @@ thinking = "low"
 | | `timeout_ms` | `10000` | Longest one snapshot may take (1000 to 300000); past it checkpoints turn off for the session |
 | | `exclude` | `[".azazel/worktrees/"]` | Patterns, as in `.gitignore`, that checkpoints leave out |
 | `[session]` | `auto_name` | `true` | Have the `smol` role name a session after its first reply; see [sessions](sessions-and-checkpoints.md#names) |
-| | `resume` | `"new"` | What the interactive UI opens when no session is named: `new`, or `last` for this project's most recent session, as `-c` does (`--new` starts a new one anyway). Print mode starts a new session unless `-c` or `--session` is given; see [sessions](sessions-and-checkpoints.md#resuming) |
+| | `resume` | `"new"` | What the interactive UI opens when no session is named: `new`, or `last` for the most recent session started in this folder, as `-c` does (`--new` starts a new one anyway). Print mode starts a new session unless `-c` or `--session` is given; see [sessions](sessions-and-checkpoints.md#resuming) |
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
 | | `resume_runs` | `true` | A background session that is started again after its process died in the middle of a run goes on with the run by itself; with `false` it waits for `/continue`. See [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
 | | `branch_summary` | `true` | Going back with `/tree` has the `smol` role tell the agent in a few lines what happened on the branch you left; see [sessions](sessions-and-checkpoints.md#branch-summaries) |
+| | `handoff_at` | `0` | Past this many context tokens, offer `/handoff` once per session (a notice in the terminal UI, a toast in the web page); `0` never offers. It makes no request; see [handoff](sessions-and-checkpoints.md#handoff) |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
 | | `auto_percent` | `0` | Summarise once the context fills this percentage of the window (`70` summarises at 70%); `0` leaves it to `reserve_tokens`. Whichever comes first applies, and on a subscription login the percentage is of `login_max_tokens` |
@@ -176,6 +177,13 @@ thinking = "low"
 | | `agent_retention_days` | `14` | Days a finished sub-agent stays in the [agent hub](tui.md#the-agent-hub); after that its transcript file is deleted at the next start. `0` keeps them as long as the session |
 | | `coordinator` | `false` | The lead only plans and delegates; see [coordinator mode](team.md#coordinator-mode) |
 | | `worktree_target` | `"shared"` | Where an agent in a worktree of a Cargo project builds: `shared` (the main checkout's `target/`), `own`, or `sccache`; see [worktrees](team.md#build-output-of-worktrees) |
+| | `model_routing` | `"off"` | `suggest` has the `smol` role rate each sub-agent's task and records the model it would pick; `auto` moves the agent to that model; see [model routing](team.md#model-routing) |
+| | `routing_fast` | `"@smol"` | Model or `@role` for tasks rated `fast` (mechanical, local, well specified) |
+| | `routing_balanced` | `"@default"` | Model or `@role` for tasks rated `balanced` (ordinary engineering) |
+| | `routing_deep` | `"@slow"` | Model or `@role` for tasks rated `deep` (unknown cause, open design, irreversible action) |
+| | `allow_deep` | `false` | Routing may move an agent to `routing_deep`; off, it never goes above `routing_balanced` |
+| | `min_upgrade_confidence` | `0.85` | The confidence a rating needs to move an agent to a stronger model |
+| | `min_downgrade_confidence` | `0.6` | The confidence a rating needs to move an agent to a cheaper model |
 | `[advisor]` | `model` | `[]` | Chain of the second model that reviews the lead's work; empty means no advisor; see [advisor](team.md#advisor) |
 | | `when` | `"off"` | `stop` reviews each time the lead is about to finish; `off` leaves the advisor to `/advise` |
 | `[verify]` | `commands` | `[]` | Check commands; empty means auto-detect; see [goals](goals.md) |
@@ -205,6 +213,10 @@ thinking = "low"
 | | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |
 | | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off`; see [the read guard](tools.md#the-read-guard) |
 | | `redact_output` | `false` | Replace secrets in tool results with `[redacted:<kind>]` before the model and the session file get them; see [permissions](permissions.md#secrets-in-tool-results) |
+| | `slim_results` | `true` | Drop `node_id`s, HTML copies and empty fields (and colours, avatars and API links of GitHub and Linear results) from large JSON results of MCP tools and web fetches, with a note and the full text saved; see [tools](tools.md#slimmer-and-digested-results) |
+| | `digest` | `"off"` | `smol`: a large MCP, web or PDF result is replaced by notes the `smol` model writes, with the full text saved to a file; `off` keeps results as they are; see [tools](tools.md#slimmer-and-digested-results) |
+| | `digest_min_chars` | `16000` | Characters of an MCP or web result above which it is digested |
+| | `digest_min_pages` | `10` | Pages of a PDF read above which it is digested |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
 | `[tools.eval]` | `python` | `true` | Let the [`eval`](tools.md#eval) tool run Python |
 | | `javascript` | `true` | Let the [`eval`](tools.md#eval) tool run JavaScript; with both off, `eval` is not offered |
@@ -227,6 +239,7 @@ thinking = "low"
 | `[cache]` | `warming` | `"off"` | `idle` keeps Anthropic's prompt cache warm while the session waits for you; see [prompt cache](models-and-logins.md#prompt-cache) |
 | | `warm_minutes` | `30` | How long after the lead's last request the cache is kept warm |
 | | `report_misses` | `false` | Say in the transcript when a request misses the cached prefix, and why; `/cost` lists the misses either way |
+| | `suggest_handoff_at` | `0` | Past this many context tokens (try `200000`), say once, a minute before the cache runs out, that `/handoff` or `/compact` is cheapest now; `0` never says it. It makes no request; see [prompt cache](models-and-logins.md#prompt-cache) |
 | `[context]` | `nested` | `true` | Give an agent the `AGENTS.md` of every directory it works in, with its first tool call there; see [context files](rules.md#context-files) |
 | | `include_depth` | `4` | How deep `@path` includes inside context files and rule files are followed; `0` follows none |
 | | `repo_map_tokens` | `0` | Tokens of the [repository map](tools.md#repository-map) put in the lead's system prompt; `0` leaves it out. The map is made once per session and changes only with `/repomap refresh`, so the prompt cache stays valid |
@@ -273,6 +286,8 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[accounts]` | `order` | `{}` | Provider id to account labels in the order work moves through them when the account in use runs out, such as `{ anthropic = ["work", "default"] }`. Accounts that are not listed follow: the default one, then the rest by label; see [several accounts](models-and-logins.md#several-accounts) |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
+| | `screenshot_scale` | `1.0` | Scale screenshots by this (0.1 to 1) before the model gets them, never below 512 pixels on the long side; `0.5` costs about a quarter of the tokens; see [the browser](web-and-browser.md#screenshots-and-snapshots-that-cost-less) |
+| | `snapshot_diff` | `true` | A snapshot of the page the agent's last snapshot of the tab showed sends only what changed, and refs keep their numbers; see [the browser](web-and-browser.md#screenshots-and-snapshots-that-cost-less) |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
 | | `defer_threshold` | `40` | Above this many MCP tools, they are found through `tool_search` instead |
 | | `idle_timeout_secs` | `600` | A server started on demand (`lifecycle: lazy` in its entry) stops after this many seconds without a call; `0` never stops it. See [mcp](mcp.md#when-servers-start) |

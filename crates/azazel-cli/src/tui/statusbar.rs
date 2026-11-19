@@ -58,6 +58,11 @@ pub(super) struct StatusBar {
 }
 
 impl StatusBar {
+    /// Whether the line shows the segment `name`.
+    pub(super) fn shows(&self, name: Name) -> bool {
+        self.layout.shows(name)
+    }
+
     /// The status line `config` asks for, and what in it could not be understood.
     pub(super) fn new(config: &StatuslineConfig) -> (StatusBar, Vec<String>) {
         let (layout, problems) = Layout::new(config);
@@ -185,6 +190,10 @@ impl Tui {
             account: facts.account.as_deref(),
             account_email: facts.account_email.as_deref(),
             cache: (usage.cache_read * 100).checked_div(prompt_tokens),
+            cache_clock: match layout.shows(Name::Cache) {
+                true => self.cache_clock().map(|clock| clock.text()),
+                false => None,
+            },
             agents: self.active_agents(),
             goal: facts.goal.as_deref(),
             todo: Some((done, facts.todo.len())),
@@ -225,7 +234,10 @@ impl Tui {
             .checked
             .filter(|_| command.due && !command.running)
             .map(|checked| checked + COMMAND_EVERY);
-        [clock, again].into_iter().flatten().min()
+        [clock, again, self.cache_clock_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// What `statusline.command` is given on its standard input: the session as JSON, with the

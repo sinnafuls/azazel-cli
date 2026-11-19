@@ -652,6 +652,7 @@ mod tests {
             cache_write: 0,
             reasoning: 5,
             cost_usd: Some(0.01),
+            cache_ttl_secs: None,
         };
         vec![
             (10, AgentEvent::AgentStart),

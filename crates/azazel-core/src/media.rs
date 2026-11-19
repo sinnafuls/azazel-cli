@@ -20,6 +20,15 @@ pub fn image_mime(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// The width and height of the image in `bytes`, read from its header.
+pub fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
 /// An `Image` block for `bytes`. Images whose long side exceeds `max_side` are scaled down and
 /// re-encoded as PNG; smaller ones are passed through untouched. Decoding is CPU-bound: call from
 /// `spawn_blocking` for large inputs.

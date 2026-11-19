@@ -2,7 +2,7 @@
 // a picker asked for by a `/` command. The session a page shows registers itself here so that the
 // settings window and the shortcuts can reach it.
 import type { Session } from '$lib/session/session.svelte';
-import { clampWidth, SIDEBAR_DEFAULT } from '$lib/sidebar';
+import type { useSidebar } from '$lib/components/ui/sidebar';
 
 export const PANES = [
 	['general', 'General'],
@@ -18,9 +18,9 @@ export const PANES = [
 export type Pane = (typeof PANES)[number][0];
 
 const K = {
-	width: 'azazel-sidebar-width',
 	collapsed: 'azazel-sidebar-collapsed',
-	folded: 'azazel-folded'
+	folded: 'azazel-folded',
+	right: 'azazel-right-pane'
 };
 const read = (k: string) => {
 	try {
@@ -38,10 +38,17 @@ const store = (k: string, v: string) => {
 };
 
 class Ui {
-	width = $state(SIDEBAR_DEFAULT);
-	collapsed = $state(false);
-	/** The sidebar as an overlay, on a narrow screen. */
-	drawer = $state(false);
+	/** The sidebar folded to its rail of icons, on a wide screen. */
+	collapsed = $state(read(K.collapsed) === '1');
+	/** The state of the shadcn sidebar, once it is on the page (components/Sidebar.svelte). */
+	sidebar = $state.raw<ReturnType<typeof useSidebar> | null>(null);
+	/** The sidebar as a sheet over the page, on a narrow screen. */
+	get drawer(): boolean {
+		return this.sidebar?.openMobile ?? false;
+	}
+	set drawer(open: boolean) {
+		this.sidebar?.setOpenMobile(open);
+	}
 	/** Project folders whose sessions are folded away, by folder. */
 	folded = $state<Record<string, boolean>>({});
 	/** The settings pane that is open; null when the window is closed, '' for the list on a phone. */
@@ -54,12 +61,15 @@ class Ui {
 	rewind = $state<{ entryId?: string; text?: string } | null>(null);
 	/** The prompt being rewritten: sending goes back to before it first (edit and resend). */
 	edit = $state<{ text: string; entryId: string | null } | null>(null);
+	/** The right pane (agents and usage) docked beside the chat, from 1024px. */
+	rightOpen = $state(true);
+	rightTab = $state<'agents' | 'usage'>('agents');
 	/** The session on screen, if any. */
 	session = $state.raw<Session | null>(null);
 
 	init() {
-		this.width = clampWidth(Number(read(K.width) ?? SIDEBAR_DEFAULT));
 		this.collapsed = read(K.collapsed) === '1';
+		this.rightOpen = read(K.right) !== '0';
 		try {
 			const f = JSON.parse(read(K.folded) ?? '{}');
 			if (f && typeof f === 'object') this.folded = f;
@@ -67,16 +77,17 @@ class Ui {
 			/* start with every folder open */
 		}
 	}
-	setWidth(w: number, remember = true) {
-		this.width = clampWidth(w);
-		if (remember) store(K.width, String(this.width));
+	setCollapsed(collapsed: boolean) {
+		this.collapsed = collapsed;
+		store(K.collapsed, collapsed ? '1' : '0');
 	}
-	toggleSidebar(narrow: boolean) {
-		if (narrow) this.drawer = !this.drawer;
-		else {
-			this.collapsed = !this.collapsed;
-			store(K.collapsed, this.collapsed ? '1' : '0');
-		}
+	/** Folds or unfolds the sidebar; on a narrow screen opens or closes its sheet. */
+	toggleSidebar() {
+		this.sidebar?.toggle();
+	}
+	setRight(open: boolean) {
+		this.rightOpen = open;
+		store(K.right, open ? '1' : '0');
 	}
 	toggleFolder(cwd: string) {
 		this.folded = { ...this.folded, [cwd]: !this.folded[cwd] };

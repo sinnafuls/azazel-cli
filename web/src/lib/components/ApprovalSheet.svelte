@@ -1,10 +1,16 @@
 <script lang="ts">
+	// A tool call that waits for a yes or a no: what it is, what it would change, and the answers.
 	import type { OpenRequest } from '$lib/session/reduce';
 	import type { Decision } from '$lib/protocol';
 	import { previewDiff, prettyInput, summarize } from '$lib/tools';
 	import Sheet from './Sheet.svelte';
 	import DiffView from './DiffView.svelte';
 	import { Button } from '$lib/components/ui/button';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Textarea } from '$lib/components/ui/textarea';
+	import * as Field from '$lib/components/ui/field';
+	import * as Alert from '$lib/components/ui/alert';
+	import * as CodeBlock from '$lib/components/ui/code-block';
 
 	type Approval = Extract<OpenRequest, { kind: 'approval' }>;
 	let {
@@ -25,6 +31,7 @@
 	let error = $state<string | null>(null);
 	let holding = $state(false);
 	let holdTimer: ReturnType<typeof setTimeout> | null = null;
+	const HOLD_MS = 1200;
 
 	const ACCESS: Record<string, string> = {
 		read: 'Reads',
@@ -52,13 +59,14 @@
 		holdTimer = setTimeout(() => {
 			holding = false;
 			void answer('allow');
-		}, 1200);
+		}, HOLD_MS);
 	}
 	function holdEnd() {
 		holding = false;
 		if (holdTimer) clearTimeout(holdTimer);
 		holdTimer = null;
 	}
+	const uid = $props.id();
 </script>
 
 <Sheet
@@ -69,120 +77,119 @@
 	subtitle={ACCESS[f.access] ?? f.access}
 	dismissible={false}
 >
-	<div class="space-y-3" data-request="approval">
+	<div class="grid gap-3" data-request="approval">
 		{#if f.destructive || f.secret || f.agent !== 'lead'}
 			<div class="flex flex-wrap items-center gap-2">
-				{#if f.destructive}<span class="tag tag-danger">Destroys work</span>{/if}
-				{#if f.secret}<span class="tag tag-danger">Secret file</span>{/if}
-				{#if f.agent !== 'lead'}<span class="tag font-mono">{f.agent}</span>{/if}
+				{#if f.destructive}<Badge variant="destructive">Destroys work</Badge>{/if}
+				{#if f.secret}<Badge variant="destructive">Secret file</Badge>{/if}
+				{#if f.agent !== 'lead'}<Badge variant="outline" class="font-mono">{f.agent}</Badge>{/if}
 			</div>
 		{/if}
 
 		{#if f.subjects?.length}
-			<ul class="space-y-0.5 font-mono text-[13px] leading-relaxed break-all">
+			<ul class="grid gap-0.5 font-mono text-xs leading-relaxed break-all">
 				{#each f.subjects as s (s)}<li>{s}</li>{/each}
 			</ul>
 		{:else}
-			<p class="font-mono text-[13px] leading-relaxed break-all">{summarize(f.tool, f.input)}</p>
+			<p class="font-mono text-xs leading-relaxed break-all">{summarize(f.tool, f.input)}</p>
 		{/if}
 
-		{#if f.note}<p class="text-accent-text text-sm">{f.note}</p>{/if}
+		{#if f.note}<p class="text-sm text-warning">{f.note}</p>{/if}
 
 		{#if diff}
 			<DiffView {diff} max={14} />
 		{:else}
-			<pre class="well scroll-thin max-h-40 overflow-auto border p-3">{prettyInput(
-					f.input,
-					900
-				)}</pre>
+			<CodeBlock.Root size="sm">
+				<CodeBlock.Content code={prettyInput(f.input, 900)} class="scroll-thin max-h-40" />
+			</CodeBlock.Root>
+		{/if}
+
+		{#if f.rule && canControl && !denying}
+			<p class="text-xs text-muted-foreground" data-approval-rule>
+				{f.secret ? 'This session' : 'This session and Always'} will allow:
+				<span class="font-mono break-all text-foreground">{f.rule}</span>
+			</p>
 		{/if}
 
 		{#if denying}
-			<label class="block">
-				<span class="label mb-1.5 block">Tell the model why (optional)</span>
-				<textarea
-					class="field min-h-20"
+			<Field.Field>
+				<Field.Label for="{uid}-why">Tell the model why (optional)</Field.Label>
+				<Textarea
+					id="{uid}-why"
 					bind:value={feedback}
-					placeholder="Use a temporary directory instead."></textarea>
-			</label>
+					placeholder="Use a temporary directory instead."
+				/>
+			</Field.Field>
 		{/if}
-		{#if error}<p class="text-destructive text-sm" role="alert">{error}</p>{/if}
-		{#if !canControl}<p class="text-muted-foreground text-sm">
+		{#if error}
+			<Alert.Root variant="destructive" role="alert">
+				<Alert.Description>{error}</Alert.Description>
+			</Alert.Root>
+		{/if}
+		{#if !canControl}
+			<p class="text-sm text-muted-foreground">
 				Waiting for an answer from someone with a control link.
-			</p>{/if}
+			</p>
+		{/if}
 	</div>
 
+	<!-- In a row the main answer is last, at the right; stacked on a phone it is on top. -->
 	{#snippet footer()}
-		{#if canControl}
-			{#if denying}
-				<div class="flex gap-2 md:justify-end">
-					<Button variant="outline" class="flex-1 md:flex-none" onclick={() => (denying = false)}
-						>Back</Button
-					>
-					<Button
-						variant="destructive"
-						class="flex-1 md:flex-none"
-						disabled={busy}
-						onclick={() => answer('deny', feedback.trim() || undefined)}>Deny</Button
-					>
-				</div>
-			{:else}
-				<!-- A phone stacks the answers with the main one on top; a wide screen puts them in one row. -->
-				<div class="grid grid-cols-2 gap-2 md:flex md:items-center">
-					{#if f.destructive}
-						<button
-							type="button"
-							class="btn btn-primary relative col-span-2 touch-none overflow-hidden md:min-w-36"
-							disabled={busy}
-							onpointerdown={holdStart}
-							onpointerup={holdEnd}
-							onpointerleave={holdEnd}
-							onpointercancel={holdEnd}
-							onkeydown={(e) => {
-								if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) holdStart();
-							}}
-							onkeyup={holdEnd}
-							onblur={holdEnd}
-						>
-							<span
-								class="bg-ember/55 absolute inset-0 origin-left {holding
-									? 'animate-[hold_1.2s_linear_forwards]'
-									: 'scale-x-0'}"
-							></span>
-							<span class="relative">{holding ? 'Keep holding…' : 'Hold to allow'}</span>
-						</button>
-					{:else}
-						<Button class="col-span-2 md:min-w-36" disabled={busy} onclick={() => answer('allow')}
-							>Allow once</Button
-						>
-					{/if}
-					{#if f.rule}
-						<Button
-							variant="outline"
-							class={f.secret ? 'col-span-2' : ''}
-							disabled={busy}
-							onclick={() => answer('session')}
-							title={f.rule}>This session</Button
-						>
-						{#if !f.secret}
-							<Button
-								variant="outline"
-								disabled={busy}
-								onclick={() => answer('always')}
-								title={f.rule}>Always</Button
-							>
-						{/if}
-					{/if}
-					<Button
-						variant="destructive"
-						class="col-span-2 md:ml-auto"
-						disabled={busy}
-						onclick={() => (denying = true)}>Deny…</Button
-					>
-				</div>
-			{/if}
+		{#if !canControl}
+			<p class="mr-auto text-xs text-muted-foreground">View link: you can watch but not answer.</p>
+		{:else if denying}
+			<Button variant="outline" onclick={() => (denying = false)}>Back</Button>
+			<Button
+				variant="destructive"
+				disabled={busy}
+				onclick={() => answer('deny', feedback.trim() || undefined)}>Deny</Button
+			>
 		{:else}
-			<p class="text-muted-foreground text-xs">View link: you can watch but not answer.</p>
+			<Button
+				variant="destructive"
+				class="sm:mr-auto"
+				disabled={busy}
+				onclick={() => (denying = true)}>Deny…</Button
+			>
+			{#if f.rule}
+				{#if !f.secret}
+					<Button variant="outline" disabled={busy} onclick={() => answer('always')}>Always</Button>
+				{/if}
+				<Button variant="outline" disabled={busy} onclick={() => answer('session')}
+					>This session</Button
+				>
+			{/if}
+			{#if f.destructive}
+				<Button
+					class="relative touch-none overflow-hidden select-none sm:min-w-36"
+					disabled={busy}
+					data-holding={holding ? '' : undefined}
+					onpointerdown={holdStart}
+					onpointerup={holdEnd}
+					onpointerleave={holdEnd}
+					onpointercancel={holdEnd}
+					oncontextmenu={(e) => e.preventDefault()}
+					onkeydown={(e) => {
+						if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) holdStart();
+					}}
+					onkeyup={holdEnd}
+					onblur={holdEnd}
+				>
+					<!-- Held: the wash fills the button from the left, then the call is allowed. -->
+					<span
+						class="pointer-events-none absolute inset-0 origin-left bg-primary-foreground/30 transition-transform ease-linear {holding
+							? 'scale-x-100'
+							: 'scale-x-0'}"
+						style="transition-duration: {holding ? HOLD_MS : 120}ms"
+						aria-hidden="true"
+					></span>
+					<span class="relative">{holding ? 'Keep holding…' : 'Hold to allow'}</span>
+				</Button>
+			{:else}
+				<Button class="sm:min-w-36" disabled={busy} onclick={() => answer('allow')}
+					>Allow once</Button
+				>
+			{/if}
 		{/if}
 	{/snippet}
 </Sheet>

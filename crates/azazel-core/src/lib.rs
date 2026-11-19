@@ -31,6 +31,7 @@ pub mod session;
 pub mod settings;
 pub mod side;
 pub mod skills;
+pub mod slim;
 pub mod subagent;
 pub mod toolcall;
 pub mod toolsearch;

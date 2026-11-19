@@ -1,5 +1,12 @@
 // Runes state around the reducer: one Session is one WebSocket to one azazel session.
-import { RpcClient, type SocketFactory, type Status, type Timers } from '$lib/rpc/client';
+import {
+	RpcClient,
+	CommandError,
+	DISCONNECTED,
+	type SocketFactory,
+	type Status,
+	type Timers
+} from '$lib/rpc/client';
 import { wsUrl } from '$lib/api';
 import type {
 	AccountUsage,
@@ -289,6 +296,27 @@ export class Session {
 	async fork(entryId?: string) {
 		await this.client.send({ type: 'fork_session', entry_id: entryId ?? null });
 		await this.reload();
+	}
+	/** Has the model write a brief and continues in a new session that starts from it. */
+	async handoff(focus?: string) {
+		const from = this.state?.session_id ?? null;
+		let r: { session_id: string; from: string };
+		try {
+			r = await this.client.send<{ session_id: string; from: string }>({
+				type: 'handoff',
+				focus: focus || null
+			});
+		} catch (e) {
+			// The socket went away while the brief was written (a phone woke up), but the host carries
+			// on. When it is back, the session it holds tells whether the hand-off happened.
+			if (!(e instanceof CommandError) || e.code !== DISCONNECTED || !from) throw e;
+			if (!(await this.whenOpen(30_000))) throw e;
+			const state = await this.client.send<State>({ type: 'get_state' }).catch(() => null);
+			if (!state || state.session_id === from) throw e;
+			r = { session_id: state.session_id, from };
+		}
+		await this.reload();
+		return r;
 	}
 	async newSession() {
 		await this.client.send({ type: 'new_session' });

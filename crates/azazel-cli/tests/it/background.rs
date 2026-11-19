@@ -1120,3 +1120,181 @@ fn a_background_session_outlives_the_command_that_started_it() {
     assert!(client.wait().unwrap().success());
     assert_eq!(sandbox.ps()[0]["state"], "waiting for you");
 }
+
+/// Plain `azazel` with `args` in a terminal, as the interactive UI runs. Returns what it showed up
+/// to the first output that contains `wanted`, and the process, still running.
+fn interactive(
+    sandbox: &Sandbox,
+    args: &[&str],
+    wanted: &str,
+) -> (String, Box<dyn portable_pty::Child + Send + Sync>) {
+    interactive_in(sandbox, &sandbox.project(), args, wanted)
+}
+
+/// The same started in `cwd`, a folder of the project or the project itself.
+fn interactive_in(
+    sandbox: &Sandbox,
+    cwd: &Path,
+    args: &[&str],
+    wanted: &str,
+) -> (String, Box<dyn portable_pty::Child + Send + Sync>) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    // The interactive UI needs a terminal.
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(assert_cmd::cargo::cargo_bin("azazel"));
+    command.env("AZAZEL_HOME", sandbox.home());
+    command.env("AZAZEL_MOCK_SCRIPT", sandbox.dir.path().join("script.json"));
+    command.args(["--set", "session.auto_name=false", "--no-memory"]);
+    command.args(["--set", "notify.desktop=\"off\""]);
+    command.args(["--set", "session.resume=\"last\""]);
+    command.arg("--cwd");
+    command.arg(cwd);
+    command.args(args);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    // Kept open: a terminal whose input closes ends the program on some systems.
+    let writer = pair.master.take_writer().unwrap();
+    let writer = std::sync::Arc::new(std::sync::Mutex::new((writer, pair.master)));
+    let (sender, received) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while let Ok(read) = std::io::Read::read(&mut reader, &mut buffer) {
+            if read == 0
+                || sender
+                    .send(String::from_utf8_lossy(&buffer[..read]).into_owned())
+                    .is_err()
+            {
+                break;
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut shown = String::new();
+    while !shown.contains(wanted) {
+        let left = LIMIT.saturating_sub(started.elapsed());
+        match received.recv_timeout(left) {
+            Ok(more) => {
+                // The terminal is asked where its cursor is (Windows' console asks first) and
+                // answers as a real one would.
+                for _ in more.matches("[6n") {
+                    let mut held = writer.lock().unwrap();
+                    held.0.write_all(b"[1;1R").unwrap();
+                    held.0.flush().unwrap();
+                }
+                shown.push_str(&more);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                panic!("azazel never said `{wanted}`: {shown:?}");
+            }
+        }
+    }
+    // The terminal stays open for as long as the process does.
+    std::mem::forget(writer);
+    (shown, child)
+}
+
+/// Plain `azazel` in a folder whose latest session runs in the background (one a browser started
+/// through `azazel remote`, say) goes to it as `azazel attach` does, instead of refusing; the
+/// prompt on the command line is sent to it.
+#[test]
+fn the_interactive_ui_attaches_to_the_latest_session_when_it_runs_in_the_background() {
+    let sandbox = Sandbox::new(&json!({ "lead": [
+        { "reply": { "text": "Done." } },
+        { "reply": { "text": "Fixed." } }
+    ] }));
+    let id = sandbox.bg(&[], "do it");
+    sandbox.wait_for_state(&id, "idle");
+
+    // The full UI on the background session: its header names it. The console may put its own
+    // sequences between the words of a line, so the notice is matched on its own.
+    let wanted = format!("background session {id}");
+    let (shown, mut child) = interactive(&sandbox, &["fix it"], &wanted);
+    assert!(shown.contains("attaching to"), "{shown:?}");
+    assert!(
+        !shown.contains("this session is running in the background: azazel attach"),
+        "{shown:?}"
+    );
+    // The prompt of the command line reached the session that runs.
+    let started = Instant::now();
+    loop {
+        let log = sandbox.ok(&["logs", &id]);
+        if log.contains("fix it") && log.contains("Fixed.") {
+            break;
+        }
+        assert!(started.elapsed() < LIMIT, "the prompt never ran: {log}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    // Attaching left the session where it runs, and opened no other.
+    assert_eq!(sandbox.ps().len(), 1);
+    assert_eq!(sandbox.session_files().len(), 1);
+}
+
+/// A session belongs to the folder it was started in: plain `azazel` in a folder of the project
+/// does not attach to the background session of the project root, and starts a session of its own.
+#[test]
+fn the_interactive_ui_in_a_sub_folder_does_not_attach_to_the_roots_background_session() {
+    let sandbox = Sandbox::new(&json!({ "lead": [{ "reply": { "text": "Done." } }] }));
+    let id = sandbox.bg(&[], "do it");
+    sandbox.wait_for_state(&id, "idle");
+    let web = sandbox.project().join("web");
+    std::fs::create_dir_all(&web).unwrap();
+
+    // A new session opens, as the status line's model shows; `attaching to` never does.
+    let (shown, mut child) = interactive_in(&sandbox, &web, &[], "mock/lead");
+    assert!(!shown.contains("attaching to"), "{shown:?}");
+    assert!(!shown.contains(&format!("background session {id}")), "{shown:?}");
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(sandbox.ps().len(), 1);
+}
+
+/// What only shapes a new session cannot apply to one that is running: each flag is refused with
+/// its name and what to do instead, not dropped.
+#[test]
+fn options_that_cannot_apply_to_a_running_session_are_refused_when_attaching() {
+    let sandbox = Sandbox::new(&json!({ "lead": [{ "reply": { "text": "Done." } }] }));
+    let id = sandbox.bg(&[], "do it");
+    sandbox.wait_for_state(&id, "idle");
+
+    for (args, flag, instead) in [
+        (&["-c", "--model", "mock/lead"][..], "--model", "/model"),
+        (&["-c", "--thinking", "high"][..], "--thinking", "/thinking"),
+        (&["-c", "--mode", "auto"][..], "--mode", "/mode"),
+        (&["-c", "--name", "x"][..], "--name", "/name"),
+        (&["-c", "--continue-run"][..], "--continue-run", "/continue"),
+        (&["open"][..], "azazel open", "/open"),
+    ] {
+        // The terminal wraps long lines: the end of the message is what is waited for.
+        let (shown, mut child) = interactive(&sandbox, args, "to end it first");
+        let status = child.wait().unwrap();
+        assert_eq!(status.exit_code(), 2, "{args:?}: {shown:?}");
+        let flat: String = shown
+            .chars()
+            .filter(|c| !c.is_whitespace() && *c != '')
+            .collect();
+        for part in [
+            flag,
+            &format!("azazel attach {id}"),
+            &format!("azazel kill {id}"),
+            instead,
+        ] {
+            let part: String = part.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(flat.contains(&part), "{args:?}: missing {part}: {shown:?}");
+        }
+    }
+    // Nothing was started or changed.
+    assert_eq!(sandbox.ps().len(), 1);
+    assert_eq!(sandbox.session_files().len(), 1);
+}

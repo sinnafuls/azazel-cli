@@ -271,6 +271,21 @@ the answer; the lead does not. It works with `when = "off"` too, as long as a mo
 What the advisor costs is counted in the run's spend (so `--max-cost` covers it) and listed as `advisor` by
 `/cost`. `[advisor]` is a [gated setting](configuration.md#trust): a project you have not trusted cannot set it.
 
+## Model routing
+
+With `[team] model_routing = "auto"`, the `smol` role reads the prompt of each sub-agent before it starts and rates it as JSON: `tier` (`fast`, `balanced` or `deep`), `confidence` and `risky`, each 0 to 1. The tier describes the shape of the work, not its size: `fast` is mechanical, local and well specified; `balanced` is ordinary engineering; `deep` means an unknown cause, an open design or an action that cannot be undone. The task is cut to about 12,000 characters and sent as data, in one request with no cache marks, and the agent's first request waits for it for at most 8 seconds.
+
+Each tier has a model: `routing_fast` (`@smol`), `routing_balanced` (`@default`) and `routing_deep` (`@slow`). The rating moves the agent only under these rules:
+
+- Down to a cheaper model needs `min_downgrade_confidence` (0.6); up to a stronger one needs `min_upgrade_confidence` (0.85).
+- `deep` is used only when `allow_deep = true`; otherwise the most routing picks is `routing_balanced`.
+- `risky` above 0.7 keeps the agent at `balanced` or above.
+- A missing or invalid answer, or one that takes longer than 8 seconds, changes nothing.
+
+Routing never changes the lead, an agent whose `task` call names a `model`, or an agent whose definition's model was set by you (a `model` in its file or `[agents.<name>]`, other than its own role or `@default`).
+
+`"suggest"` rates every task but changes nothing: the line it would have written appears under the agent in `/agents` and in its status. Both modes append a `routing` entry to the session with the tier, confidence, the models and the reason. When the agent ends, its real tokens are priced on both models from the model catalogue, and `/cost` shows the saving of moved agents (and, for `suggest`, what it would have been). The rating itself is counted under `routing` in the side-request costs. With no price known for a model there is no saving figure.
+
 ## Worktree isolation
 
 With `isolation: worktree` (in the definition, or per agent in a `task` call) the agent works in its own git worktree instead of the shared tree.
@@ -359,6 +374,7 @@ max_depth = 2      # levels of agents below the lead
 max_turns = 200    # requests per task for an agent whose definition has no max-turns; 0 is no limit
 coordinator = false  # true: the lead only plans and delegates (coordinator mode)
 worktree_target = "shared"  # shared | own | sccache: where agents in worktrees build
+model_routing = "off"  # off | suggest | auto: rate each task and pick the sub-agent's model; see Model routing
 ```
 
 An agent with a turn limit (`max-turns`, `[team] max_turns`, or `--max-turns` for the lead) is told in its last two turns how many are left: `2 turns left: finish the task and report what is done and what is not`, then `1 turn left`. After the last turn it is asked for its final report without tools.

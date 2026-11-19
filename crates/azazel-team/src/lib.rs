@@ -9,6 +9,7 @@ pub mod detect;
 mod ext;
 pub mod goal;
 pub mod report;
+pub mod routing;
 pub mod status;
 mod team;
 pub mod tools;
@@ -21,6 +22,7 @@ pub use coordinator::{Coordinator, CoordinatorExt, LeadTools};
 pub use ext::TeamExt;
 pub use goal::{Budget, Goal, GoalExt, GoalSettings, GoalStatus, Goals};
 pub use report::{REPORT_TOOL, Typed};
+pub use routing::{Routing, RoutingSettings};
 pub use status::{MemberStatus, RunningTool, WorktreeProgress, status_table, status_text};
 pub use team::{
     ASK_TIMEOUT, Delivery, Finished, LEAD, MemberInfo, MemberState, Mentioned, ORCHESTRATION_TOOLS,

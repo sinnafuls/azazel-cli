@@ -904,6 +904,7 @@ fn parse_usage(usage: &Value) -> Usage {
         cache_write,
         reasoning: count("/completion_tokens_details/reasoning_tokens").unwrap_or(0),
         cost_usd: reported_cost(usage),
+        cache_ttl_secs: None,
     }
 }
 

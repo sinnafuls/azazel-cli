@@ -1,19 +1,30 @@
 <script lang="ts">
 	// The sessions of this computer: those that need you, those at work, then the rest by project
-	// folder. Each row is one link; its ••• menu shows on hover, on focus and always on touch.
+	// folder. Every row is a Sidebar.MenuButton that is a link; its ••• is a Sidebar.MenuAction that
+	// opens a DropdownMenu, shown on hover, on focus and always on touch.
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { app } from '$lib/app.svelte';
 	import { ui } from '$lib/ui.svelte';
+	import { viewport } from '$lib/media.svelte';
 	import { sessions, STATE_LABEL } from '$lib/sessions.svelte';
 	import { toasts } from '$lib/toasts.svelte';
 	import { oneShot } from '$lib/rpc/oneshot';
 	import { arrange, homePath, titleOf } from '$lib/sidebar';
 	import { ago, basename } from '$lib/format';
 	import type { SessionInfo } from '$lib/protocol';
+	import * as Sidebar from '$lib/components/ui/sidebar';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
+	import * as Collapsible from '$lib/components/ui/collapsible';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import * as Alert from '$lib/components/ui/alert';
+	import * as Empty from '$lib/components/ui/empty';
+	import * as Field from '$lib/components/ui/field';
+	import { Input } from '$lib/components/ui/input';
+	import { Button } from '$lib/components/ui/button';
 	import StateDot from './StateDot.svelte';
-	import Menu, { type MenuItem } from './Menu.svelte';
 	import Sheet from './Sheet.svelte';
+	import Tip from './Tip.svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import Ellipsis from '@lucide/svelte/icons/ellipsis';
 	import Pencil from '@lucide/svelte/icons/pencil';
@@ -31,6 +42,9 @@
 	onMount(() => sessions.watch());
 
 	const view = $derived(arrange(sessions.list));
+	// Beside the row where there is a page beside the sidebar; on a narrow screen the sidebar is a
+	// sheet with no room at its side, and the tip goes under the row.
+	const tipSide = $derived(viewport.wide ? 'right' : 'bottom');
 
 	// What the row menu asked for and has to be confirmed or typed first.
 	let ask = $state<{ kind: 'rename' | 'end'; s: SessionInfo } | null>(null);
@@ -86,114 +100,157 @@
 			busy = false;
 		}
 	}
-	const actions = (s: SessionInfo): MenuItem[] => [
-		{
-			label: 'Rename',
-			icon: Pencil,
-			onselect: () => {
-				name = titleOf(s);
-				ask = { kind: 'rename', s };
-			}
-		},
-		{ label: 'Fork', icon: GitFork, onselect: () => void fork(s) },
-		{ label: 'Export', icon: Download, onselect: () => void exportIt(s) },
-		'sep',
-		{
-			label: 'End session',
-			icon: CircleStop,
-			danger: true,
-			onselect: () => (ask = { kind: 'end', s })
-		}
-	];
 </script>
 
+<!-- `folder`: the row names its folder on a second line, so it is the tall (lg) button. -->
 {#snippet row(s: SessionInfo, folder: boolean)}
-	<li class="row relative">
-		<a
-			href="/s/{encodeURIComponent(s.id)}"
-			class="side-row {app.canControl ? 'pr-8' : ''}"
-			aria-current={current === s.id ? 'page' : undefined}
-			title="{homePath(s.cwd)} · {STATE_LABEL[s.state] ?? s.state}{s.mode ? ` · ${s.mode}` : ''}"
-			onclick={onnavigate}
+	<Sidebar.MenuItem data-session-row>
+		<Tip
+			text="{homePath(s.cwd)} · {STATE_LABEL[s.state] ?? s.state}{s.mode
+				? ` · ${s.mode}`
+				: ''} · {ago(s.started)}"
+			side={tipSide}
 		>
-			<StateDot state={s.state} />
-			<span class="min-w-0 flex-1 truncate">{titleOf(s)}</span>
-			<span class="sr-only">{STATE_LABEL[s.state] ?? s.state}</span>
-			<span class="meta-right text-faint num shrink-0 text-xs"
-				>{folder ? basename(s.cwd) : ago(s.started).replace(' ago', '')}</span
-			>
-		</a>
+			{#snippet child({ props: tip })}
+				<Sidebar.MenuButton size={folder ? 'lg' : 'default'} isActive={current === s.id} {...tip}>
+					{#snippet child({ props })}
+						<a
+							{...props}
+							href="/s/{encodeURIComponent(s.id)}"
+							aria-current={current === s.id ? 'page' : undefined}
+							onclick={onnavigate}
+						>
+							<StateDot state={s.state} />
+							<span class="sr-only">{STATE_LABEL[s.state] ?? s.state}</span>
+							{#if folder}
+								<span class="grid min-w-0 flex-1 gap-0.5 leading-4">
+									<span class="truncate" data-row-text>{titleOf(s)}</span>
+									<span class="truncate text-xs font-normal text-muted-foreground"
+										>{basename(s.cwd)}</span
+									>
+								</span>
+							{:else}
+								<span data-row-text>{titleOf(s)}</span>
+							{/if}
+						</a>
+					{/snippet}
+				</Sidebar.MenuButton>
+			{/snippet}
+		</Tip>
 		{#if app.canControl}
-			<span class="more">
-				<Menu label="Actions for {titleOf(s)}" items={actions(s)}>
-					<Ellipsis class="size-4" />
-				</Menu>
-			</span>
+			<DropdownMenu.Root>
+				<DropdownMenu.Trigger>
+					{#snippet child({ props })}
+						<!-- The stock action sits at top-2.5 beside a tall button, 4px above its middle:
+						     top-3.5 puts its 20px box on the 48px row's centre. -->
+						<Sidebar.MenuAction
+							showOnHover
+							{...props}
+							aria-label="Actions for {titleOf(s)}"
+							class="pointer-coarse:opacity-100 peer-data-[size=lg]/menu-button:top-3.5"
+						>
+							<Ellipsis />
+						</Sidebar.MenuAction>
+					{/snippet}
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Content side="bottom" align="start" class="min-w-44">
+					<DropdownMenu.Item
+						onSelect={() => {
+							name = titleOf(s);
+							ask = { kind: 'rename', s };
+						}}><Pencil /> Rename</DropdownMenu.Item
+					>
+					<DropdownMenu.Item onSelect={() => void fork(s)}><GitFork /> Fork</DropdownMenu.Item>
+					<DropdownMenu.Item onSelect={() => void exportIt(s)}
+						><Download /> Export</DropdownMenu.Item
+					>
+					<DropdownMenu.Separator />
+					<DropdownMenu.Item variant="destructive" onSelect={() => (ask = { kind: 'end', s })}
+						><CircleStop /> End session</DropdownMenu.Item
+					>
+				</DropdownMenu.Content>
+			</DropdownMenu.Root>
 		{/if}
-	</li>
+	</Sidebar.MenuItem>
 {/snippet}
 
 <nav aria-label="Sessions" data-session-list>
 	{#if !sessions.loaded}
-		<ul aria-busy="true">
-			{#each [0, 1, 2, 3] as i (i)}
-				<li class="flex h-8 items-center gap-2 px-2" style="opacity: {1 - i * 0.22}">
-					<span class="skeleton size-2.5 shrink-0 rounded-full"></span>
-					<span class="skeleton block h-2.5 rounded-sm" style="width: {70 - i * 12}%"></span>
-				</li>
-			{/each}
-		</ul>
+		<Sidebar.Group>
+			<Sidebar.Menu aria-busy="true">
+				{#each [0, 1, 2, 3] as i (i)}
+					<Sidebar.MenuItem><Sidebar.MenuSkeleton showIcon /></Sidebar.MenuItem>
+				{/each}
+			</Sidebar.Menu>
+		</Sidebar.Group>
 	{:else if sessions.error}
-		<p class="text-destructive px-2 py-2 text-[13px] leading-snug" role="alert">{sessions.error}</p>
+		<Sidebar.Group>
+			<Alert.Root variant="destructive" role="alert">
+				<Alert.Description>{sessions.error}</Alert.Description>
+			</Alert.Root>
+		</Sidebar.Group>
 	{:else if view.total === 0}
-		<div class="px-2 py-3">
-			<p class="text-[13px] font-medium">No sessions yet</p>
-			<p class="text-muted-foreground mt-1 text-[13px] leading-relaxed">
-				Start a new chat and it shows up here.
-			</p>
-		</div>
+		<Sidebar.Group>
+			<Empty.Root class="items-start gap-1 p-2 text-left">
+				<Empty.Title>No sessions yet</Empty.Title>
+				<Empty.Description class="text-xs/relaxed"
+					>Start a new chat and it shows up here.</Empty.Description
+				>
+			</Empty.Root>
+		</Sidebar.Group>
 	{:else}
 		{#if view.needs.length}
-			<section aria-labelledby="sl-needs" class="mb-3">
-				<h3 id="sl-needs" class="pop-label text-ember-text">Needs you</h3>
-				<ul>
+			<Sidebar.Group aria-labelledby="sl-needs">
+				<Sidebar.GroupLabel id="sl-needs" class="text-warning">Needs you</Sidebar.GroupLabel>
+				<Sidebar.Menu>
 					{#each view.needs as s (s.id)}{@render row(s, true)}{/each}
-				</ul>
-			</section>
+				</Sidebar.Menu>
+			</Sidebar.Group>
 		{/if}
 		{#if view.running.length}
-			<section aria-labelledby="sl-running" class="mb-3">
-				<h3 id="sl-running" class="pop-label">Running</h3>
-				<ul>
+			<Sidebar.Group aria-labelledby="sl-running">
+				<Sidebar.GroupLabel id="sl-running">Running</Sidebar.GroupLabel>
+				<Sidebar.Menu>
 					{#each view.running as s (s.id)}{@render row(s, true)}{/each}
-				</ul>
-			</section>
+				</Sidebar.Menu>
+			</Sidebar.Group>
 		{/if}
 		{#if view.recent.length}
-			<section aria-labelledby="sl-recent">
-				<h3 id="sl-recent" class="pop-label">Recent</h3>
+			<Sidebar.Group aria-labelledby="sl-recent">
+				<Sidebar.GroupLabel id="sl-recent">Recent</Sidebar.GroupLabel>
 				{#each view.recent as g (g.cwd)}
 					{@const folded = !!ui.folded[g.cwd]}
-					<div class="mb-1">
-						<button
-							type="button"
-							class="side-row folder"
-							aria-expanded={!folded}
-							title={homePath(g.cwd)}
-							onclick={() => ui.toggleFolder(g.cwd)}
-						>
-							<ChevronRight class="chev size-3.5 shrink-0 {folded ? '' : 'rotate-90'}" />
-							<span class="min-w-0 flex-1 truncate">{g.name}</span>
-							<span class="text-faint num text-xs">{g.sessions.length}</span>
-						</button>
-						{#if !folded}
-							<ul class="pl-3">
+					<Collapsible.Root open={!folded} onOpenChange={() => ui.toggleFolder(g.cwd)}>
+						<Sidebar.Menu>
+							<Sidebar.MenuItem>
+								<Tip text={homePath(g.cwd)} side={tipSide}>
+									{#snippet child({ props: tip })}
+										<Collapsible.Trigger {...tip}>
+											{#snippet child({ props })}
+												<Sidebar.MenuButton {...props} class="pr-8 text-muted-foreground">
+													<ChevronRight
+														class="transition-transform duration-200 {folded ? '' : 'rotate-90'}"
+													/>
+													<span data-row-text>{g.name}</span>
+												</Sidebar.MenuButton>
+											{/snippet}
+										</Collapsible.Trigger>
+									{/snippet}
+								</Tip>
+								<Sidebar.MenuBadge class="font-normal text-muted-foreground"
+									>{g.sessions.length}</Sidebar.MenuBadge
+								>
+							</Sidebar.MenuItem>
+						</Sidebar.Menu>
+						<Collapsible.Content>
+							<!-- The stock sub-list, with whole rows in it (a sub-button has no action). -->
+							<Sidebar.MenuSub class="mr-0 gap-0 pr-0">
 								{#each g.sessions as s (s.id)}{@render row(s, false)}{/each}
-							</ul>
-						{/if}
-					</div>
+							</Sidebar.MenuSub>
+						</Collapsible.Content>
+					</Collapsible.Root>
 				{/each}
-			</section>
+			</Sidebar.Group>
 		{/if}
 	{/if}
 </nav>
@@ -202,87 +259,44 @@
 	open={ask?.kind === 'rename'}
 	title="Rename session"
 	onclose={() => (ask = null)}
-	class="md:max-w-md"
+	class="sm:max-w-md"
 >
 	<form
-		class="space-y-4"
+		id="rename-session"
 		onsubmit={(e) => {
 			e.preventDefault();
 			void confirm();
 		}}
 	>
-		<label class="block">
-			<span class="label mb-1.5 block">Name</span>
-			<!-- svelte-ignore a11y_autofocus -->
-			<input class="field" bind:value={name} maxlength="120" autocomplete="off" autofocus />
-		</label>
-		<div class="flex justify-end gap-2">
-			<button type="button" class="btn btn-secondary" onclick={() => (ask = null)}>Cancel</button>
-			<button type="submit" class="btn btn-primary" disabled={busy || !name.trim()}>Rename</button>
-		</div>
+		<Field.Field>
+			<Field.Label for="rename-session-name">Name</Field.Label>
+			<Input
+				id="rename-session-name"
+				bind:value={name}
+				maxlength={120}
+				autocomplete="off"
+				autofocus
+			/>
+		</Field.Field>
 	</form>
+	{#snippet footer()}
+		<Button variant="outline" onclick={() => (ask = null)}>Cancel</Button>
+		<Button type="submit" form="rename-session" disabled={busy || !name.trim()}>Rename</Button>
+	{/snippet}
 </Sheet>
 
-<Sheet
-	open={ask?.kind === 'end'}
-	title="End this session?"
-	onclose={() => (ask = null)}
-	class="md:max-w-md"
->
-	<div class="space-y-4">
-		<p class="text-muted-foreground text-sm leading-relaxed">
-			<span class="text-foreground font-medium">{ask ? titleOf(ask.s) : ''}</span> stops now and leaves
-			the list. Its conversation stays on the computer and can be resumed from the terminal.
-		</p>
-		<div class="flex justify-end gap-2">
-			<button type="button" class="btn btn-secondary" onclick={() => (ask = null)}>Cancel</button>
-			<button type="button" class="btn btn-destroy" disabled={busy} onclick={confirm}
-				>End session</button
-			>
-		</div>
-	</div>
-</Sheet>
-
-<style>
-	.folder {
-		color: var(--muted-foreground);
-		font-weight: 500;
-		gap: 0.375rem;
-	}
-	.folder :global(.chev) {
-		transition: transform var(--dur) var(--ease-out);
-	}
-	/* The ••• takes the place of the meta on the right once the row is pointed at or focused. */
-	.more {
-		position: absolute;
-		top: 50%;
-		right: 0.25rem;
-		display: grid;
-		transform: translateY(-50%);
-		opacity: 0;
-	}
-	.row:hover .more,
-	.row:focus-within .more,
-	.more:has(:global([aria-expanded='true'])) {
-		opacity: 1;
-	}
-	.row:hover .meta-right,
-	.row:focus-within .meta-right,
-	.row:has(:global([aria-expanded='true'])) .meta-right {
-		visibility: hidden;
-	}
-	.row:has(:global([aria-expanded='true'])) > a {
-		background: var(--hover);
-	}
-	@media (pointer: coarse) {
-		.more {
-			opacity: 1;
-		}
-		.meta-right {
-			display: none;
-		}
-		.row > a {
-			padding-right: 2.75rem;
-		}
-	}
-</style>
+<AlertDialog.Root open={ask?.kind === 'end'} onOpenChange={(v) => !v && (ask = null)}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>End this session?</AlertDialog.Title>
+			<AlertDialog.Description>
+				<span class="font-medium text-foreground">{ask ? titleOf(ask.s) : ''}</span> stops now and leaves
+				the list. Its conversation stays on the computer and can be resumed from the terminal.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<Button variant="destructive" disabled={busy} onclick={confirm}>End session</Button>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

@@ -126,6 +126,18 @@ fn cost(app: &App, active: &Active) -> String {
         Some(side) => format!("{cost}\n{side}"),
         None => cost,
     };
+    let cost = match app
+        .registry
+        .services
+        .get::<azazel_team::Team>()
+        .and_then(|team| azazel_team::routing::cost_line(&team.routing()))
+    {
+        Some(line) => format!(
+            "{cost}
+{line}"
+        ),
+        None => cost,
+    };
     // Every agent's requests, where the lines above are the lead's.
     let cache = app
         .registry

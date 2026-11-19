@@ -1,6 +1,7 @@
 <script lang="ts">
-	// One glyph for every state, so the same thing looks the same in the list, the header and the hub.
-	// Only work in progress moves; a session that waits for you holds still inside a ring.
+	// One mark for every state, so the same thing looks the same in the list, the header and the hub.
+	// It fills the 16px box an icon fills, so a row with a mark and a row with an icon line up.
+	// Only work in progress moves; the accent means "running", amber "needs you", red "failed".
 	import { cn } from '$lib/utils';
 	let { state, class: className }: { state: string; class?: string } = $props();
 	const kind = $derived(
@@ -19,22 +20,23 @@
 </script>
 
 <span
-	class={cn('relative inline-grid size-2.5 shrink-0 place-items-center', className)}
+	class={cn('relative grid size-4 shrink-0 place-items-center', className)}
+	data-slot="state-dot"
+	data-state={kind}
 	aria-hidden="true"
 >
 	{#if kind === 'working'}
-		<span class="bg-info absolute inset-0 animate-ping-soft rounded-full"></span>
-		<span class="bg-info size-2 rounded-full"></span>
+		<span class="absolute size-2 animate-ping rounded-full bg-brand opacity-60"></span>
+		<span class="size-2 rounded-full bg-brand"></span>
 	{:else if kind === 'waiting'}
-		<span class="bg-ember/30 absolute -inset-[3px] rounded-full"></span>
-		<span class="bg-ember relative size-2 rounded-full"></span>
+		<span class="size-2 rounded-full bg-warning ring-2 ring-warning/30"></span>
 	{:else if kind === 'failed'}
-		<span class="bg-destructive size-2 rounded-full"></span>
+		<span class="size-2 rounded-full bg-destructive"></span>
 	{:else if kind === 'done'}
-		<span class="bg-success size-2 rounded-full"></span>
+		<span class="size-2 rounded-full bg-success"></span>
 	{:else if kind === 'queued'}
-		<span class="border-faint size-2 rounded-full border-[1.5px]"></span>
+		<span class="size-2 rounded-full border-[1.5px] border-muted-foreground"></span>
 	{:else}
-		<span class="bg-faint size-2 rounded-full"></span>
+		<span class="size-2 rounded-full bg-muted-foreground/50"></span>
 	{/if}
 </span>

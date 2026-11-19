@@ -33,6 +33,19 @@ pub(crate) fn session_dirs(paths: &Paths, all_projects: bool) -> Vec<PathBuf> {
     dirs
 }
 
+/// Keeps the sessions started in the launch folder, unless `everywhere` (every folder of the
+/// project, or every project) or the sessions are in a directory the user named.
+pub(crate) fn of_this_folder(
+    paths: &Paths,
+    sessions: Vec<SessionSummary>,
+    everywhere: bool,
+) -> Vec<SessionSummary> {
+    match paths.session_folder() {
+        Some(folder) if !everywhere => azazel_core::session::in_folder(sessions, folder),
+        _ => sessions,
+    }
+}
+
 /// `2026-11-12 14:05`, in local time; the text as it is when it does not parse.
 pub(crate) fn local_time(timestamp: &str) -> String {
     timestamp
@@ -132,14 +145,19 @@ pub async fn run(action: &SessionsAction, paths: &Paths) -> u8 {
     match action {
         SessionsAction::List {
             all_projects,
+            all_folders,
             all,
             json,
         } => {
             let sessions: Vec<SessionSummary> = session_dirs(paths, *all_projects)
                 .iter()
                 .flat_map(|dir| SessionStore::list(dir))
-                .filter(|session| *all || !session.archived)
                 .collect();
+            let sessions: Vec<SessionSummary> =
+                of_this_folder(paths, sessions, *all_projects || *all_folders)
+                    .into_iter()
+                    .filter(|session| *all || !session.archived)
+                    .collect();
             for s in &sessions {
                 if *json {
                     println!("{}", summary_json(s));
@@ -165,11 +183,19 @@ pub async fn run(action: &SessionsAction, paths: &Paths) -> u8 {
         SessionsAction::Search {
             query,
             all_projects,
+            all_folders,
             json,
         } => {
             let mut found = 0;
+            let everywhere = *all_projects || *all_folders;
             for dir in session_dirs(paths, *all_projects) {
                 for (summary, lines) in SessionStore::search(&dir, query, 3) {
+                    if paths
+                        .session_folder()
+                        .is_some_and(|folder| !everywhere && !summary.worked_in(folder))
+                    {
+                        continue;
+                    }
                     found += 1;
                     for line in lines {
                         if *json {
@@ -367,10 +393,18 @@ fn redact_exports(paths: &Paths) -> bool {
 pub(crate) fn pick(paths: &Paths, session: Option<&str>) -> Result<SessionSummary, String> {
     match session {
         Some(wanted) => find(paths, &session_dirs(paths, true), wanted),
-        None => SessionStore::list(&paths.sessions_dir())
+        None => of_this_folder(paths, SessionStore::list(&paths.sessions_dir()), false)
             .into_iter()
             .next()
-            .ok_or_else(|| "this project has no session yet".to_string()),
+            .ok_or_else(|| {
+                match paths
+                    .session_folder()
+                    .is_some_and(|folder| folder != paths.project_root)
+                {
+                    true => "this folder has no session yet".to_string(),
+                    false => "this project has no session yet".to_string(),
+                }
+            }),
     }
 }
 

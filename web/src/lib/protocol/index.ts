@@ -117,10 +117,26 @@ export interface Folders {
 
 /** `POST /api/sessions`. */
 export interface NewSession {
-	cwd: string;
+	/** Not needed with `resume`: the earlier session works where it did. */
+	cwd?: string;
 	prompt?: string;
 	mode?: string;
 	request_id?: string;
+	/** The id of an earlier session (`POST /api/history`) to go on with. */
+	resume?: string;
+}
+
+/** One earlier session of `POST /api/history`. */
+export interface SavedSession {
+	id: string;
+	name: string | null;
+	cwd: string;
+	created: string;
+	updated: string;
+	first_prompt: string | null;
+	messages: number;
+	/** The background session that has it open now, if one does. */
+	running: string | null;
 }
 
 /** One entry of `GET /api/sessions`. */
