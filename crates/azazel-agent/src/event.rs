@@ -120,6 +120,16 @@ pub enum AgentEvent {
         /// stalled. Absent after any other failure.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         stalled_secs: Option<u64>,
+        /// How many times the model is asked in all before the chain moves on; absent when
+        /// that is unlimited.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_attempts: Option<u32>,
+        /// How long the router waits before it asks again, in milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delay_ms: Option<u64>,
+        /// Why the attempt failed, as the provider said it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     Fallback {
         from: ModelRef,

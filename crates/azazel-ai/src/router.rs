@@ -56,6 +56,9 @@ pub enum RouteEvent {
         model: ModelRef,
         error: AiError,
         delay: Duration,
+        /// How many times the model is asked in all before the router moves on: the policy's
+        /// `max_attempts`, or its `max_stalls` after a stall (`None` when that is unlimited).
+        max_attempts: Option<u32>,
     },
     /// `from` is out for this request; `to` is next.
     Fallback {
@@ -716,6 +719,7 @@ impl Router {
             state.emit(RouteEvent::Retry {
                 attempt,
                 model: model.clone(),
+                max_attempts: self.attempt_limit(&error),
                 error,
                 delay,
             });
@@ -836,12 +840,21 @@ impl Router {
                 model: model.clone(),
                 error: error.clone(),
                 delay,
+                max_attempts: self.attempt_limit(error),
             });
             return true;
         }
         self.start_cooldown(model);
         state.gave_up = Some((model.clone(), error.clone()));
         false
+    }
+
+    /// How many times a model is asked in all after `error` before the router gives it up.
+    fn attempt_limit(&self, error: &AiError) -> Option<u32> {
+        match error {
+            AiError::Stalled { .. } => (self.policy.max_stalls > 0).then_some(self.policy.max_stalls),
+            _ => Some(self.policy.max_attempts),
+        }
     }
 
     fn delay(&self, attempt: u32, error: &AiError) -> Duration {

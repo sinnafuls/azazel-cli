@@ -161,6 +161,7 @@ impl<W: Write> Printer<W> {
                 attempt,
                 model,
                 stalled_secs,
+                ..
             } => self.of(agent, &crate::routing::retry_line(model, *attempt, *stalled_secs)),
             Frame::Fallback { agent, from, to } => {
                 self.of(agent, &format!("{from} is unavailable; falling back to {to}"));

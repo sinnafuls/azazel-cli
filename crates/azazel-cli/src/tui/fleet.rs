@@ -316,6 +316,7 @@ impl Log {
                 attempt,
                 model,
                 stalled_secs,
+                ..
             } => {
                 self.stream.clear();
                 self.thinking.clear();

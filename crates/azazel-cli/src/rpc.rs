@@ -1348,11 +1348,17 @@ mod tests {
                 attempt: 2,
                 model: model.clone(),
                 stalled_secs: None,
+                max_attempts: Some(3),
+                delay_ms: Some(2000),
+                error: Some("provider overloaded".into()),
             },
             AgentEvent::Retry {
                 attempt: 1,
                 model: model.clone(),
                 stalled_secs: Some(20),
+                max_attempts: None,
+                delay_ms: None,
+                error: None,
             },
             AgentEvent::Fallback {
                 from: model.clone(),

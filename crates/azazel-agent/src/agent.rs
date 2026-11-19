@@ -1090,7 +1090,8 @@ impl Core {
                     attempt,
                     model,
                     error,
-                    ..
+                    delay,
+                    max_attempts,
                 } => AgentEvent::Retry {
                     attempt,
                     model,
@@ -1098,6 +1099,9 @@ impl Core {
                         AiError::Stalled { secs } => Some(secs),
                         _ => None,
                     },
+                    max_attempts,
+                    delay_ms: Some(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
+                    error: Some(error.to_string()),
                 },
                 RouteEvent::Fallback { from, to, .. } => AgentEvent::Fallback { from, to },
                 RouteEvent::Account {

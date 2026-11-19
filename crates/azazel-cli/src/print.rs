@@ -288,6 +288,7 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
                 attempt,
                 model,
                 stalled_secs: stalled_secs @ Some(_),
+                ..
             } if format == OutputFormat::Text => {
                 eprintln!(
                     "{}",

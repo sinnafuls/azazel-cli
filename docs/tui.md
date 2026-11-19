@@ -596,7 +596,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+P`, `Alt+M` | `cycle_model` | Put the lead on the next favourite model or role; see [models and roles at a key](#models-and-roles-at-a-key) |
 | `Ctrl+Shift+P`, `Alt+Shift+P`, `Alt+Shift+M` | `cycle_model_back` | The previous one |
 | `F2` | `transcript` | Open the [transcript viewer](#transcript-viewer) |
-| `F5` | `retry` | Same as `/retry` |
+| `F5` | `retry` | Same as `/retry`; a run that fails names this key (and any other bound to `retry`) under its error |
 | `Ctrl+B` | `background` | While a `shell` command of the agent runs: move it to the background |
 | `F3` | `terminal` | Show the newest [terminal](#terminals) of a program an agent runs |
 | `Ctrl+Space` | `voice` | Start recording; again: stop and put the transcript in the input. `Esc` cancels; see [voice](voice.md) |

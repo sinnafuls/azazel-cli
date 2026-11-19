@@ -421,6 +421,19 @@ export type Frame =
 			 * The model had sent nothing for this many seconds; absent after any other failure.
 			 */
 			stalled_secs?: number | null;
+			/**
+			 * How many times the model is asked in all before the chain moves on; absent when
+			 * that is unlimited or not known.
+			 */
+			max_attempts?: number | null;
+			/**
+			 * How long the router waits before it asks again, in milliseconds.
+			 */
+			delay_ms?: number | null;
+			/**
+			 * Why the attempt failed, as the provider said it.
+			 */
+			error?: string | null;
 	  }
 	| {
 			type: 'fallback';

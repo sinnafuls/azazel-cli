@@ -207,7 +207,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 | `tool_update` | `call_id`, `text` (progress output) |
 | `tool_end` | `call_id`, `output` (`content`, `is_error`, `details?`), `duration_ms` |
 | `turn_end` | |
-| `retry` | `attempt`, `model`, `stalled_secs?`: the message in progress was discarded and the same model is asked again; `stalled_secs` is there when the model had sent nothing for that long ([stalls](models-and-logins.md#stalls)) |
+| `retry` | `attempt`, `model`, `stalled_secs?`, `max_attempts?`, `delay_ms?`, `error?`: the message in progress was discarded and the same model is asked again; `stalled_secs` is there when the model had sent nothing for that long ([stalls](models-and-logins.md#stalls)); `max_attempts` is how many times the model is asked in all before the chain moves on (absent when unlimited), `delay_ms` the wait before it is asked again, `error` why the attempt failed |
 | `fallback` | `from`, `to` |
 | `account` | `provider`, `from`, `to`, `until` (Unix seconds), `limit`: the provider's account `from` ran out of allowance and requests now use `to` |
 | `profile_changed` | `from?`, `to`, `reason` (`user`, `limit` or `reset`), `until?`, `limit?`: the session moved to profile `to`. `until` (Unix seconds, when the window resets) and `limit` (what ran out, such as `5-hour limit`) are there for `limit`; `reset` is the move back after a window has reset (`[profiles] on_reset = "auto"`). A switch on a usage limit or a reset is told by this frame alone, with no `notify` request besides. Not tied to an agent |

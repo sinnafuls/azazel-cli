@@ -38,6 +38,34 @@ pub fn retry_line(model: &str, attempt: u32, stalled_secs: Option<u64>) -> Strin
     }
 }
 
+/// What the working line says while the router waits to ask a model again: `attempt` is how
+/// many times the model has failed, `max_attempts` how many times it is asked in all (`None`
+/// when that is unlimited), `left` the seconds still to wait. Only the first line of `error`
+/// is shown.
+pub fn retry_status(attempt: u32, max_attempts: Option<u32>, left: u64, error: Option<&str>) -> String {
+    let next = attempt + 1;
+    let mut text = match max_attempts {
+        Some(max) => format!("retrying {next}/{max}"),
+        None => format!("retrying (attempt {next})"),
+    };
+    if left > 0 {
+        text.push_str(&format!(" in {left}s"));
+    }
+    if let Some(line) = error.and_then(|e| e.lines().find(|l| !l.trim().is_empty())) {
+        text.push_str(&format!(": {}", line.trim()));
+    }
+    text
+}
+
+/// What follows the error of a run that failed: how to send the prompt again. `keys` are the
+/// keys bound to the `retry` action, in the order the keymap lists them.
+pub fn retry_hint(keys: &[String]) -> String {
+    match keys {
+        [] => "/retry sends your last prompt again".to_string(),
+        keys => format!("/retry or {} sends your last prompt again", keys.join(" / ")),
+    }
+}
+
 /// What the transcript says, once, when a model refuses the tier.
 pub fn tier_dropped_line(model: &ModelRef, tier: Tier) -> String {
     format!(
@@ -385,6 +413,37 @@ mod tests {
     use azazel_core::config::ProfileConfig;
 
     use super::*;
+
+    #[test]
+    fn the_working_line_counts_the_attempt_to_come_and_the_wait_that_is_left() {
+        assert_eq!(
+            retry_status(1, Some(3), 4, Some("provider overloaded")),
+            "retrying 2/3 in 4s: provider overloaded"
+        );
+        assert_eq!(retry_status(2, Some(3), 0, None), "retrying 3/3");
+        assert_eq!(
+            retry_status(
+                1,
+                None,
+                2,
+                Some(
+                    "
+no answer for 20 s
+more"
+                )
+            ),
+            "retrying (attempt 2) in 2s: no answer for 20 s"
+        );
+    }
+
+    #[test]
+    fn a_failed_run_names_the_command_and_the_keys_bound_to_it() {
+        assert_eq!(retry_hint(&[]), "/retry sends your last prompt again");
+        assert_eq!(
+            retry_hint(&["f5".to_string(), "ctrl+r".to_string()]),
+            "/retry or f5 / ctrl+r sends your last prompt again"
+        );
+    }
 
     fn chain(specs: &[&str]) -> Vec<ModelSpec> {
         specs.iter().map(|spec| spec.parse().unwrap()).collect()

@@ -1720,6 +1720,31 @@
               "format": "uint64",
               "minimum": 0,
               "description": "The model had sent nothing for this many seconds; absent after any other failure."
+            },
+            "max_attempts": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0,
+              "description": "How many times the model is asked in all before the chain moves on; absent when\nthat is unlimited or not known."
+            },
+            "delay_ms": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "How long the router waits before it asks again, in milliseconds."
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why the attempt failed, as the provider said it."
             }
           },
           "required": [

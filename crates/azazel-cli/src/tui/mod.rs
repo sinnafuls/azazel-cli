@@ -334,6 +334,8 @@ pub struct Tui {
     attention: Attention,
     /// The lead's last run failed and nothing has been typed since.
     run_failed: bool,
+    /// The router is waiting to ask the model again; the working line says so until it does.
+    retrying: Option<Retrying>,
     theme: Theme,
     /// The name the theme was loaded by, for reading it again.
     theme_name: String,
@@ -666,6 +668,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         caps,
         attention,
         run_failed: false,
+        retrying: None,
         theme,
         theme_name: tui_config.theme.clone(),
         light_terminal,
@@ -1132,6 +1135,16 @@ impl Tui {
                 false => format!("running {}", tool.name),
             }),
         };
+        let waiting = self.retrying.as_ref().map(|wait| {
+            let left = wait.until.saturating_duration_since(Instant::now());
+            crate::routing::retry_status(
+                wait.attempt,
+                wait.max_attempts,
+                left.as_secs_f64().ceil() as u64,
+                wait.error.as_deref(),
+            )
+        });
+        let running = waiting.or(running);
         let (what, phase) = match &running {
             Some(running) => (running.as_str(), tick),
             None => shimmer::phrase(&config.indicator_text, tick, mode).unwrap_or({
@@ -1333,6 +1346,7 @@ impl Tui {
             AgentEvent::MessageStart => {
                 self.stream = StreamView::default();
                 self.rate.abandon();
+                self.retrying = None;
             }
             AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => {
                 self.rate.text(&delta, Instant::now());
@@ -1381,9 +1395,18 @@ impl Tui {
                 attempt,
                 model,
                 stalled_secs,
+                max_attempts,
+                delay_ms,
+                error,
             } => {
                 self.stream = StreamView::default();
                 self.rate.abandon();
+                self.retrying = Some(Retrying {
+                    attempt,
+                    max_attempts,
+                    until: Instant::now() + Duration::from_millis(delay_ms.unwrap_or(0)),
+                    error,
+                });
                 self.info(&crate::routing::retry_line(
                     &model.to_string(),
                     attempt,
@@ -1455,6 +1478,13 @@ impl Tui {
                 self.run_failed = true;
                 self.attend_end(Some(&error), took);
                 self.fail(&error);
+                let keys: Vec<String> = self
+                    .keymap
+                    .keys_for("retry")
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                self.info(&crate::routing::retry_hint(&keys));
             }
             AgentEvent::ToolStart { .. }
             | AgentEvent::ToolUpdate { .. }
@@ -1475,6 +1505,7 @@ impl Tui {
     fn end_of_run(&mut self) {
         self.flush_calls();
         self.busy = false;
+        self.retrying = None;
         self.tools.clear();
         self.stream = StreamView::default();
         self.rate.abandon();
@@ -2783,6 +2814,15 @@ fn save_paste(dir: &std::path::Path, text: &str) -> io::Result<String> {
         }
     }
     unreachable!("the names run out only after usize::MAX pastes")
+}
+
+/// A model that failed and is asked again once `until` has passed.
+struct Retrying {
+    /// How many times the model has failed.
+    attempt: u32,
+    max_attempts: Option<u32>,
+    until: Instant,
+    error: Option<String>,
 }
 
 #[cfg(test)]
