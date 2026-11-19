@@ -39,7 +39,9 @@ export type {
 	Streaming,
 	RunningTool,
 	Queued,
-	StreamEvent
+	StreamEvent,
+	BrowserInput,
+	BrowserState
 } from './rpc';
 
 /** What `get_theme` answers and the `theme` frame carries beside its `type`. */

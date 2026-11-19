@@ -17,6 +17,7 @@ import type {
 	CommandRow,
 	Decision,
 	Image,
+	BrowserState,
 	ModelRow,
 	Roles,
 	Row,
@@ -24,6 +25,7 @@ import type {
 	TerminalTheme
 } from '$lib/protocol';
 import type { TreeEntry } from './tree';
+import { BrowserLive } from '$lib/browser/live.svelte';
 import {
 	addCommandCard,
 	addQueued,
@@ -68,6 +70,8 @@ export class Session {
 	commands = $state.raw<CommandRow[]>([]);
 	files = $state.raw<string[] | null>(null);
 	loadingEarlier = $state(false);
+	/** The agents' browser: its state, the live picture, and taking it over. */
+	readonly browser: BrowserLive;
 
 	readonly id: string;
 	private client: RpcClient;
@@ -88,9 +92,11 @@ export class Session {
 			onStatus: (s, d) => {
 				this.status = s;
 				this.statusDetail = d;
+				if (s !== 'open') this.browser.detached();
 			},
 			onAttached: (a, resync) => void this.onAttached(a, resync)
 		});
+		this.browser = new BrowserLive((c) => this.client.send<BrowserState | null>(c));
 	}
 
 	get busy() {
@@ -153,6 +159,10 @@ export class Session {
 			void this.refreshTheme(f);
 			return;
 		}
+		// Nor are these: a picture of the agents' browser and what it is doing. They are shown as they
+		// come and never kept, so they do not wait for the tick of the transcript.
+		if (f.type === 'browser_frame') return this.browser.onFrame(f);
+		if (f.type === 'browser_state') return this.browser.onState(f);
 		this.queue.push(f);
 		if (this.o.sync) return this.flush();
 		this.tick ??= setTimeout(() => this.flush(), 33);
@@ -160,6 +170,7 @@ export class Session {
 
 	private async onAttached(a: AttachedRemote, resync: boolean) {
 		this.attached = a;
+		this.browser.attached();
 		// A reconnect that resumes from `since` keeps the transcript; anything else rebuilds it.
 		if (resync) this.rebuild(a);
 		await Promise.allSettled([

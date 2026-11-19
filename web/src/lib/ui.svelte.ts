@@ -61,9 +61,9 @@ class Ui {
 	rewind = $state<{ entryId?: string; text?: string } | null>(null);
 	/** The prompt being rewritten: sending goes back to before it first (edit and resend). */
 	edit = $state<{ text: string; entryId: string | null } | null>(null);
-	/** The right pane (agents and usage) docked beside the chat, from 1024px. */
+	/** The right pane (agents, usage and the agents' browser) docked beside the chat, from 1024px. */
 	rightOpen = $state(true);
-	rightTab = $state<'agents' | 'usage'>('agents');
+	rightTab = $state<'agents' | 'usage' | 'browser'>('agents');
 	/** The session on screen, if any. */
 	session = $state.raw<Session | null>(null);
 

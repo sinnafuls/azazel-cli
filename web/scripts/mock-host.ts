@@ -11,6 +11,10 @@
 // with made-up but realistic data; `MOCK_THEME=light` makes the terminal's theme a light one.
 // Profiles (0.16): the state carries `profile` and `profiles`, `set_profile` and `save_profile` are
 // answered, and a prompt of `/limit` or `/reset` plays the switch a usage limit makes and the way back.
+// The agents' browser (0.16): the sessions `showcase` and `team` have one open, and a prompt of
+// `/browser` opens or closes it in any session. `browser_watch` sends a picture (fixtures/
+// browser-frames.json), `browser_take` and `browser_input` change what it shows, and a view link is
+// refused unless `MOCK_VIEW_BROWSER=1`.
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 
@@ -279,6 +283,118 @@ function switchProfile(
 	s.emit({ type: 'profile_changed', from, to: p.name, reason, ...extra });
 }
 
+// --- the agents' browser -------------------------------------------------------------------
+
+const shots = json('browser-frames.json') as Record<
+	'page' | 'login' | 'tall',
+	{ width: number; height: number; data: string }
+>;
+const viewBrowser = process.env.MOCK_VIEW_BROWSER === '1';
+
+/**
+ * A stand-in for the browser of a session: still pictures and the state the host reports. An
+ * address with `login` in its path shows the form, one with `mobile` a page in portrait.
+ */
+class MockBrowser {
+	visible = false;
+	url = 'https://example.com/';
+	title = 'Example Domain';
+	shot: keyof typeof shots = 'page';
+	holder: Client | null = null;
+	watchers = new Set<Client>();
+	seq = 0;
+	private history: string[] = [];
+
+	constructor(
+		private readonly clients: Set<Client>,
+		public running: boolean
+	) {}
+
+	state(c: Client) {
+		const held = this.holder !== null;
+		const base = {
+			running: this.running,
+			visible: this.visible,
+			held,
+			held_by_you: held && this.holder === c,
+			watchers: this.watchers.size
+		};
+		return this.running ? { ...base, tab: 't1', url: this.url, title: this.title } : base;
+	}
+	/** Every attached client is told, each with its own `held_by_you`. */
+	tell() {
+		for (const c of this.clients) c.send({ type: 'browser_state', ...this.state(c) });
+	}
+	/** One picture, to those who watch. Never logged, never replayed. */
+	frame(to: Iterable<Client> = this.watchers) {
+		if (!this.running) return;
+		this.seq++;
+		for (const c of to)
+			c.send({ type: 'browser_frame', tab: 't1', ...shots[this.shot], seq: this.seq });
+	}
+	private show(url: string) {
+		const u = new URL(url);
+		this.url = u.href;
+		this.shot = /login|sign/i.test(u.pathname) ? 'login' : /mobile/i.test(u.href) ? 'tall' : 'page';
+		this.title = this.shot === 'login' ? `Sign in · ${u.hostname}` : 'Example Domain';
+	}
+	toggle() {
+		this.running = !this.running;
+		if (!this.running) this.holder = null;
+		this.tell();
+		this.frame();
+	}
+	watch(c: Client, on: boolean) {
+		if (on) this.watchers.add(c);
+		else this.watchers.delete(c);
+		if (on) this.frame([c]);
+	}
+	/** Why the client may not take the browser over, or nothing when it did. */
+	take(c: Client, on: boolean): string | undefined {
+		if (!this.running) return 'no browser is open in this session';
+		if (on && this.holder && this.holder !== c) return 'another device has taken the browser over';
+		if (!on && this.holder !== c) return undefined;
+		this.holder = on ? c : null;
+		this.tell();
+	}
+	input(c: Client, input: Frame): string | undefined {
+		if (this.holder !== c) return 'take the browser over before you use it';
+		const before = this.url;
+		if (input.kind === 'navigate') {
+			if (!/^https?:\/\//.test(input.url) && input.url !== 'about:blank')
+				return `\`${input.url}\` is not an http or https URL`;
+			this.history.push(this.url);
+			this.show(input.url === 'about:blank' ? 'https://example.com/' : input.url);
+		} else if (input.kind === 'back') {
+			const last = this.history.pop();
+			if (last) this.show(last);
+		} else if (input.kind === 'click') {
+			if (![input.x, input.y].every((n) => typeof n === 'number' && n >= 0 && n <= 1))
+				return 'a click is at fractions of the frame, 0 to 1';
+			// The "Sign in" link at the top right of the page leads to the form.
+			if (this.shot === 'page' && input.x > 0.9 && input.y < 0.08) {
+				this.history.push(this.url);
+				this.show(new URL('/login', this.url).href);
+			}
+		}
+		if (this.url !== before) this.tell();
+		this.frame();
+	}
+	signIn() {
+		this.running = true;
+		this.visible = true;
+		this.tell();
+		this.frame();
+	}
+	/** A client went away: it watches nothing and holds nothing any more. */
+	leave(c: Client) {
+		this.watchers.delete(c);
+		if (this.holder !== c) return;
+		this.holder = null;
+		this.tell();
+	}
+}
+
 class MockSession {
 	log: Frame[] = [];
 	rows: Frame[] = [];
@@ -292,8 +408,10 @@ class MockSession {
 	started = false;
 	aborted = false;
 	busy = false;
+	browser: MockBrowser;
 
 	constructor(readonly s: Scenario) {
+		this.browser = new MockBrowser(this.clients, s.id === 'showcase' || s.id === 'team');
 		const st = json('state.json');
 		st.session_id = s.id;
 		st.name = s.name;
@@ -1244,15 +1362,30 @@ const files = [
 function respond(c: Client, id: unknown, data: unknown = null) {
 	c.send({ type: 'response', id, success: true, data });
 }
-function fail(c: Client, id: unknown, error: string) {
-	c.send({ type: 'response', id, success: false, error });
+function fail(c: Client, id: unknown, error: string, code?: string) {
+	c.send({ type: 'response', id, success: false, error, ...(code ? { code } : {}) });
 }
 
 function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boolean, msg: Frame) {
 	const { id, type } = msg;
-	if (access === 'view' && !VIEW_COMMANDS.has(type))
-		return fail(c, id, `A view link cannot send \`${type}\`. Ask for a control link.`);
+	// What a device is refused for its access carries the code `refused`, as the real server's does.
+	if (access === 'view' && !VIEW_COMMANDS.has(type) && !(type === 'browser_watch' && viewBrowser))
+		return fail(c, id, `A view link cannot send \`${type}\`. Ask for a control link.`, 'refused');
 	switch (type) {
+		case 'browser_watch':
+			s.browser.watch(c, msg.on === true);
+			return respond(c, id, s.browser.state(c));
+		case 'browser_take': {
+			const why = s.browser.take(c, msg.on === true);
+			return why ? fail(c, id, why) : respond(c, id, s.browser.state(c));
+		}
+		case 'browser_input': {
+			const why = s.browser.input(c, msg.input ?? {});
+			return why ? fail(c, id, why) : respond(c, id, s.browser.state(c));
+		}
+		case 'browser_sign_in':
+			s.browser.signIn();
+			return respond(c, id, s.browser.state(c));
 		case 'get_theme':
 			return respond(c, id, theme);
 		case 'get_settings':
@@ -1450,6 +1583,8 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boo
 			});
 			for (const f of missed) c.send(f);
 			for (const f of s.pendingFrames.values()) if (!missed.includes(f)) c.send(f);
+			// The browser's state is not in the log: a client is told when it attaches.
+			c.send({ type: 'browser_state', ...s.browser.state(c) });
 			return;
 		}
 		case 'get_state':
@@ -1529,6 +1664,7 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boo
 					limit: '5-hour limit'
 				});
 			if (type === 'prompt' && msg.text === '/reset') return switchProfile(s, 'claude', 'reset');
+			if (type === 'prompt' && msg.text === '/browser') return s.browser.toggle();
 			if (type === 'prompt' && !s.busy) {
 				// `run` emits the user_input itself, to everyone but the sender.
 				void s.run(lines(s.s.frames), 0, msg.text, c).catch(() => {});
@@ -1837,7 +1973,10 @@ const server = Bun.serve<WsData>({
 		},
 		close(ws) {
 			const c = (ws as unknown as { client?: Client }).client;
-			if (c) sessions.get(ws.data.session)?.clients.delete(c);
+			if (!c) return;
+			const s = sessions.get(ws.data.session);
+			s?.clients.delete(c);
+			s?.browser.leave(c);
 		}
 	}
 });

@@ -1,6 +1,7 @@
 <script lang="ts">
 	// One WebSocket per open session, shared by the chat and the agent views, with the right-hand pane
-	// (agents and usage) on desktop, which slides open and shut, and a bottom sheet for them on a phone.
+	// (agents, usage and the agents' browser) on desktop, which slides open and shut, and a bottom
+	// sheet for them on a phone.
 	import { onMount, type Snippet, untrack } from 'svelte';
 	import type { Pane } from 'paneforge';
 	import { goto } from '$app/navigation';
@@ -28,6 +29,7 @@
 	import PanelRight from '@lucide/svelte/icons/panel-right';
 	import AgentHub from '$lib/components/AgentHub.svelte';
 	import UsagePanel from '$lib/components/UsagePanel.svelte';
+	import BrowserPanel from '$lib/components/BrowserPanel.svelte';
 	import StateDot from '$lib/components/StateDot.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import Tip from '$lib/components/Tip.svelte';
@@ -74,7 +76,8 @@
 	const waiting = $derived(session.model.requests.length > 0);
 	const stateName = $derived(waiting ? 'waiting for you' : session.busy ? 'working' : 'idle');
 	const agentId = $derived(page.params.agent ?? null);
-	let panel = $state<'agents' | 'usage' | null>(null);
+	let panel = $state<'agents' | 'usage' | 'browser' | null>(null);
+	const SIDE = 'Agents, usage and browser';
 
 	// The right pane opens and closes as the sidebar does: its width runs for 200ms while the chat
 	// takes or gives the room. It is a collapsible pane of the resizable group, so the handle stays.
@@ -224,10 +227,10 @@
 				{/if}
 				{#if !viewport.lg}
 					<Tip
-						text="Agents and usage"
+						text={SIDE}
 						side="bottom"
 						size={live ? 'sm' : 'icon-sm'}
-						aria-label="Agents and usage"
+						aria-label={SIDE}
 						onclick={() => (panel = 'agents')}
 					>
 						<Users />
@@ -309,6 +312,7 @@
 			<Tabs.List variant="line">
 				<Tabs.Trigger value="agents" class="after:bg-brand">Agents</Tabs.Trigger>
 				<Tabs.Trigger value="usage" class="after:bg-brand">Usage</Tabs.Trigger>
+				<Tabs.Trigger value="browser" class="after:bg-brand">Browser</Tabs.Trigger>
 			</Tabs.List>
 		</div>
 		<div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
@@ -316,6 +320,14 @@
 				<AgentHub {session} canControl={app.canControl} active={agentId ?? 'lead'} />
 			</Tabs.Content>
 			<Tabs.Content value="usage"><UsagePanel {session} /></Tabs.Content>
+			<!-- A tab that is not chosen stays on the page, hidden: the panel is told, and stops watching. -->
+			<Tabs.Content value="browser">
+				<BrowserPanel
+					{session}
+					canControl={app.canControl}
+					active={ui.rightTab === 'browser' && ui.rightOpen}
+				/>
+			</Tabs.Content>
 		</div>
 	</Tabs.Root>
 {/snippet}
@@ -357,7 +369,7 @@
 					<aside
 						class="h-full min-h-0"
 						style:width={sliding && slideWidth ? `${slideWidth}px` : undefined}
-						aria-label="Agents and usage"
+						aria-label={SIDE}
 						inert={!ui.rightOpen}
 					>
 						{@render side()}
@@ -372,7 +384,7 @@
 
 <Sheet
 	open={panel !== null}
-	title={panel === 'usage' ? 'Usage' : 'Agents'}
+	title={panel === 'usage' ? 'Usage' : panel === 'browser' ? 'Browser' : 'Agents'}
 	onclose={() => (panel = null)}
 >
 	<Segmented
@@ -382,14 +394,14 @@
 		onchange={(v) => (panel = v)}
 		options={[
 			{ value: 'agents', label: 'Agents' },
-			{ value: 'usage', label: 'Usage' }
+			{ value: 'usage', label: 'Usage' },
+			{ value: 'browser', label: 'Browser' }
 		]}
 	/>
-	{#if panel === 'usage'}<UsagePanel {session} />{:else}<AgentHub
+	{#if panel === 'usage'}<UsagePanel {session} />{:else if panel === 'browser'}<BrowserPanel
 			{session}
 			canControl={app.canControl}
-			active={agentId ?? 'lead'}
-		/>{/if}
+		/>{:else}<AgentHub {session} canControl={app.canControl} active={agentId ?? 'lead'} />{/if}
 </Sheet>
 
 <Sheet

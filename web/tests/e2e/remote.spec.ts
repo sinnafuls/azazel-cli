@@ -65,7 +65,7 @@ test('the chat shows the run and keeps streaming into it', async ({ page, manual
 	await expect(read.getByLabel('Output', { exact: true })).toContainText('hello from azazel');
 	// Nothing of a tool call opens beside the chat any more.
 	await expect(
-		page.getByRole('complementary', { name: 'Agents and usage' }).locator('[data-tool]')
+		page.getByRole('complementary', { name: 'Agents, usage and browser' }).locator('[data-tool]')
 	).toHaveCount(0);
 	// The row closes its cards again.
 	await row.click();

@@ -1006,9 +1006,9 @@ for (const view of VIEWS)
 					await expect(pane).toHaveAttribute('data-right-pane', 'closed');
 					await expect(moved).toHaveCount(0);
 					expect(await paneWidth(), 'the width of the closed pane').toBeLessThan(0.5);
-					await expect(page.getByRole('complementary', { name: 'Agents and usage' })).toHaveCount(
-						0
-					);
+					await expect(
+						page.getByRole('complementary', { name: 'Agents, usage and browser' })
+					).toHaveCount(0);
 					await page.mouse.move(width - 2, height - 2);
 					await capture('right-closed');
 					await page.getByRole('button', { name: 'Show the side panel' }).click();
@@ -1027,7 +1027,7 @@ for (const view of VIEWS)
 					await page.mouse.move(width - 2, height - 2);
 					await capture('right-open');
 				} else {
-					await page.getByRole('button', { name: 'Agents and usage' }).click();
+					await page.getByRole('button', { name: 'Agents, usage and browser' }).click();
 					const sheet = page.getByRole('dialog', { name: 'Agents' });
 					await sheet.getByRole('radio', { name: 'Usage' }).click();
 					await expect(page.locator('[data-usage]')).toContainText('Check it from the shell');
@@ -1308,7 +1308,7 @@ for (const view of VIEWS)
 						'open'
 					);
 					await page.locator('[data-right-pane]').getByRole('tab', { name: 'Agents' }).click();
-				} else await page.getByRole('button', { name: 'Agents and usage' }).click();
+				} else await page.getByRole('button', { name: 'Agents, usage and browser' }).click();
 				const member = (id: string) => hub.locator(`[data-agent="${id}"]`);
 				await expect(hub.locator('[data-agent]')).toHaveCount(5);
 				for (const id of [ROUTES, LONG_AGENT, CALLERS])

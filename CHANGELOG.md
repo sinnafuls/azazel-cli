@@ -10,6 +10,7 @@ GitHub are its section here.
 ### Added
 
 - Edit profiles without touching the config: the Profiles view of `/models` (also opened from the `/profile` picker) switches, creates, copies, renames and deletes profiles, sets a profile's roles with the model picker, and turns built-in profiles off and on (`[profiles] disabled`). Editing a built-in saves your own copy, and `x` goes back to the built-in.
+- `azazel remote`: a Browser tab beside Agents and Usage shows the agents' browser live. With a control link, **Take over** lets you click, scroll, type and go to an address while the agents' browser actions wait, and **Hand back** returns it; the agent is told what you did, never what you typed. **Sign in** opens the agents' browser profile in a window on the computer running azazel.
 - `azazel browser open [URL]` shows the agents' browser profile in a window, so you can sign in to sites yourself; the logins stay for later agent runs.
 - RPC: commands `browser_watch`, `browser_take`, `browser_input` and `browser_sign_in`, and frames `browser_frame` and `browser_state`, which are never logged or replayed. Settings `[browser] live_fps`, `live_quality` and `live_max_width` set the live picture; `[remote] view_browser` (default off) lets view links watch it, while taking over always needs a control link.
 - Generate images with your ChatGPT login: `[media.models] image = "openai-codex:gpt-image-2"` after `azazel login openai-codex`. It isn't on the Free plan and uses your Codex limits; if the ChatGPT backend doesn't offer it, azazel says so once and stops asking.
