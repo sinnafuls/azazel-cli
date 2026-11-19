@@ -2,6 +2,7 @@
 
 pub mod cdp;
 pub mod launch;
+pub mod live;
 pub mod page;
 #[cfg(feature = "screen")]
 pub mod screen;
@@ -19,7 +20,8 @@ use azazel_core::{
 };
 use serde_json::{Value, json};
 
-pub use launch::{NOT_FOUND, find_binary};
+pub use launch::{NOT_FOUND, find_binary, open_profile};
+pub use live::{BrowserStateInfo, LiveButton, LiveFrame, LiveInput, LiveSettings};
 pub use session::{BrowserSession, Input, Settings};
 
 const DESCRIPTION: &str = "Drive a real Chromium browser: open pages, read them as an accessibility \
@@ -179,6 +181,8 @@ pub struct BrowserExt {
     pub screenshot_scale: f64,
     /// `[browser] snapshot_diff`.
     pub snapshot_diff: bool,
+    /// `[browser] live_fps`, `live_quality` and `live_max_width`.
+    pub live: LiveSettings,
     /// Where the logins `fill_login` types are stored.
     pub logins: Arc<ServiceStore>,
 }
@@ -195,6 +199,7 @@ impl Extension for BrowserExt {
             profile: self.profile.clone(),
             screenshot_scale: self.screenshot_scale,
             snapshot_diff: self.snapshot_diff,
+            live: self.live,
         };
         let session = Arc::new(BrowserSession::new(settings).with_logins(self.logins.clone()));
         r.service(session.clone());
@@ -218,6 +223,7 @@ mod tests {
             profile: PathBuf::from("unused"),
             screenshot_scale: 1.0,
             snapshot_diff: true,
+            live: LiveSettings::default(),
         })));
         let subjects = |input: Value| tool.subjects(&input);
         assert_eq!(

@@ -400,7 +400,7 @@ The server checks every command before it reaches the session; this is the polic
 
 | Access | Commands it may send |
 |---|---|
-| **view** | `attach`, `get_state`, `get_messages`, `get_agent_messages`, `get_tree`, `get_usage`, `get_theme`, `get_context`, `get_cost`, `list_models`, `list_roles`, `list_commands`. Frames arrive as for any client; a view client shows requests as "waiting for an answer" and cannot answer them. |
+| **view** | `attach`, `get_state`, `get_messages`, `get_agent_messages`, `get_tree`, `get_usage`, `get_theme`, `get_context`, `get_cost`, `list_models`, `list_roles`, `list_commands`, and with `remote.view_browser` also `browser_watch`. Frames arrive as for any client; a view client shows requests as "waiting for an answer" and cannot answer them. |
 | **control** | Everything, except the commands in the next table. |
 
 A control device may send `handoff` (and the page's `/handoff`), which asks the model for a brief and switches the page to the new session; a view device may not. `get_state` carries the prompt cache's clock, which the status bar shows.
@@ -430,6 +430,15 @@ anything on its own.
 
 When several clients are attached, the first answer to an approval or a question wins: the others get
 `request_closed`, and a second answer is refused.
+
+## Watching the agent's browser
+
+The Browser tab of the page shows the tab the agents' browser is on, live, and lets you take over.
+
+- **Who may.** Watching needs a control link by default: the picture is pixels, and `remote.redact` only hides secrets in text. With `[remote] view_browser = true` a view link may watch too. Taking over, clicking, typing, navigating and **Sign in** always need a control link, and none of them needs `remote.full_access`.
+- **Bandwidth.** Frames are produced only while at least one device watches, and stop when the last one leaves or disconnects. They are JPEGs, scaled to `[browser] live_max_width`, at most `live_fps` a second and at `live_quality`; a typical frame is 40 to 150 KB. A device that reads slowly is sent fewer frames and is never closed for it. Frames are not logged or replayed.
+- **Take over and hand back.** While you hold the browser, the agents' next browser action waits (other tools keep running) and only your clicks, keys, scrolls and addresses reach the page. Only one device holds it at a time. It is released when you hand back, when you disconnect, or when the session ends. When you hand back, the agent's next browser result starts with a note of what you did (addresses visited, clicks, scrolls, fields typed into, never the text) and its next snapshot is whole.
+- **Sign in.** Shows the agents' own browser profile in a visible window on the computer that runs azazel, so you can sign in to sites; see [signing in](web-and-browser.md#signing-in). The window stays until the session ends.
 
 ## Full access
 

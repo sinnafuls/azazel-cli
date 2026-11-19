@@ -202,6 +202,8 @@ pub struct Options {
     /// `[remote] full_access`: a control device may do all the terminal can. A view device stays
     /// view-only.
     pub full_access: bool,
+    /// `[remote] view_browser`: a view device may watch the agents' browser.
+    pub view_browser: bool,
     /// Whether a configuration key may be set by a project only once it is trusted (and so is
     /// not for a browser to change either).
     pub gated: fn(&str) -> bool,

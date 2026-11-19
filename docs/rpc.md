@@ -76,6 +76,10 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `trust_project` | `trusted?` (default true) | As `/trust yes` or `/trust no` | `{"root", "trusted", "saved", "message"}` |
 | `add_dir` | `path` | As `/add-dir` | `{"dirs", "message"}` |
 | `forget_approvals` | | As `/forget-approvals` | `{"count", "message"}` |
+| `browser_watch` | `on` | Starts or stops receiving `browser_frame` frames, a live picture of the tab the agents' browser shows; frames are produced only while someone watches. See [`browser_frame`](#browser_frame) | A [browser state](#browser_state) |
+| `browser_take` | `on` | Takes the agents' browser over, or hands it back. While it is taken over the agents' next browser action waits, and only this client's `browser_input` is accepted; when it is handed back the agent is told what you did. Refused while another client holds it | A [browser state](#browser_state) |
+| `browser_input` | `input` | Clicks, types, scrolls or navigates in the agents' browser. `input` has a `kind`: `click` (`x`, `y`, `button?`, `count?`), `scroll` (`x`, `y`, `dy`), `key` (`keys`, as the browser tool's `press`), `text` (`text`), `navigate` (`url`), `back` or `reload`. `x` and `y` are fractions (0 to 1) of the frame from its top left corner. Refused unless this client has taken the browser over | A [browser state](#browser_state) |
+| `browser_sign_in` | `url?` | Shows the agents' own browser profile in a visible window on the machine that runs azazel, to sign in to sites, opened on `url` (http or https) when given | A [browser state](#browser_state) |
 
 The session commands report the saved sessions and the open one, change which session is open, or change where in it the conversation continues. Those that change something are refused while the lead works; send `abort` first.
 
@@ -214,7 +218,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 
 One prompt produces `agent_start`, then per model request `turn_start`, `message_start`, `stream`…, `message_end`, any `tool_start` / `tool_update` / `tool_end`, `turn_end`, and finally `idle` or `failed`. A request whose reply a rule withdrew has `rule` where `message_end` would be. Stream deltas are for display; `message_end` carries the authoritative message.
 
-Six more frame types come from the session rather than an agent.
+Eight more frame types come from the session rather than an agent.
 
 ### `roster`
 
@@ -307,6 +311,14 @@ Written by a background session only: `{"type": "request_closed", "request_id": 
 `approval_request` or `ui_request` no longer waits, because another client answered it or whoever asked gave up.
 A client that shows the request takes it away. The client that answered is not sent the frame.
 
+### `browser_frame`
+
+`{"type": "browser_frame", "tab": "t1", "data": "<base64 JPEG>", "width": 1280, "height": 720, "seq": 41}`: one picture of the tab the agents' browser shows, sent only to the clients that asked with `browser_watch`. Frames are ephemeral: they carry no `at`, are never written to the log of a background session and are never replayed. A client that reads slowly is sent fewer of them, never closed for it. The size and rate are set by `[browser] live_fps`, `live_quality` and `live_max_width`.
+
+### `browser_state`
+
+`{"type": "browser_state", "running": true, "visible": false, "tab": "t1", "url": "https://example.com/", "title": "Example", "held": false, "held_by_you": false, "watchers": 1}`: what the agents' browser is doing, sent to every attached client when a browser starts or ends, the tab or its address changes, or a client takes it over or hands it back. `held` is true while a client has taken it over and the agents wait; `held_by_you` is whether that client is the one the frame is sent to. `tab`, `url` and `title` are left out when no browser runs. Ephemeral like `browser_frame`; the responses of the four `browser_*` commands carry the same members. A session without a browser answers `{"running": false, ...}`.
+
 ### `btw_delta`
 
 A piece of the answer to a `btw` command: `{"type": "btw_delta", "id": <the command's id>, "delta": "..."}`. The command's response carries the whole answer.
@@ -332,8 +344,8 @@ Any number of clients may be attached. Each is sent every event; any of them may
 request. A response and the `btw_delta` frames of a `btw` go to the client that sent the command, under the `id`
 that client gave it, so two clients need not agree on ids. What one client sends the lead reaches the others as
 `user_input`, and a request one of them answered closes on the others with `request_closed`. A second answer to
-the same request is refused. Responses, `btw_delta` and `request_closed` are not logged; every other frame is
-appended to `~/.azazel/run/<id>.log`.
+the same request is refused. Responses, `btw_delta`, `request_closed`, `browser_frame` and `browser_state` are not logged
+or replayed; every other frame is appended to `~/.azazel/run/<id>.log`.
 
 `replay: "missed"` replays what was written since the last client left (everything, for the first client). When
 another client is attached already, nobody was away: the frames of the run in progress are replayed, from the

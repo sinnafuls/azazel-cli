@@ -936,6 +936,12 @@ impl App {
             profile: paths.browser_profile_dir(),
             screenshot_scale: config.browser.screenshot_scale,
             snapshot_diff: config.browser.snapshot_diff,
+            live: azazel_browser::LiveSettings {
+                fps: config.browser.live_fps,
+                quality: config.browser.live_quality,
+                max_width: config.browser.live_max_width,
+            }
+            .clamped(),
             logins: stored.clone(),
         })?;
         #[cfg(feature = "screen")]

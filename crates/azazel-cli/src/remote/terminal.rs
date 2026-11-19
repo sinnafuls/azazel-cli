@@ -1033,6 +1033,7 @@ fn options(config: &Config) -> Options {
         redact: remote.redact,
         allow_bypass: remote.allow_bypass,
         full_access: remote.full_access,
+        view_browser: remote.view_browser,
         gated: azazel_core::config::is_trust_gated,
     }
 }

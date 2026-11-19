@@ -9,6 +9,7 @@ GitHub are its section here.
 
 ### Added
 
+- RPC: commands `browser_watch`, `browser_take`, `browser_input` and `browser_sign_in`, and frames `browser_frame` and `browser_state`, which are never logged or replayed. Settings `[browser] live_fps`, `live_quality` and `live_max_width` set the live picture; `[remote] view_browser` (default off) lets view links watch it, while taking over always needs a control link.
 - Generate images with your ChatGPT login: `[media.models] image = "openai-codex:gpt-image-2"` after `azazel login openai-codex`. It isn't on the Free plan and uses your Codex limits; if the ChatGPT backend doesn't offer it, azazel says so once and stops asking.
 - Profiles: a set of models per role that you switch as one. Six are built in: `claude`, `gpt` (on a ChatGPT/Codex login: Astra, Sol, Terra and Luna in the places of Fable, Opus, Sonnet and Haiku), `cheap`, `thorough`, `frontend` and `research`; save your own with `/profile save <name>` or `[profiles.<name>.roles]`, which replaces a built-in of the same name. Switch with `/profile <name>` or `azazel --profile <name>`. A profile that needs a login you don't have is listed with the `azazel login <provider>` it needs and is not applied.
 - `/profile` with no name opens a picker, and the status line has a `profile` segment.

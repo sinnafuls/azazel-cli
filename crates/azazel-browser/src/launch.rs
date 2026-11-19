@@ -129,6 +129,11 @@ fn endpoint(port_file: &str) -> Option<String> {
 
 /// Starts `binary` on the profile in `profile` and waits for its debugging endpoint.
 pub async fn launch(binary: &Path, profile: &Path, headless: bool) -> Result<Launched, String> {
+    launch_on(binary, profile, headless, "about:blank").await
+}
+
+/// [`launch`], with the first tab on `url`.
+pub async fn launch_on(binary: &Path, profile: &Path, headless: bool, url: &str) -> Result<Launched, String> {
     std::fs::create_dir_all(profile).map_err(|e| format!("{}: {e}", profile.display()))?;
     let port_file = profile.join(PORT_FILE);
     // A file left by an earlier run would be read as this one's.
@@ -142,7 +147,7 @@ pub async fn launch(binary: &Path, profile: &Path, headless: bool) -> Result<Lau
         if headless {
             c.arg("--headless=new");
         }
-        c.arg("about:blank")
+        c.arg(url)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -192,6 +197,28 @@ pub async fn launch(binary: &Path, profile: &Path, headless: bool) -> Result<Lau
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// Shows the browser in a window on `profile`, opened on `url` when given, and returns when the
+/// window is closed: for signing in to sites by hand. Fails when a browser already runs on the
+/// profile, which is what the agents' session does while it has one.
+pub async fn open_profile(binary: &Path, profile: &Path, url: Option<&str>) -> Result<(), String> {
+    let mut launched = launch_on(binary, profile, false, url.unwrap_or("about:blank"))
+        .await
+        .map_err(|why| {
+            if why.contains(LEFT_AT_ONCE) {
+                "the agent's browser is running on this profile: use Sign in in the web page, or end the                  session first"
+                    .to_string()
+            } else {
+                why
+            }
+        })?;
+    launched
+        .child
+        .wait()
+        .await
+        .map(drop)
+        .map_err(|e| format!("could not wait for the browser: {e}"))
 }
 
 #[cfg(test)]

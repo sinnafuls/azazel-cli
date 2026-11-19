@@ -275,6 +275,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `device_hours` | `24` | Hours a paired device stays signed in |
 | | `redact` | `true` | Replace API keys and tokens in the messages and tool results sent to a browser |
 | | `allow_bypass` | `false` | Let a browser with control access switch to the `bypass` mode, and [start sessions](remote.md#starting-a-session-from-the-browser) in any folder without asking at the computer |
+| | `view_browser` | `false` | Let a view link watch the agent's browser live too. The picture is not redacted, so by default only a control link may; taking over always needs a control link. See [watching the agent's browser](remote.md#watching-the-agents-browser) |
 | | `full_access` | `false` | Let a browser with control access do everything the terminal can: shell commands, files, settings, sign-ins, trust, `bypass` and any folder. A view link stays view-only. See [full access](remote.md#full-access) |
 | | `folders` | `[]` | Folders a browser may [start sessions](remote.md#starting-a-session-from-the-browser) in, and the folders inside them, beside the projects sessions have worked in; `~` is the home directory |
 | `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith`; see [trace export](#trace-export) |
@@ -291,6 +292,9 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `headless` | `true` | Run the browser without a window |
 | | `screenshot_scale` | `1.0` | Scale screenshots by this (0.1 to 1) before the model gets them, never below 512 pixels on the long side; `0.5` costs about a quarter of the tokens; see [the browser](web-and-browser.md#screenshots-and-snapshots-that-cost-less) |
 | | `snapshot_diff` | `true` | A snapshot of the page the agent's last snapshot of the tab showed sends only what changed, and refs keep their numbers; see [the browser](web-and-browser.md#screenshots-and-snapshots-that-cost-less) |
+| | `live_fps` | `5` | Pictures per second of the live view of the agent's browser in the web page of `azazel remote` (1 to 15); see [watching and taking over](web-and-browser.md#watching-and-taking-over-from-the-web-page) |
+| | `live_quality` | `60` | JPEG quality of the live view (20 to 90); lower sends less data |
+| | `live_max_width` | `1280` | Width in pixels the live view is scaled down to (320 to 1920) |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
 | | `defer_threshold` | `40` | Above this many MCP tools, they are found through `tool_search` instead |
 | | `idle_timeout_secs` | `600` | A server started on demand (`lifecycle: lazy` in its entry) stops after this many seconds without a call; `0` never stops it. See [mcp](mcp.md#when-servers-start) |

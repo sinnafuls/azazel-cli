@@ -197,6 +197,7 @@ impl Server {
             grants: Grants {
                 allow_bypass: options.allow_bypass,
                 full_access: options.full_access,
+                view_browser: options.view_browser,
                 gated: options.gated,
             },
             port: addr.port(),

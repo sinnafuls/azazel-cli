@@ -438,6 +438,9 @@ settings! {
             "Scale screenshots by this (0.1 to 1) before the model gets them, never below 512 pixels on the long side; 0.5 saves about three quarters.";
         "browser.snapshot_diff": Switch, "Snapshot changes only",
             "A new snapshot of the page the agent's last snapshot showed sends only the lines that changed.";
+        "browser.live_fps": Number, "Live view rate", "Pictures per second of the live view of the agent's browser in the web page (1 to 15).";
+        "browser.live_quality": Number, "Live view quality", "JPEG quality of the live view (20 to 90); lower sends less data.";
+        "browser.live_max_width": Number, "Live view width", "Width in pixels the live view is scaled down to (320 to 1920).";
     }
     Tools / "Media" {
         "media.output_dir": Text, "Output directory", "Where generated files go, relative to the project.";
@@ -558,6 +561,7 @@ settings! {
         "remote.redact": Switch, "Redact output", "Replace API keys and tokens in the messages and tool results sent to a browser.";
         "remote.allow_bypass": Switch, "Allow bypass", "Let a browser with control access switch to the bypass mode, and start sessions in any folder without asking here.";
         "remote.full_access": Switch, "Full access", "Let a browser with control access do everything the terminal can: shell commands, files, settings, sign-ins, trust and any folder. Use it only on a machine and with links you trust.";
+        "remote.view_browser": Switch, "View links watch the browser", "Let a view link watch the agent's browser live too. The picture is not redacted, so by default only a control link may.";
         "remote.folders": List, "Folders for new chats", "Folders a browser may start sessions in, and the folders inside them, beside the projects sessions have worked in.";
     }
     Advanced / "Updates" {

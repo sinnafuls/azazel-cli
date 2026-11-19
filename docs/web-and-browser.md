@@ -354,6 +354,15 @@ azazel secrets add-site "https://github.com/login*" --username octocat
 - The agent is paused meanwhile. It then gets your note, the list of tabs as you left them, and a snapshot of the current page, and carries on in the same window: the browser stays visible for the rest of the session.
 - It needs someone to ask: in print mode and other runs without a user the action fails.
 
+**Sign in from the web page.** In the Browser tab of `azazel remote`, **Sign in** shows the agents' own browser profile in a window on the computer that runs azazel, optionally opened on an address, without pausing the agents and without asking anyone. It needs a control link. The window stays until the session ends. To sign in without a session, `azazel browser open [URL]` opens the same profile in a window and waits until you close it; it fails with a message when the agents' browser is already running on the profile.
+
+### Watching and taking over from the web page
+
+`azazel remote` can show the tab the agents' browser is on, live, and let you click, scroll, type and navigate in it. Pictures are produced only while a device watches. Their rate and size are set by `[browser] live_fps` (default 5, 1 to 15), `live_quality` (default 60, JPEG quality 20 to 90) and `live_max_width` (default 1280, 320 to 1920). Who may watch is set in [remote](remote.md#watching-the-agents-browser).
+
+- **Take over.** While you hold the browser, the agents' next `browser` action (or `handoff`) waits; other tools keep running. Clicks and scrolls are sent as fractions of the picture, so the size of your screen does not matter. Only one device holds the browser. It is released when you hand it back, disconnect, or the session ends.
+- **Hand back.** The agent's next browser result starts with a line such as `the user used the browser while you waited: went to https://example.com/in, clicked 3 times, typed in 1 field. Refs from earlier snapshots may be stale.` Typed text is never part of it, because it may be a password. The agent's next snapshot of every tab is sent whole, not as changes.
+
 ### Waiting
 
 `wait` returns as soon as its condition holds, with the time it took, and fails with `` `<for>` did not happen within <n> ms `` at `timeout_ms`. Waiting for what an action should bring about, rather than acting again at once, is what keeps a run from tripping over a page that has not settled.

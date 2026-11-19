@@ -99,6 +99,7 @@ impl Bench {
             profile: dir.join("profile"),
             screenshot_scale,
             snapshot_diff: true,
+            live: azazel_browser::LiveSettings::default(),
         };
         let session = Arc::new(BrowserSession::new(settings).with_logins(logins.clone()));
         let services = Arc::new(Services::default());
@@ -681,4 +682,120 @@ async fn a_second_snapshot_of_a_page_is_the_changes_only_and_old_refs_still_work
     assert_eq!(ref_of(&first, "Buy now"), buy);
     step(5, json!({ "action": "click", "ref": buy })).await;
     bench.session.shutdown().await;
+}
+
+/// A page that is one big button: a click anywhere in the top half changes the title.
+const LIVE_PAGE: &str = r#"<!doctype html>
+<html><head><title>before</title></head>
+<body style="margin:0">
+<button style="position:fixed;left:0;top:0;width:100vw;height:50vh" onclick="document.title = 'clicked'">Big</button>
+</body></html>"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watched_tab_sends_pictures_and_a_taken_over_browser_holds_the_agent_until_it_is_given_back() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bench = Bench::new(dir.path());
+    let site = serve(LIVE_PAGE).await;
+    bench.ok(json!({ "action": "open", "url": site })).await;
+
+    // Pictures are produced for a watcher, and are JPEGs.
+    let session = bench.session.clone();
+    let mut frames = session.frames();
+    session.watch(true).await;
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if let Some(frame) = frames.borrow_and_update().clone() {
+                return frame;
+            }
+            frames.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&frame.data)
+        .unwrap();
+    assert_eq!(bytes[..2], [0xFF, 0xD8]);
+    assert!(frame.width > 0 && frame.height > 0 && frame.seq >= 1);
+    assert_eq!(session.states().borrow().watchers, 1);
+
+    // One device holds the browser at a time.
+    session.take("phone").unwrap();
+    assert_eq!(
+        session.take("laptop").unwrap_err(),
+        "another device has the browser"
+    );
+    assert!(session.states().borrow().held);
+    assert!(
+        session
+            .user_input("laptop", azazel_browser::LiveInput::Reload)
+            .await
+            .is_err()
+    );
+
+    // The agent's next action waits for the hand back; other work is not blocked.
+    let waiting = {
+        let session = session.clone();
+        tokio::spawn(async move {
+            session
+                .act_as(
+                    "lead",
+                    None,
+                    azazel_browser::Input {
+                        action: "snapshot".into(),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .await
+        })
+    };
+    session
+        .user_input(
+            "phone",
+            azazel_browser::LiveInput::Click {
+                x: 0.5,
+                y: 0.25,
+                button: azazel_browser::LiveButton::Left,
+                count: 1,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(!waiting.is_finished());
+    session.give_back("phone");
+    let blocks = tokio::time::timeout(std::time::Duration::from_secs(20), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let text = match blocks.as_slice() {
+        [azazel_ai::Block::Text { text }] => text.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        text.starts_with(
+            "the user used the browser while you waited: clicked once. Refs from earlier snapshots may be stale.\n"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("Big"), "{text}");
+    assert!(!session.states().borrow().held);
+    // The page really got the click, and the note is told once.
+    assert_eq!(
+        bench
+            .ok(json!({ "action": "eval", "expression": "document.title" }))
+            .await,
+        "\"clicked\""
+    );
+
+    // The last watcher leaving stops the pictures.
+    session.watch(false).await;
+    assert_eq!(session.states().borrow().watchers, 0);
+    session.shutdown().await;
+    assert!(!session.states().borrow().running);
 }

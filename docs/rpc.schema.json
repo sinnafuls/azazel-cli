@@ -1050,6 +1050,76 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "browser_watch"
+            },
+            "on": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "on"
+          ],
+          "description": "Starts (`on`) or stops receiving `browser_frame` frames, a live picture of the tab the\nagents' browser shows. Frames are produced only while someone watches. Answers with\n[`BrowserState`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "browser_take"
+            },
+            "on": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "type",
+            "on"
+          ],
+          "description": "Takes over the agents' browser (`on`), or hands it back. While it is taken over, the\nagents' next browser action waits, and `browser_input` is accepted from this client only;\nwhen it is handed back the agent is told what you did. Answers with [`BrowserState`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "browser_input"
+            },
+            "input": {
+              "$ref": "#/$defs/BrowserInput"
+            }
+          },
+          "required": [
+            "type",
+            "input"
+          ],
+          "description": "Clicks, types, scrolls or navigates in the agents' browser. Refused unless this client\nhas taken the browser over with `browser_take`. Answers with [`BrowserState`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "browser_sign_in"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Shows the agents' own browser profile in a visible window on the machine that runs\nazazel, to sign in to sites, optionally opened on `url` (http or https). Answers with\n[`BrowserState`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "attach"
             },
             "pid": {
@@ -1221,6 +1291,159 @@
         }
       ],
       "description": "Where a command of `list_commands` comes from."
+    },
+    "BrowserInput": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "click"
+            },
+            "x": {
+              "type": "number",
+              "format": "double"
+            },
+            "y": {
+              "type": "number",
+              "format": "double"
+            },
+            "button": {
+              "$ref": "#/$defs/MouseButton",
+              "default": "left"
+            },
+            "count": {
+              "type": "integer",
+              "format": "uint8",
+              "minimum": 0,
+              "maximum": 255,
+              "default": 0
+            }
+          },
+          "required": [
+            "kind",
+            "x",
+            "y"
+          ],
+          "description": "A click, or with `count` 2 a double click."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "scroll"
+            },
+            "x": {
+              "type": "number",
+              "format": "double"
+            },
+            "y": {
+              "type": "number",
+              "format": "double"
+            },
+            "dy": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "required": [
+            "kind",
+            "x",
+            "y",
+            "dy"
+          ],
+          "description": "Scrolls the wheel at the point by `dy` pixels (down is positive)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "key"
+            },
+            "keys": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "keys"
+          ],
+          "description": "Presses keys, as the browser tool's `press` does (`Enter`, `Control+A`, `Shift+Tab`)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ],
+          "description": "Types text into the focused field."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "navigate"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "description": "Goes to an http or https address (or `about:blank`)."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "back"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "One page back in the history."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "reload"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "Loads the page again."
+        }
+      ],
+      "description": "What a client does in the agents' browser while it has taken it over. `x` and `y` are\nfractions (0 to 1) of the frame the client sees, from its top left corner."
+    },
+    "MouseButton": {
+      "type": "string",
+      "enum": [
+        "left",
+        "middle",
+        "right"
+      ],
+      "description": "The button of a click in [`BrowserInput`]."
     },
     "Replay": {
       "oneOf": [
@@ -2045,6 +2268,59 @@
             "request_id"
           ],
           "description": "Background sessions only: the `approval_request` or `ui_request` with this id no longer\nwaits. Another client answered it, or whoever asked gave up."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "browser_frame"
+            },
+            "tab": {
+              "type": "string"
+            },
+            "data": {
+              "type": "string"
+            },
+            "width": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "height": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "tab",
+            "data",
+            "width",
+            "height",
+            "seq"
+          ],
+          "description": "One picture of the tab the agents' browser shows, sent to the clients that asked for it\nwith `browser_watch`. Ephemeral: it has no `at`, is never written to the log and is never\nreplayed. `data` is a base64 JPEG; `seq` counts the frames of the session."
+        },
+        {
+          "$ref": "#/$defs/BrowserState",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "browser_state"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "What the agents' browser is doing, sent to every attached client whenever the tab, its\naddress, the hold or whether a browser runs changes. Ephemeral like `browser_frame`."
         }
       ],
       "description": "One line from azazel. `type` names the frame; frames of an agent carry its id as `agent`\n(`lead` for the main agent)."
@@ -2419,6 +2695,58 @@
         "roles"
       ],
       "description": "The data of `get_theme` and the `theme` frame."
+    },
+    "BrowserState": {
+      "type": "object",
+      "properties": {
+        "running": {
+          "type": "boolean",
+          "description": "Whether a browser is running.",
+          "default": false
+        },
+        "visible": {
+          "type": "boolean",
+          "description": "Whether its window is shown on the machine that runs azazel.",
+          "default": false
+        },
+        "tab": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The tab that is shown."
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "held": {
+          "type": "boolean",
+          "description": "Whether a client has taken the browser over and the agents wait.",
+          "default": false
+        },
+        "held_by_you": {
+          "type": "boolean",
+          "description": "Whether that client is the one this state is sent to.",
+          "default": false
+        },
+        "watchers": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "How many clients watch the browser.",
+          "default": 0
+        }
+      },
+      "description": "The data of the browser commands and the `browser_state` frame."
     },
     "State": {
       "type": "object",

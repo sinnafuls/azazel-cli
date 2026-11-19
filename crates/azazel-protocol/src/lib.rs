@@ -368,6 +368,24 @@ pub enum Command {
     /// Forgets every remembered approval and every rule added in this session, as
     /// `/forget-approvals` does. Answers with [`Forgotten`].
     ForgetApprovals,
+    /// Starts (`on`) or stops receiving `browser_frame` frames, a live picture of the tab the
+    /// agents' browser shows. Frames are produced only while someone watches. Answers with
+    /// [`BrowserState`].
+    BrowserWatch { on: bool },
+    /// Takes over the agents' browser (`on`), or hands it back. While it is taken over, the
+    /// agents' next browser action waits, and `browser_input` is accepted from this client only;
+    /// when it is handed back the agent is told what you did. Answers with [`BrowserState`].
+    BrowserTake { on: bool },
+    /// Clicks, types, scrolls or navigates in the agents' browser. Refused unless this client
+    /// has taken the browser over with `browser_take`. Answers with [`BrowserState`].
+    BrowserInput { input: BrowserInput },
+    /// Shows the agents' own browser profile in a visible window on the machine that runs
+    /// azazel, to sign in to sites, optionally opened on `url` (http or https). Answers with
+    /// [`BrowserState`].
+    BrowserSignIn {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
     /// Background sessions only, and the first command on a connection to one: makes the
     /// connection a client of the session, beside any that are attached already. The frames
     /// `replay` asks for follow the response, then the requests that still wait for an answer,
@@ -817,6 +835,19 @@ pub enum Frame {
     RequestClosed {
         request_id: String,
     },
+    /// One picture of the tab the agents' browser shows, sent to the clients that asked for it
+    /// with `browser_watch`. Ephemeral: it has no `at`, is never written to the log and is never
+    /// replayed. `data` is a base64 JPEG; `seq` counts the frames of the session.
+    BrowserFrame {
+        tab: String,
+        data: String,
+        width: u32,
+        height: u32,
+        seq: u64,
+    },
+    /// What the agents' browser is doing, sent to every attached client whenever the tab, its
+    /// address, the hold or whether a browser runs changes. Ephemeral like `browser_frame`.
+    BrowserState(BrowserState),
     /// A frame this version of the crate does not know.
     #[serde(other)]
     #[schemars(skip)]
@@ -1567,6 +1598,67 @@ pub struct Forgotten {
     pub message: String,
 }
 
+/// What a client does in the agents' browser while it has taken it over. `x` and `y` are
+/// fractions (0 to 1) of the frame the client sees, from its top left corner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BrowserInput {
+    /// A click, or with `count` 2 a double click.
+    Click {
+        x: f64,
+        y: f64,
+        #[serde(default)]
+        button: MouseButton,
+        #[serde(default)]
+        count: u8,
+    },
+    /// Scrolls the wheel at the point by `dy` pixels (down is positive).
+    Scroll { x: f64, y: f64, dy: f64 },
+    /// Presses keys, as the browser tool's `press` does (`Enter`, `Control+A`, `Shift+Tab`).
+    Key { keys: String },
+    /// Types text into the focused field.
+    Text { text: String },
+    /// Goes to an http or https address (or `about:blank`).
+    Navigate { url: String },
+    /// One page back in the history.
+    Back,
+    /// Loads the page again.
+    Reload,
+}
+
+/// The button of a click in [`BrowserInput`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    #[default]
+    Left,
+    Middle,
+    Right,
+}
+
+/// The data of the browser commands and the `browser_state` frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct BrowserState {
+    /// Whether a browser is running.
+    pub running: bool,
+    /// Whether its window is shown on the machine that runs azazel.
+    pub visible: bool,
+    /// The tab that is shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether a client has taken the browser over and the agents wait.
+    pub held: bool,
+    /// Whether that client is the one this state is sent to.
+    pub held_by_you: bool,
+    /// How many clients watch the browser.
+    pub watchers: u32,
+}
+
 /// The JSON Schema of the protocol: a line is a [`Request`] or a [`Frame`]; the results are
 /// among the definitions.
 pub fn schema() -> Value {
@@ -1601,6 +1693,7 @@ pub fn schema() -> Value {
     generator.subschema_for::<TrustState>();
     generator.subschema_for::<DirList>();
     generator.subschema_for::<Forgotten>();
+    generator.subschema_for::<BrowserState>();
     let definitions = generator.take_definitions(true);
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

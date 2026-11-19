@@ -253,6 +253,12 @@ struct Shown {
 pub struct Baselines(Mutex<HashMap<(String, String), Shown>>);
 
 impl Baselines {
+    /// Forgets every snapshot shown, so that the next one of each tab is sent whole: the page may
+    /// have been changed by someone else since.
+    pub fn forget_all(&self) {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).clear();
+    }
+
     /// The text to give `agent` for a snapshot of `tab` at `url`: `header` then `body`, or then
     /// only what changed since the snapshot the agent was shown last. `live` says whether the
     /// result of a call is still in the agent's context.
@@ -1041,5 +1047,21 @@ mod tests {
             tokens_text(&sent)
         );
         assert!(sent.len() * 5 < second.text.len());
+    }
+
+    #[test]
+    fn after_forget_all_the_next_snapshot_of_every_tab_is_whole() {
+        let baselines = Baselines::default();
+        let all = |_: &str| true;
+        let page = ("lead", "T1", "http://shop/");
+        let shot = snapshot(&[node("1", None, "RootWebArea", "Shop", &[], 10)]);
+        baselines.revise(page, ("", &shot.text), "c1", &all);
+        assert!(
+            baselines
+                .revise(page, ("", &shot.text), "c2", &all)
+                .contains("unchanged")
+        );
+        baselines.forget_all();
+        assert_eq!(baselines.revise(page, ("", &shot.text), "c3", &all), shot.text);
     }
 }

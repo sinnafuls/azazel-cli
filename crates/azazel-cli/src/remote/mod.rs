@@ -99,6 +99,7 @@ pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -
         redact: remote.redact,
         allow_bypass: remote.allow_bypass,
         full_access: remote.full_access,
+        view_browser: remote.view_browser,
         gated: azazel_core::config::is_trust_gated,
     };
     let rules = Rules::of(paths.home.clone(), std::env::home_dir(), remote);

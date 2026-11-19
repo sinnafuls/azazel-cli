@@ -151,6 +151,7 @@ pub fn options() -> Options {
         redact: true,
         allow_bypass: false,
         full_access: false,
+        view_browser: false,
         gated: |_| false,
     }
 }

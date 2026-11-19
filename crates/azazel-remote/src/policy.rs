@@ -66,6 +66,12 @@ const CONTROL: &[&str] = &[
     "list_files",
     "get_settings",
     "stop",
+    // Pixels of the browser are not redacted, and a control device can already make the agent do
+    // anything in it; only watching may be opened to view links (`Grants::view_browser`).
+    "browser_watch",
+    "browser_take",
+    "browser_input",
+    "browser_sign_in",
 ];
 
 /// The commands a control device may send only with what they carry checked, or not at all
@@ -93,6 +99,8 @@ pub struct Grants {
     pub allow_bypass: bool,
     /// `remote.full_access`: everything the terminal can do.
     pub full_access: bool,
+    /// `remote.view_browser`: a view device may watch the agents' browser (`browser_watch`).
+    pub view_browser: bool,
     /// Whether a configuration key is one a project may set only once it is trusted. The server
     /// does not know the configuration, so whoever starts it says.
     pub gated: fn(&str) -> bool,
@@ -117,6 +125,7 @@ impl Default for Grants {
         Grants {
             allow_bypass: false,
             full_access: false,
+            view_browser: false,
             gated: nothing_is_gated,
         }
     }
@@ -280,7 +289,7 @@ pub fn check(access: Access, command: &Value, grants: Grants) -> Result<(), Stri
         return Err("a command has a `type`".to_string());
     };
     if access == Access::View {
-        return match VIEW.contains(&kind) {
+        return match VIEW.contains(&kind) || (kind == "browser_watch" && grants.view_browser) {
             true => Ok(()),
             false => Err(format!("this is a view link: `{kind}` needs a control link")),
         };
@@ -687,6 +696,25 @@ mod tests {
                 known.iter().any(|known| known == kind),
                 "{kind} is not in the protocol"
             );
+        }
+    }
+
+    #[test]
+    fn watching_the_browser_is_for_control_links_unless_view_browser_opens_it_to_view_links() {
+        let watch = json!({ "type": "browser_watch", "on": true });
+        let open = Grants {
+            view_browser: true,
+            ..Grants::default()
+        };
+        assert!(check(Access::View, &watch, bypass(false)).is_err());
+        assert!(check(Access::View, &watch, open).is_ok());
+        assert!(check(Access::Control, &watch, bypass(false)).is_ok());
+        // Taking over, typing and signing in are never a view link's, whatever it may watch.
+        for kind in ["browser_take", "browser_input", "browser_sign_in"] {
+            let command = json!({ "type": kind });
+            assert!(check(Access::View, &command, open).is_err(), "{kind}");
+            assert!(check(Access::View, &command, full()).is_err(), "{kind}");
+            assert!(check(Access::Control, &command, bypass(false)).is_ok(), "{kind}");
         }
     }
 

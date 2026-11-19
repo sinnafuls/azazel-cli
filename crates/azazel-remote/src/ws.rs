@@ -49,6 +49,12 @@ fn failure(id: Value, why: impl Into<String>) -> Message {
     answer(Response::err(id, why))
 }
 
+/// Whether `line` is a `browser_frame` that should be dropped because `queued` lines already wait
+/// for this client: a slow device sees fewer pictures instead of being cut off.
+fn stale_frame(line: &str, queued: usize) -> bool {
+    queued > 1 && line.starts_with(r#"{"type":"browser_frame""#)
+}
+
 /// A response to one of the `list_commands` in `listings` keeps only the commands a browser may
 /// run, so that its menu offers nothing the policy would refuse. Any other line goes out as it is.
 fn only_allowed(line: String, listings: &mut Vec<Value>, grants: Grants) -> String {
@@ -113,6 +119,10 @@ pub(crate) async fn run<S>(
                 };
                 if conn.frames.len() >= QUEUE {
                     return close(&mut socket, 4408, "too slow: reconnect and attach with `since`").await;
+                }
+                // A picture of the browser is worth nothing once a newer one waits behind it.
+                if stale_frame(&line, conn.frames.len()) {
+                    continue;
                 }
                 let line = match listings.is_empty() {
                     true => line,
@@ -181,5 +191,21 @@ pub(crate) async fn run<S>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stale_frame;
+
+    #[test]
+    fn a_picture_of_the_browser_is_dropped_only_when_lines_already_wait() {
+        let frame = r#"{"type":"browser_frame","tab":"t","data":"","width":1,"height":1,"seq":1}"#;
+        assert!(!stale_frame(frame, 0));
+        assert!(!stale_frame(frame, 1));
+        assert!(stale_frame(frame, 2));
+        // Every other line is kept, however long the queue.
+        assert!(!stale_frame(r#"{"type":"browser_state","running":true}"#, 50));
+        assert!(!stale_frame(r#"{"type":"stream","agent":"lead"}"#, 50));
     }
 }

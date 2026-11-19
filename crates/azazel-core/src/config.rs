@@ -390,6 +390,9 @@ config_table!(RemoteConfig {
     /// write files and the configuration, sign in, trust projects and start sessions in any
     /// folder. A view link stays view-only.
     full_access: bool = false,
+    /// Let a view link watch the agents' browser live too. The picture is not redacted, so
+    /// by default only a control link may.
+    view_browser: bool = false,
     /// Folders a browser may start sessions in, beside the projects sessions have worked in;
     /// the folders inside them too. `~` is the home directory.
     folders: Vec<String> = Vec::new(),
@@ -564,6 +567,12 @@ config_table!(BrowserConfig {
     screenshot_scale: f64 = 1.0,
     /// A snapshot of the page the agent's last snapshot of the tab showed sends only what changed.
     snapshot_diff: bool = true,
+    /// Pictures per second of the live view in the web page (1 to 15).
+    live_fps: u32 = 5,
+    /// JPEG quality of the live view (20 to 90).
+    live_quality: u32 = 60,
+    /// Width in pixels the live view is scaled down to (320 to 1920).
+    live_max_width: u32 = 1280,
 });
 config_table!(UpdateConfig {
     /// Look for a newer release on GitHub at most once a day, in the background.

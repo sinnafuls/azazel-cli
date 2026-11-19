@@ -252,6 +252,22 @@ export type Request1 =
 			type: 'forget_approvals';
 	  }
 	| {
+			type: 'browser_watch';
+			on: boolean;
+	  }
+	| {
+			type: 'browser_take';
+			on: boolean;
+	  }
+	| {
+			type: 'browser_input';
+			input: BrowserInput;
+	  }
+	| {
+			type: 'browser_sign_in';
+			url?: string | null;
+	  }
+	| {
 			type: 'attach';
 			pid?: number | null;
 			/**
@@ -282,6 +298,45 @@ export type ExportFormat = 'markdown' | 'html' | 'jsonl';
  */
 export type CommandOrigin = 'builtin' | 'skill' | 'mcp' | 'custom' | 'script';
 /**
+ * What a client does in the agents' browser while it has taken it over. `x` and `y` are
+ * fractions (0 to 1) of the frame the client sees, from its top left corner.
+ */
+export type BrowserInput =
+	| {
+			kind: 'click';
+			x: number;
+			y: number;
+			/**
+			 * The button of a click in [`BrowserInput`].
+			 */
+			button?: 'left' | 'middle' | 'right';
+			count?: number;
+	  }
+	| {
+			kind: 'scroll';
+			x: number;
+			y: number;
+			dy: number;
+	  }
+	| {
+			kind: 'key';
+			keys: string;
+	  }
+	| {
+			kind: 'text';
+			text: string;
+	  }
+	| {
+			kind: 'navigate';
+			url: string;
+	  }
+	| {
+			kind: 'back';
+	  }
+	| {
+			kind: 'reload';
+	  };
+/**
  * What `rewind` takes back.
  */
 export type RewindWhat = 'both' | 'code' | 'conversation';
@@ -289,6 +344,10 @@ export type RewindWhat = 'both' | 'code' | 'conversation';
  * Where `set_role` keeps a change.
  */
 export type SaveTo = 'session' | 'home' | 'project';
+/**
+ * The button of a click in [`BrowserInput`].
+ */
+export type MouseButton = 'left' | 'middle' | 'right';
 /**
  * What a client that attaches to a background session is sent of what happened before.
  */
@@ -515,7 +574,18 @@ export type Frame =
 	| {
 			type: 'request_closed';
 			request_id: string;
-	  };
+	  }
+	| {
+			type: 'browser_frame';
+			tab: string;
+			data: string;
+			width: number;
+			height: number;
+			seq: number;
+	  }
+	| (BrowserState & {
+			type: 'browser_state';
+	  });
 /**
  * A part of the message the model is writing. Deltas are for display; `message_end` carries
  * the complete message.
@@ -585,6 +655,8 @@ export interface Rpc {
 	ExportFormat?: ExportFormat;
 	SaveTo?: SaveTo;
 	CommandOrigin?: CommandOrigin;
+	BrowserInput?: BrowserInput;
+	MouseButton?: MouseButton;
 	Replay?: Replay;
 	Frame?: Frame;
 	Response?: Response;
@@ -594,6 +666,7 @@ export interface Rpc {
 	AskKind?: AskKind;
 	Question?: Question;
 	ThemeColors?: ThemeColors;
+	BrowserState?: BrowserState;
 	State?: State;
 	Usage?: Usage1;
 	PrimaryAgent?: PrimaryAgent;
@@ -763,6 +836,37 @@ export interface ThemeColors {
 	roles: {
 		[k: string]: string;
 	};
+}
+/**
+ * The data of the browser commands and the `browser_state` frame.
+ */
+export interface BrowserState {
+	/**
+	 * Whether a browser is running.
+	 */
+	running?: boolean;
+	/**
+	 * Whether its window is shown on the machine that runs azazel.
+	 */
+	visible?: boolean;
+	/**
+	 * The tab that is shown.
+	 */
+	tab?: string | null;
+	url?: string | null;
+	title?: string | null;
+	/**
+	 * Whether a client has taken the browser over and the agents wait.
+	 */
+	held?: boolean;
+	/**
+	 * Whether that client is the one this state is sent to.
+	 */
+	held_by_you?: boolean;
+	/**
+	 * How many clients watch the browser.
+	 */
+	watchers?: number;
 }
 /**
  * The session as `get_state` and the session commands report it.

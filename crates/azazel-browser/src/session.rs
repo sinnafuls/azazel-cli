@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -15,9 +15,12 @@ use process_wrap::tokio::ChildWrapper;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
+use tokio::sync::{Notify, watch};
+use tokio_util::sync::CancellationToken;
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
 use crate::launch::{LEFT_AT_ONCE, NOT_FOUND, find_binary, launch};
+use crate::live::{self, BrowserStateInfo, Feed, LiveFrame, LiveInput, LiveSettings, UserActions};
 use crate::page::{self, Baselines, Condition, Key, ShotFrame};
 
 pub const NO_TAB: &str = "no tab is open; use the `open` action first";
@@ -60,6 +63,8 @@ pub struct Settings {
     /// `[browser] snapshot_diff`: refs keep their numbers within a tab, and a snapshot of the page
     /// the agent last saw is sent as what changed.
     pub snapshot_diff: bool,
+    /// `[browser] live_fps`, `live_quality` and `live_max_width`: the live view.
+    pub live: LiveSettings,
 }
 
 /// A snapshot an action returned: what [`Baselines::revise`] needs to send only what changed.
@@ -327,6 +332,32 @@ impl Running {
             taken: None,
             agent: String::new(),
         })
+    }
+
+    /// The tab used last.
+    fn current_tab(&self) -> Option<&Tab> {
+        let name = self.current.as_ref()?;
+        self.tabs.iter().find(|tab| &tab.name == name)
+    }
+
+    /// What the browser is doing now, for the clients that watch it.
+    async fn describe(&self) -> BrowserStateInfo {
+        let mut info = BrowserStateInfo {
+            running: true,
+            visible: !self.headless,
+            ..BrowserStateInfo::default()
+        };
+        if let Some(tab) = self.current_tab() {
+            info.tab = Some(tab.name.clone());
+            if let Ok(Value::Array(parts)) = self
+                .evaluate(&tab.session, "[document.title, location.href]")
+                .await
+            {
+                let part = |n: usize| parts.get(n).and_then(Value::as_str).map(str::to_string);
+                (info.title, info.url) = (part(0), part(1));
+            }
+        }
+        info
     }
 
     /// A page to open a tab on: the blank one the browser started with, else a new one.
@@ -1243,6 +1274,16 @@ impl Running {
     }
 }
 
+/// An `Input` for one of the actions the controls of the web page come to.
+fn action_input(name: &str, url: Option<&str>, tab: Option<&str>) -> Input {
+    Input {
+        action: name.to_string(),
+        url: url.map(str::to_string),
+        tab: tab.map(str::to_string),
+        ..Input::default()
+    }
+}
+
 /// The browser of a session. Nothing runs until the first action.
 pub struct BrowserSession {
     settings: Settings,
@@ -1255,6 +1296,26 @@ pub struct BrowserSession {
     taken: Mutex<HashMap<String, Taken>>,
     /// What each agent was last shown of each tab.
     baselines: Baselines,
+    /// The pictures of the tab being watched.
+    feed: Arc<Feed>,
+    /// What the browser is doing, for the clients that watch it.
+    state_tx: watch::Sender<BrowserStateInfo>,
+    /// How many clients watch: the screencast runs while there is one.
+    watchers: AtomicU32,
+    /// The client that has taken the browser over; the agents' actions wait while there is one.
+    hold: Mutex<Option<String>>,
+    released: Notify,
+    /// What the holder did, to tell the agent when it gets the browser back.
+    acted: Mutex<UserActions>,
+    /// The screencast that runs now.
+    cast: tokio::sync::Mutex<Option<Cast>>,
+}
+
+/// A running screencast of one tab.
+struct Cast {
+    cdp: Arc<Cdp>,
+    session: String,
+    cancel: CancellationToken,
 }
 
 impl BrowserSession {
@@ -1266,6 +1327,13 @@ impl BrowserSession {
             typed: Mutex::default(),
             taken: Mutex::default(),
             baselines: Baselines::default(),
+            feed: Arc::new(Feed::new()),
+            state_tx: watch::channel(BrowserStateInfo::default()).0,
+            watchers: AtomicU32::new(0),
+            hold: Mutex::new(None),
+            released: Notify::new(),
+            acted: Mutex::default(),
+            cast: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -1342,10 +1410,12 @@ impl BrowserSession {
         input: Input,
         artifacts: Option<&ArtifactStore>,
     ) -> Result<Vec<Block>, String> {
+        self.wait_for_release().await;
         let mut state = self.state.lock().await;
         // The user closed the window, or the browser crashed: start over.
         if state.as_ref().is_some_and(|running| running.cdp.is_closed()) {
             *state = None;
+            self.settle(None).await;
         }
         if state.is_none() {
             match input.action.as_str() {
@@ -1372,9 +1442,42 @@ impl BrowserSession {
         }
         running.taken = None;
         running.agent = agent.to_string();
+        let note = self.user_note();
         let done = running.act(&input, artifacts).await;
+        let done = self.with_note(note, done, running);
         self.keep_taken(call_id, running);
+        self.settle(state.as_ref()).await;
         done
+    }
+
+    /// What the user did in the browser since the agent last used it, as a line to put before the
+    /// next result.
+    fn user_note(&self) -> Option<String> {
+        self.acted.lock().unwrap_or_else(PoisonError::into_inner).note()
+    }
+
+    /// `done` with `note` before its text, and the note forgotten; the snapshot `running` took
+    /// gets it too, so that [`BrowserSession::revise`] still finds the result as it was produced.
+    fn with_note(
+        &self,
+        note: Option<String>,
+        done: Result<Vec<Block>, String>,
+        running: &mut Running,
+    ) -> Result<Vec<Block>, String> {
+        let Some(note) = note else {
+            return done;
+        };
+        // A failed action keeps the note for the next one.
+        let mut blocks = done?;
+        *self.acted.lock().unwrap_or_else(PoisonError::into_inner) = UserActions::default();
+        match blocks.first_mut() {
+            Some(Block::Text { text }) => *text = format!("{note}{text}"),
+            _ => blocks.insert(0, Block::text(note.clone())),
+        }
+        if let Some(taken) = &mut running.taken {
+            taken.header = format!("{note}{}", taken.header);
+        }
+        Ok(blocks)
     }
 
     /// `done` without the passwords `fill_login` typed, whatever the page did with them.
@@ -1449,41 +1552,18 @@ impl BrowserSession {
             .map(str::trim)
             .filter(|reason| !reason.is_empty())
             .ok_or("`handoff` needs `reason`: what the user is asked to do in the browser")?;
+        self.wait_for_release().await;
         let mut state = self.state.lock().await;
-        let running = match state.take().filter(|running| !running.cdp.is_closed()) {
-            Some(hidden) if hidden.headless => {
-                let (pages, current) = (hidden.pages().await, hidden.current.clone());
-                let mut left = hidden.close(LEAVE).await;
-                // The next browser needs the profile: the whole process tree has to be gone.
-                let _ = tokio::time::timeout(LEAVE, left.wait()).await;
-                drop(left);
-                let mut shown = self.start_again(headless).await?;
-                shown.reopen(pages, current).await?;
-                shown
-            }
-            Some(shown) => shown,
-            None => Running::start(&self.settings, headless).await?,
-        };
-        let running = state.insert(running);
-        if let Some(address) = &input.url {
-            let action = match (&input.tab, &running.current) {
-                (None, Some(_)) => "navigate",
-                _ => "open",
-            };
-            let go = Input {
-                action: action.to_string(),
-                url: Some(address.clone()),
-                tab: input.tab.clone(),
-                ..Input::default()
-            };
-            running.agent = agent.to_string();
-            running.act(&go, None).await?;
-        }
-        if let Ok(index) = running.tab(input.tab.as_deref()) {
-            let _ = running
-                .call(&running.tabs[index].session, "Page.bringToFront", json!({}))
-                .await;
-        }
+        self.show(
+            &mut state,
+            headless,
+            input.url.as_deref(),
+            input.tab.as_deref(),
+            agent,
+        )
+        .await?;
+        self.settle(state.as_ref()).await;
+        let running = state.as_mut().ok_or(NO_TAB)?;
 
         // A short first line: an interface with boxes makes it the title of the box.
         let prompt = format!(
@@ -1503,8 +1583,14 @@ impl BrowserSession {
             "" => "the user finished in the browser".to_string(),
             note => format!("the user finished in the browser and says: {note}"),
         };
+        // What the user did through the web page before this is told as well.
+        if let Some(note) = self.user_note() {
+            said = format!("{note}{said}");
+            *self.acted.lock().unwrap_or_else(PoisonError::into_inner) = UserActions::default();
+        }
         if running.cdp.is_closed() {
             *state = None;
+            self.settle(None).await;
             return Ok(vec![Block::text(format!(
                 "{said}\nthe browser was closed; `open` starts it again"
             ))]);
@@ -1519,14 +1605,338 @@ impl BrowserSession {
             said = running.snapshot_taken(index, said).await?;
             self.keep_taken(call_id, running);
         }
+        self.settle(state.as_ref()).await;
         Ok(vec![Block::text(said)])
     }
 
-    /// Closes the browser if it runs. The next action starts a new one.
+    /// Makes sure a browser with a window runs on the profile, with the tabs the agents had, and
+    /// opens `url` in it when given. A browser without a window is closed and started again,
+    /// which needs the profile to be free. `headless` is for tests, which have no screen.
+    async fn show(
+        &self,
+        state: &mut Option<Running>,
+        headless: bool,
+        url: Option<&str>,
+        tab: Option<&str>,
+        agent: &str,
+    ) -> Result<(), String> {
+        let running = match state.take().filter(|running| !running.cdp.is_closed()) {
+            Some(hidden) if hidden.headless => {
+                let (pages, current) = (hidden.pages().await, hidden.current.clone());
+                let mut left = hidden.close(LEAVE).await;
+                // The next browser needs the profile: the whole process tree has to be gone.
+                let _ = tokio::time::timeout(LEAVE, left.wait()).await;
+                drop(left);
+                let mut shown = self.start_again(headless).await?;
+                shown.reopen(pages, current).await?;
+                shown
+            }
+            Some(shown) => shown,
+            None => Running::start(&self.settings, headless).await?,
+        };
+        let running = state.insert(running);
+        if let Some(address) = url {
+            let action = match (tab, &running.current) {
+                (None, Some(_)) => "navigate",
+                _ => "open",
+            };
+            running.agent = agent.to_string();
+            running
+                .act(&action_input(action, Some(address), tab), None)
+                .await?;
+        }
+        if let Ok(index) = running.tab(tab) {
+            let _ = running
+                .call(&running.tabs[index].session, "Page.bringToFront", json!({}))
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Shows the browser in a window, on the agents' profile and with their tabs, for the user to
+    /// sign in to sites; `url` is opened when given. The agents are not held and nobody is asked:
+    /// the window stays until the session ends.
+    pub async fn sign_in(&self, url: Option<&str>) -> Result<(), String> {
+        self.sign_in_with(url, false).await
+    }
+
+    async fn sign_in_with(&self, url: Option<&str>, headless: bool) -> Result<(), String> {
+        if let Some(url) = url
+            && page::host_of(url).is_none()
+            && url != "about:blank"
+        {
+            return Err(format!("`{url}` is not an http or https URL"));
+        }
+        let mut state = self.state.lock().await;
+        self.show(&mut state, headless, url, None, "").await?;
+        self.settle(state.as_ref()).await;
+        Ok(())
+    }
+
+    /// The pictures of the tab being watched. Nothing is sent until someone has called
+    /// [`BrowserSession::watch`].
+    pub fn frames(&self) -> watch::Receiver<Option<Arc<LiveFrame>>> {
+        self.feed.tx.subscribe()
+    }
+
+    /// What the browser is doing; changes when the tab, its address, the hold or whether a browser
+    /// runs change.
+    pub fn states(&self) -> watch::Receiver<BrowserStateInfo> {
+        self.state_tx.subscribe()
+    }
+
+    /// One more client watches (`on`) or one fewer. The screencast runs on the current tab while
+    /// there is a watcher and a browser.
+    pub async fn watch(&self, on: bool) {
+        let _ = self.watchers.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            Some(if on {
+                n.saturating_add(1)
+            } else {
+                n.saturating_sub(1)
+            })
+        });
+        self.mark();
+        let state = self.state.lock().await;
+        self.settle(state.as_ref()).await;
+    }
+
+    /// Takes the browser over for `holder`: the agents' next browser action waits until
+    /// [`BrowserSession::give_back`]. Fails while another holder has it.
+    pub fn take(&self, holder: &str) -> Result<(), String> {
+        {
+            let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+            match hold.as_deref() {
+                Some(other) if other != holder => return Err("another device has the browser".to_string()),
+                Some(_) => {}
+                None => *hold = Some(holder.to_string()),
+            }
+        }
+        self.mark();
+        Ok(())
+    }
+
+    /// Whether `holder` has the browser.
+    pub fn holds(&self, holder: &str) -> bool {
+        self.hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_deref()
+            == Some(holder)
+    }
+
+    /// Hands the browser back, if `holder` has it: the agents go on, their next snapshot is whole
+    /// and their next result says what was done.
+    pub fn give_back(&self, holder: &str) {
+        {
+            let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+            if hold.as_deref() != Some(holder) {
+                return;
+            }
+            *hold = None;
+        }
+        self.baselines.forget_all();
+        self.mark();
+        self.released.notify_waiters();
+    }
+
+    /// Does what `holder` did in the picture, in the tab shown. Fails unless `holder` has the
+    /// browser.
+    pub async fn user_input(&self, holder: &str, input: LiveInput) -> Result<(), String> {
+        if !self.holds(holder) {
+            return Err("take the browser over first".to_string());
+        }
+        let mut state = self.state.lock().await;
+        let running = state
+            .as_mut()
+            .filter(|running| !running.cdp.is_closed())
+            .ok_or("no browser is running; the agent has not opened a page yet")?;
+        let tab = running.current_tab().ok_or(NO_TAB)?.name.clone();
+        let index = running.tab(Some(&tab))?;
+        let session = running.tabs[index].session.clone();
+        let meta = self.feed.meta();
+        let at = |x: f64, y: f64| {
+            meta.map(|meta| meta.to_css(x, y))
+                .ok_or_else(|| "the picture of the page has not arrived yet".to_string())
+        };
+        match &input {
+            LiveInput::Click { x, y, button, count } => {
+                let (x, y) = at(*x, *y)?;
+                running.mouse(&session, "mouseMoved", x, y, json!({})).await?;
+                for n in 1..=(*count).clamp(1, 3) {
+                    let extra = json!({ "button": button.name(), "clickCount": n });
+                    running
+                        .mouse(&session, "mousePressed", x, y, extra.clone())
+                        .await?;
+                    running.mouse(&session, "mouseReleased", x, y, extra).await?;
+                }
+            }
+            LiveInput::Scroll { x, y, dy } => {
+                let (x, y) = at(*x, *y)?;
+                let dy = if dy.is_finite() { *dy } else { 0.0 };
+                running
+                    .mouse(&session, "mouseWheel", x, y, json!({ "deltaX": 0, "deltaY": dy }))
+                    .await?;
+            }
+            LiveInput::Key { keys } => {
+                let key = page::parse_keys(keys)?;
+                running.press(&session, &key, Duration::ZERO).await?;
+            }
+            LiveInput::Text { text } => {
+                running
+                    .call(&session, "Input.insertText", json!({ "text": text }))
+                    .await?;
+            }
+            LiveInput::Navigate { url } => {
+                if page::host_of(url).is_none() && url != "about:blank" {
+                    return Err(format!("`{url}` is not an http or https URL"));
+                }
+                running
+                    .act(&action_input("navigate", Some(url), Some(&tab)), None)
+                    .await?;
+            }
+            LiveInput::Back => {
+                running.act(&action_input("back", None, Some(&tab)), None).await?;
+            }
+            LiveInput::Reload => {
+                running
+                    .act(&action_input("reload", None, Some(&tab)), None)
+                    .await?;
+            }
+        }
+        self.acted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record(&input);
+        // Let what the input started (a script, a navigation) take hold before it is described.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.settle(state.as_ref()).await;
+        Ok(())
+    }
+
+    /// Waits while a client has taken the browser over.
+    async fn wait_for_release(&self) {
+        loop {
+            let released = self.released.notified();
+            tokio::pin!(released);
+            // Registered before the hold is read, so a release in between is not missed.
+            released.as_mut().enable();
+            if self.hold.lock().unwrap_or_else(PoisonError::into_inner).is_none() {
+                return;
+            }
+            released.await;
+        }
+    }
+
+    /// Copies the hold and the watchers into the state the clients see.
+    fn mark(&self) {
+        let held = self.hold.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        let watchers = self.watchers.load(Ordering::SeqCst);
+        self.state_tx.send_if_modified(|state| {
+            let changed = state.held != held || state.watchers != watchers;
+            (state.held, state.watchers) = (held, watchers);
+            changed
+        });
+    }
+
+    /// Brings what the clients see up to date after the browser changed: its state, and the
+    /// screencast, which follows the tab shown while someone watches.
+    async fn settle(&self, running: Option<&Running>) {
+        let watchers = self.watchers.load(Ordering::SeqCst);
+        let running = running.filter(|running| !running.cdp.is_closed());
+        match running {
+            Some(running) => {
+                if self.state_tx.receiver_count() > 0 {
+                    let mut info = running.describe().await;
+                    info.held = self.hold.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+                    info.watchers = watchers;
+                    self.state_tx.send_if_modified(|state| {
+                        let changed = *state != info;
+                        *state = info;
+                        changed
+                    });
+                }
+            }
+            None => {
+                self.state_tx.send_if_modified(|state| {
+                    let idle = BrowserStateInfo {
+                        held: state.held,
+                        watchers: state.watchers,
+                        ..BrowserStateInfo::default()
+                    };
+                    let changed = *state != idle;
+                    *state = idle;
+                    changed
+                });
+            }
+        }
+        let wanted = running.filter(|_| watchers > 0).and_then(|running| {
+            let tab = running.current_tab()?;
+            Some((running.cdp.clone(), tab.session.clone(), tab.name.clone()))
+        });
+        let mut cast = self.cast.lock().await;
+        let same = match (&*cast, &wanted) {
+            (Some(cast), Some((cdp, session, _))) => Arc::ptr_eq(&cast.cdp, cdp) && &cast.session == session,
+            (None, None) => true,
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        if let Some(old) = cast.take() {
+            old.cancel.cancel();
+            let _ = old
+                .cdp
+                .call(Some(&old.session), "Page.stopScreencast", json!({}))
+                .await;
+            self.feed.clear();
+        }
+        let Some((cdp, session, tab)) = wanted else {
+            return;
+        };
+        let live = self.settings.live.clamped();
+        let cancel = CancellationToken::new();
+        tokio::spawn(live::pump(
+            cdp.clone(),
+            cdp.subscribe(),
+            (session.clone(), tab),
+            self.feed.clone(),
+            live.fps,
+            cancel.clone(),
+        ));
+        let started = cdp
+            .call(
+                Some(&session),
+                "Page.startScreencast",
+                json!({
+                    "format": "jpeg",
+                    "quality": live.quality,
+                    "maxWidth": live.max_width,
+                    "maxHeight": live.max_width,
+                    "everyNthFrame": 1,
+                }),
+            )
+            .await;
+        match started {
+            Ok(_) => *cast = Some(Cast { cdp, session, cancel }),
+            Err(why) => {
+                cancel.cancel();
+                tracing::debug!("the live view of the browser did not start: {why}");
+            }
+        }
+    }
+
+    /// Closes the browser if it runs and lets go of a hold. The next action starts a new browser.
     pub async fn shutdown(&self) {
+        self.hold.lock().unwrap_or_else(PoisonError::into_inner).take();
+        self.released.notify_waiters();
+        if let Some(old) = self.cast.lock().await.take() {
+            old.cancel.cancel();
+        }
+        self.feed.clear();
         if let Some(running) = self.state.lock().await.take() {
             running.close(Duration::from_secs(2)).await;
         }
+        self.settle(None).await;
     }
 }
 
@@ -1552,6 +1962,7 @@ mod tests {
             profile: PathBuf::new(),
             screenshot_scale: 1.0,
             snapshot_diff: true,
+            live: crate::live::LiveSettings::default(),
         });
         let take = |call: &str, body: &str| {
             session.taken.lock().unwrap().insert(
@@ -1758,6 +2169,7 @@ mod tests {
             profile: dir.path().join("profile"),
             screenshot_scale: 1.0,
             snapshot_diff: true,
+            live: crate::live::LiveSettings::default(),
         });
         let browser = &session;
         let act = |input: Input| async move { text(browser.act(input, None).await.unwrap()) };
@@ -1858,6 +2270,7 @@ mod tests {
             profile: dir.path().join("other-profile"),
             screenshot_scale: 1.0,
             snapshot_diff: true,
+            live: crate::live::LiveSettings::default(),
         });
         let start = Input {
             url: Some(format!("{site}/start")),

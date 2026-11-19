@@ -776,6 +776,13 @@ impl Session {
             Command::AddDir { path } => data(admin::add_dir(&self.app, &path)?).map(Some),
             Command::ForgetApprovals => data(admin::forget_approvals(&self.app)?).map(Some),
             Command::RunCommand { name, args, only } => self.command(id, &name, args, only.as_deref()).await,
+            // WP3 serves these from the session's `BrowserSession`.
+            Command::BrowserWatch { .. }
+            | Command::BrowserTake { .. }
+            | Command::BrowserInput { .. }
+            | Command::BrowserSignIn { .. } => {
+                Err("the live browser view is not available in this session".to_string())
+            }
             // A background session answers these itself, before its lines get here.
             Command::Attach { .. } | Command::Stop { .. } => Err(
                 "this is not a background session: it serves the one client it was started for".to_string(),
