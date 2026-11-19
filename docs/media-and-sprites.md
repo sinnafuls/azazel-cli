@@ -9,6 +9,7 @@ Azazel can generate images, video, 3D models and audio through hosted services a
 | `fal` | image, video, 3D, audio | env `FAL_KEY`, or an entry `"fal": {"type": "api_key", "key": "..."}` in `~/.azazel/auth.json` |
 | `openai` | image | The `openai` provider's credentials (`OPENAI_API_KEY`, or `azazel login openai`) |
 | `google` | image | The `google` provider's credentials (`GEMINI_API_KEY` or `GOOGLE_API_KEY`, or `azazel login google`) |
+| `openai-codex` | image | Your ChatGPT login (`azazel login openai-codex`); counts against the plan's Codex limits, not on the Free plan |
 
 A backend is usable when its credentials are present at startup. The four `generate_*` tools are registered only when at least one backend is usable; `sprite_sheet` and `/media` are always there. See [models and logins](models-and-logins.md) for provider credentials.
 
@@ -19,7 +20,7 @@ A backend is usable when its credentials are present at startup. The four `gener
 output_dir = "assets/generated"     # relative to the project root
 
 [media.models]                      # "<backend>:<model id>"
-image   = "fal:<fal model path>"
+image   = "fal:<fal model path>"       # or "openai-codex:gpt-image-2" with a ChatGPT login
 video   = ""
 model3d = ""
 audio   = ""
@@ -30,7 +31,7 @@ audio   = ""
 | `media.output_dir` | `assets/generated` | Where generated files and sprite sheets go |
 | `media.models.image` / `video` / `model3d` / `audio` | empty | The model for each kind, as `<backend>:<model id>` |
 
-The part before the first `:` is the backend (`fal`, `openai`, `google`); the rest is that service's own model id, passed through unchanged. Every tool also takes a `model` input in the same form, which overrides the configured one for that call. With neither set the tool answers `no <kind> model configured: set [media.models] <kind> = "<backend>:<model id>"`.
+The part before the first `:` is the backend (`fal`, `openai`, `google`, `openai-codex`); the rest is that service's own model id, passed through unchanged. Every tool also takes a `model` input in the same form, which overrides the configured one for that call. With neither set the tool answers `no <kind> model configured: set [media.models] <kind> = "<backend>:<model id>"`.
 
 `/media` shows the usable backends, the configured model per kind and the output directory.
 
@@ -80,6 +81,8 @@ Beside every file a sidecar `<file>.json` records how it was made:
 ### Permissions and cost
 
 The generation tools use the network, create project files and may cost money at the provider. They prompt in `manual` and `accept-edits` mode, with the note `this creates files in the project and may cost money at the media provider`, and run without asking in `auto`. To allow one permanently, add its name as a rule, for example `allow = ["generate_image"]`. See [permissions](permissions.md).
+
+`openai-codex` sends the OpenAI Images request (`images/generations`, or `images/edits` with up to 5 input images) to the ChatGPT backend with your login. OpenAI documents image generation for paid ChatGPT plans but does not document this endpoint, so azazel checks what the backend says. When it answers 403, 404, 405 or 501, or says the plan has no image generation, azazel switches the backend off until it restarts and says why: "the ChatGPT backend did not offer image generation to azazel: use `openai:` or `google:` models", or "image generation is not available to this ChatGPT plan (it needs a paid plan; Free has none)". Either message means the endpoint is not available to you, so use another backend. Later calls fail with that message without making a request. An HTTP 429 is a usage limit: that call fails with the backend's message, and the backend stays on, so try again after the limit resets.
 
 A fal job is polled every 2 seconds and given up after 30 minutes. Aborting the agent cancels the wait.
 

@@ -14,7 +14,7 @@ use crate::tools::GenerateTool;
 pub fn report(media: &Media) -> String {
     let backends = media.backends();
     let mut out = match backends.as_slice() {
-        [] => "backends: none has credentials (set FAL_KEY, or an OpenAI or Google key)\n".to_string(),
+        [] => "backends: none has credentials (set FAL_KEY, an OpenAI or Google key, or `azazel login openai-codex`)\n".to_string(),
         ids => format!("backends: {}\n", ids.join(", ")),
     };
     for kind in MediaKind::ALL {

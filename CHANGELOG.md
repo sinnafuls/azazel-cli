@@ -9,6 +9,7 @@ GitHub are its section here.
 
 ### Added
 
+- Generate images with your ChatGPT login: `[media.models] image = "openai-codex:gpt-image-2"` after `azazel login openai-codex`. It isn't on the Free plan and uses your Codex limits; if the ChatGPT backend doesn't offer it, azazel says so once and stops asking.
 - Profiles: a set of models per role that you switch as one. Six are built in: `claude`, `gpt` (on a ChatGPT/Codex login: Astra, Sol, Terra and Luna in the places of Fable, Opus, Sonnet and Haiku), `cheap`, `thorough`, `frontend` and `research`; save your own with `/profile save <name>` or `[profiles.<name>.roles]`, which replaces a built-in of the same name. Switch with `/profile <name>` or `azazel --profile <name>`. A profile that needs a login you don't have is listed with the `azazel login <provider>` it needs and is not applied.
 - `/profile` with no name opens a picker, and the status line has a `profile` segment.
 - `[profiles] on_limit = "<name>"`: when a request hits a usage limit with a reset time, the lead moves to that profile once, the request is retried there, and you are told that the change starts a new prompt cache. Ordinary overload retries never switch. When the limit resets, `on_reset` = `ask` (default) offers the way back, `auto` takes it, `off` stays.

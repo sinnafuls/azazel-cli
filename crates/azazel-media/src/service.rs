@@ -2,7 +2,7 @@
 //! generated files go.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use azazel_ai::providers::presets;
@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::backend::{MediaBackend, MediaFile, MediaKind, MediaRequest};
+use crate::codex::CodexImages;
 use crate::fal::{FAL_URL, Fal, POLL_INTERVAL};
 use crate::google::GoogleImages;
 use crate::openai::OpenAiImages;
@@ -28,6 +29,8 @@ enum Entry {
     Provider {
         provider: Box<ProviderConfig>,
         credentials: Arc<Credentials>,
+        /// Why `openai-codex` is switched off, kept here because a backend is made for each call.
+        codex_off: Arc<OnceLock<String>>,
     },
 }
 
@@ -45,6 +48,7 @@ impl Entry {
             Entry::Provider {
                 provider,
                 credentials,
+                codex_off,
             } => {
                 let auth = credentials.resolve(provider).await.map_err(|e| e.to_string())?;
                 if auth == Auth::None {
@@ -52,6 +56,13 @@ impl Entry {
                 }
                 Ok(match provider.id.as_str() {
                     "google" => Arc::new(GoogleImages::new(provider.base_url.clone(), auth)),
+                    "openai-codex" => {
+                        let headers = auth.login_headers(provider);
+                        Arc::new(
+                            CodexImages::new(provider.base_url.clone(), auth, headers)
+                                .sharing(codex_off.clone()),
+                        )
+                    }
                     _ => Arc::new(OpenAiImages::new(provider.base_url.clone(), auth)),
                 })
             }
@@ -75,8 +86,8 @@ impl Media {
     }
 
     /// The backends whose credentials are present, pointed at the real services: `fal` with
-    /// `FAL_KEY` (or an `auth.json` entry `fal`), `openai` and `google` with the credentials of
-    /// the providers of those names.
+    /// `FAL_KEY` (or an `auth.json` entry `fal`), `openai`, `google` and `openai-codex` with the
+    /// credentials of the providers of those names.
     pub async fn from_config(config: &Config, paths: &Paths, credentials: Arc<Credentials>) -> Media {
         let mut entries = Vec::new();
         let stored = || match credentials.load().remove("fal") {
@@ -95,11 +106,13 @@ impl Media {
             ))));
         }
         for provider in presets::resolve(&config.providers).unwrap_or_default() {
-            if matches!(provider.id.as_str(), "openai" | "google") && credentials.source(&provider).is_some()
+            if matches!(provider.id.as_str(), "openai" | "google" | "openai-codex")
+                && credentials.source(&provider).is_some()
             {
                 entries.push(Entry::Provider {
                     provider: Box::new(provider),
                     credentials: credentials.clone(),
+                    codex_off: Arc::default(),
                 });
             }
         }
@@ -237,5 +250,45 @@ impl ImageSource for Media {
         })
         .await
         .map_err(|e| e.to_string())?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn login(extra: &[(&str, &str)]) -> Credential {
+        Credential::OAuth {
+            access: "access-token".into(),
+            refresh: "refresh-token".into(),
+            expires: azazel_ai::credentials::now_ms() + 3_600_000,
+            extra: extra
+                .iter()
+                .map(|(name, value)| (name.to_string(), serde_json::json!(value)))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+
+    async fn backends(store: impl FnOnce(&Credentials)) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = Credentials::with_env(dir.path().join("auth.json"), Arc::new(|_: &str| None));
+        store(&credentials);
+        let paths = Paths::discover(dir.path(), Some(&dir.path().join("home").to_string_lossy()));
+        Media::from_config(&Config::default(), &paths, Arc::new(credentials))
+            .await
+            .backends()
+    }
+
+    #[tokio::test]
+    async fn a_chatgpt_login_makes_the_codex_backend_usable() {
+        let with = backends(|c| {
+            c.store("openai-codex", login(&[("account_id", "acct-7")]))
+                .unwrap()
+        })
+        .await;
+        assert!(with.contains(&"openai-codex".to_string()), "{with:?}");
+        assert!(!backends(|_| {}).await.contains(&"openai-codex".to_string()));
     }
 }

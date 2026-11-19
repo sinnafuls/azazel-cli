@@ -87,7 +87,7 @@ impl OpenAiImages {
 
 /// The `size` to ask for: the requested pixel size, else the standard size nearest the requested
 /// aspect ratio, else the model's default.
-fn size(req: &MediaRequest) -> Option<String> {
+pub(crate) fn size(req: &MediaRequest) -> Option<String> {
     if let Some((width, height)) = req.size() {
         return Some(format!("{width}x{height}"));
     }
