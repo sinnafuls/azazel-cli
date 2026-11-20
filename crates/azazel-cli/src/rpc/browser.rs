@@ -61,8 +61,11 @@ pub(crate) const PICTURE: &str = r#"{"type":"browser_frame""#;
 pub(crate) struct Pictures {
     state: Mutex<Waiting>,
     /// Where a kept picture goes; weak, so that a client that went is not kept alive by it.
-    send: Mutex<Option<Weak<dyn Fn(String) + Send + Sync>>>,
+    send: Mutex<Option<Weak<Sender>>>,
 }
+
+/// What sends a line to a client.
+type Sender = dyn Fn(String) + Send + Sync;
 
 #[derive(Default)]
 struct Waiting {
