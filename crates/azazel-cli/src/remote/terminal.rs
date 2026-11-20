@@ -1730,4 +1730,49 @@ mod tests {
         }
         assert_eq!(answers[0], answers[1]);
     }
+
+    #[tokio::test]
+    async fn with_full_access_a_shared_terminal_offers_every_folder_and_older_sessions_anywhere() {
+        let scratch = tempfile::tempdir().unwrap();
+        let home = scratch.path().join("azazel");
+        let elsewhere = scratch.path().join("elsewhere");
+        for dir in [&home, &elsewhere] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let remote = azazel_core::config::RemoteConfig {
+            full_access: true,
+            ..Default::default()
+        };
+        let rules = Rules::of(home.clone(), Some(scratch.path().to_path_buf()), &remote);
+        let sessions = shared(&home, rules);
+        assert!(sessions.folders(None).await.unwrap().anywhere);
+
+        // A session saved in a folder nobody listed is found, so that it can be gone on with.
+        let paths = azazel_core::Paths::discover(&home, Some(&home.to_string_lossy()));
+        let dir = paths.home.join("projects").join("p").join("sessions");
+        std::fs::create_dir_all(&dir).unwrap();
+        let saved = azazel_core::SessionStore::create(&dir, &elsewhere, None).unwrap();
+        // An empty session is not offered to go on with, so this one says something.
+        saved.append(azazel_core::EntryKind::Message {
+            message: azazel_ai::Message::user("hello"),
+        });
+        let history = sessions.history(None).await.unwrap();
+        assert!(history.iter().any(|entry| entry.id == saved.id()), "{history:?}");
+    }
+
+    #[test]
+    fn going_on_with_a_session_never_passes_a_mode_the_session_once_had() {
+        let args = super::super::start::host_args(
+            &[],
+            std::path::Path::new("work"),
+            &NewSession::default(),
+            false,
+            "bg01",
+            Some(std::path::Path::new("old.jsonl")),
+        );
+        let args: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.contains(&"--session".to_string()), "{args:?}");
+        assert!(!args.contains(&"--mode".to_string()), "{args:?}");
+        assert!(!args.iter().any(|a| a.contains("bypass")), "{args:?}");
+    }
 }
