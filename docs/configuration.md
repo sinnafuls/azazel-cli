@@ -223,7 +223,8 @@ thinking = "low"
 | | `digest_min_pages` | `10` | Pages of a PDF read above which it is digested |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
 | `[tools.eval]` | `python` | `true` | Let the [`eval`](tools.md#eval) tool run Python |
-| | `javascript` | `true` | Let the [`eval`](tools.md#eval) tool run JavaScript; with both off, `eval` is not offered |
+| | `javascript` | `true` | Let the [`eval`](tools.md#eval) tool run JavaScript |
+| | `luau` | `true` | Let the [`eval`](tools.md#eval) tool run Luau scripts that call other tools; with all three off, `eval` is not offered |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |

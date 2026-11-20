@@ -35,7 +35,7 @@ slow    = ["anthropic/claude-opus-4-5:high", "@default"]
 | `verify` | `@default` | The checker (see [goals](goals.md)) |
 | `memory` | `@smol` | Memory extraction (see [memory](memory.md)) |
 | `vision` | `@default` | Work that reads images |
-| `judge` | `@smol` | Quick judgements: `classify` in `run_code` scripts and extensions (see [tools](tools.md#code-execution)) |
+| `judge` | `@smol` | Quick judgements: `classify` in Luau `eval` scripts and extensions (see [tools](tools.md#code-execution)) |
 | `lead` | `@default` | The lead agent |
 | `scout` | `@smol` | The `scout` agent |
 | `planner` | `@plan` | The `planner` agent |

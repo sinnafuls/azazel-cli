@@ -423,10 +423,9 @@ Permissions are those of `shell`: starting the program is a `shell` call like an
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `run_code` | `code` | Runs a Luau script that calls other tools, and returns what it printed and returned |
-| `eval` | `language` (`python`, `javascript`), `code`, `timeout_secs?` | Runs a Python or JavaScript program and returns what it printed; see [`eval`](#eval) |
+| `eval` | `language` (`python`, `javascript`, `luau`), `code`, `timeout_secs?` | Runs a Python or JavaScript program and returns what it printed, or a Luau script that calls other tools; see [`eval`](#eval) |
 
-`run_code` lets an agent do a job of several steps in one call: read a dozen files and return only the lines that matter, search and then filter, make the same edit in many places. Only the script's result reaches the model, not what the tools returned along the way.
+`eval` with `language: "luau"` lets an agent do a job of several steps in one call: read a dozen files and return only the lines that matter, search and then filter, make the same edit in many places. Only the script's result reaches the model, not what the tools returned along the way.
 
 ```lua
 local counts = {}
@@ -441,11 +440,11 @@ return table.concat(counts, "\n")
 
 - `tools.<name>{ ... }` calls a tool with the arguments the agent would give it and returns the text of its result. A name that is not an identifier is written `tools["mcp__server__tool"]{ ... }`.
 - A call that fails or is refused raises an error whose message starts with the tool's name; `pcall` catches it.
-- Every call is made as the agent that runs the script and goes through the permission engine, the mode and the hooks like a call the agent makes itself. `run_code` counts as `read`; each call inside it is judged on its own, so a script cannot do what the agent could not.
+- Every call is made as the agent that runs the script and goes through the permission engine, the mode and the hooks like a call the agent makes itself. A Luau `eval` counts as `read` (Python and JavaScript count as `exec`); each call inside the script is judged on its own, so a script cannot do what the agent could not.
 - `print(...)` output and the value the script returns are the result. A returned table comes back as JSON. `json.encode` and `json.decode` are available.
 - The script runs in a fresh sandboxed Luau VM: no file, process or network access except through `tools`.
 - Limits: 120 seconds of the script's own running time (waiting for a tool, an agent or a model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
-- `run_code` itself, `task` and the other team tools cannot be called through `tools`; a script starts agents with `agents.run`.
+- `eval` itself, `task` and the other team tools cannot be called through `tools`; a script starts agents with `agents.run`.
 
 The tool's description lists the names of the callable tools only, within about 2000 characters, because the agent already has every tool's schema in its tool list; a script gets a tool's arguments with `tools.describe(name)`, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
 
@@ -493,12 +492,13 @@ return serious
 
 `eval` runs a program the agent writes, for work a script does better than a shell command: computing, parsing and reshaping data, trying out a snippet.
 
+- `language: "luau"` runs a script inside azazel that calls other tools; see [Code execution](#code-execution) for what it can do and its limits. It needs no program on `PATH`, `timeout_secs` does not apply to it, and it counts as `read` for the permission rules (each call inside it is judged on its own), where Python and JavaScript count as `exec`. A rule names it: `allow = ["eval(luau)"]`.
 - Python runs with the first of `python`, `python3` and `py` on `PATH` (on Windows the `WindowsApps` stand-ins that open the Store are passed over). JavaScript runs with `node`, else `bun`, else `deno`; top-level `await` works. The program is looked for at each call; when none is installed the result says which to install.
 - The code is handed to the interpreter on standard input and runs in the agent's working directory with the environment of `shell` commands. Each call is a new process: nothing is kept from one call to the next, so a later call reads what an earlier one left in a file.
 - `AZAZEL_LOCAL` names the session's scratch directory, the files `local://<name>` addresses (see [URL schemes](#url-schemes-read-accepts)).
 - stdout and stderr come back together, the first 100 and last 300 lines of them, with the exit code; a code other than 0 makes the result an error. The output streams into the running card, `Esc` kills the program, and so does the timeout: `timeout_secs`, else `shell_timeout_secs` (120).
 - It can do whatever a program can, so it is approved like `shell`: `manual` and `accept-edits` ask, `auto` runs it, plan mode refuses it. A rule names the language: `allow = ["eval(python)"]`.
-- `[tools.eval]` turns each language on or off: `python = false` or `javascript = false` (both are on by default; also on the Tools page of `/settings`). A language that is off is not offered to the model and is refused if asked for; with both off, `eval` is not offered at all. A project's config may set them only once the project is trusted.
+- `[tools.eval]` turns each language on or off: `python = false`, `javascript = false` or `luau = false` (all are on by default; also on the Tools page of `/settings`). A language that is off is not offered to the model and is refused if asked for; with all off, `eval` is not offered at all. `luau` has an effect only in a build with the `lua` feature (the default); without it Luau is never offered. A project's config may set them only once the project is trusted.
 
 ## Todo list, questions, plans
 
@@ -854,6 +854,7 @@ secrets = true                        # scan the project with gitleaks once per 
 [tools.eval]
 python = true                         # eval may run Python
 javascript = true                     # eval may run JavaScript
+luau = true                           # eval may run Luau scripts that call other tools
 ```
 
 | Key | Default | Meaning |
@@ -882,7 +883,8 @@ javascript = true                     # eval may run JavaScript
 | `digest_min_pages` | `10` | Pages of a PDF read above which it is digested |
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
 | `eval.python` | `true` | Lets [`eval`](#eval) run Python. Project config: trusted projects only |
-| `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript; with both off, `eval` is not offered. Project config: trusted projects only |
+| `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript. Project config: trusted projects only |
+| `eval.luau` | `true` | Lets [`eval`](#eval) run Luau scripts that call other tools (builds with the `lua` feature); with all three off, `eval` is not offered. Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).
 

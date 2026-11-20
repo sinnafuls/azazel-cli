@@ -124,7 +124,7 @@ Only inside a tool, handler, command or shortcut (they wait, or need a running s
 | `azazel.http{ url, method?, headers?, body?, timeout? }` | Default `GET`, timeout 30 s. Returns `{ status, headers, body }`; an HTTP error status is a response, not an error |
 | `azazel.fs.read(path)`, `.write(path, content)`, `.list(path)`, `.exists(path)`, `azazel.fs.data_dir` | Files inside the project root, the `permissions.additional_dirs` and the script's own data directory, whose path is the string `azazel.fs.data_dir` (`~/.azazel/extensions/.data/<id>`). Relative paths start at the project root. A path that leads elsewhere, also through `..` or a symlink, is an error. `list` returns `{ name, is_dir }` entries |
 | `azazel.agent.spawn{ agent, prompt, wait? }` | Starts a sub-agent of the lead. With `wait` (default true) returns its report and its id; with `wait = false` returns the id at once |
-| `azazel.classify(question, choices, { model? })` | Has a small model pick the one of `choices` (2 to 20 strings) that answers `question`; returns `{ choice, index, confidence, reason, model }`. The `judge` role answers unless `model` names a model, a role or a list of them. Errors when no model can be asked or the reply cannot be read. The same as `classify` in [`run_code`](tools.md#code-execution) |
+| `azazel.classify(question, choices, { model? })` | Has a small model pick the one of `choices` (2 to 20 strings) that answers `question`; returns `{ choice, index, confidence, reason, model }`. The `judge` role answers unless `model` names a model, a role or a list of them. Errors when no model can be asked or the reply cannot be read. The same as `classify` in [`eval` with `language: "luau"`](tools.md#code-execution) |
 | `azazel.memory.save(text, kind?, tags?)` | Saves a project memory; `kind` defaults to `"fact"`. Returns the id. Errors with `memory unavailable` when memory is off |
 | `azazel.memory.search(query, limit?)` | `{ id, kind, text, tags, scope }` hits, best first; default limit 8 |
 | `azazel.tools.call(name, args?)` | Calls a tool of the harness, of another extension or of an MCP server as the lead agent, and returns the text of its result. The call passes the permission rules, the mode and the hooks like one the agent makes itself, so it may ask you; a refused or failed call is an error |
@@ -224,7 +224,7 @@ azazel.tool({
 - A replacement is the whole tool: what the built-in did besides returning text (the read tracking that `edit` relies on, checks on write, the tool's card in the UI) is yours to do or to leave out. To keep the tool and change what goes in or comes out, wrap it instead.
 - A disabled script replaces nothing: the tool it stood in for is back.
 
-**`azazel.wrap(name, { before, after })`** leaves the tool as it is and runs your functions around every call of it, whoever provides the tool and whoever calls it (an agent, `run_code`, another script).
+**`azazel.wrap(name, { before, after })`** leaves the tool as it is and runs your functions around every call of it, whoever provides the tool and whoever calls it (an agent, a Luau `eval` script, another script).
 
 | Function | Gets | Returning |
 |---|---|---|

@@ -176,7 +176,7 @@ from, and the call says so. The request may take 120 seconds; when it takes long
 fails with the reason. What it costs is counted to the agent that asked (`agent_status` shows it) and under
 `btw` in `/cost`.
 
-A `run_code` script starts agents too: `agents.run(agent, prompt, { model?, isolation?, schema? })` is a
+A Luau `eval` script starts agents too: `agents.run(agent, prompt, { model?, isolation?, schema? })` is a
 `task` call for one agent that returns its report (or typed value) to the script, and `parallel` runs several
 at once. The script keeps what the agents return in variables, so only what it prints or returns reaches the
 conversation. See [code execution](tools.md#code-execution).
@@ -229,7 +229,7 @@ In coordinator mode the lead plans and delegates and does none of the work itsel
 orchestration tools, `read`, `glob`, `grep`, `todo`, `ask_user`, `session_recall`, `skill`, the memory tools,
 `semantic_search`,
 `web_search`, `web_fetch` and `web_grep`, and nothing that edits files or runs commands: no `write`, `edit`, `shell`,
-`job`, `pty`, `run_code`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
+`job`, `pty`, `eval`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
 plan first, delegate independent pieces in one `task` call, read every report critically, and verify through
 agents. Sub-agents are not affected.
 

@@ -49,7 +49,7 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `session_info` | The session's name; the newest one counts |
 | `pin` | Whether the session is pinned |
 | `archive` | Whether the session is [archived](#archived-sessions): kept out of the lists of sessions |
-| `custom` | Extension data, and under `customType` `run_code_store` a value a script kept with `store` (`data.key`, `data.value`) |
+| `custom` | Extension data, and under `customType` `run_code_store` (the name from before `run_code` became part of `eval`) a value a Luau script kept with `store` (`data.key`, `data.value`) |
 | `run_started` | A run began (the work one prompt starts): `runId`, and the `requestId` its sender gave the prompt, if any. Its `parentId` is the prompt |
 | `request_started` | A request of the run went out to `model`; `via` names the [virtual model](models-and-logins.md#virtual-models) that picked it, when one did |
 | `tool_started` | A tool call of the run was let through and began: `callId`, `name` (the tool's own name), `input` (as it ran), and `repairs` when the call was [mended](tools.md#calls-that-are-mended) first |
