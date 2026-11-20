@@ -18,9 +18,10 @@ use azazel_core::config::set_override;
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
 use azazel_core::side::{Side, SideCosts};
+use azazel_core::ui::Question;
 use azazel_core::{
-    Config, EntryKind, ExtCtx, Headless, LoadOptions, Paths, PermissionGate, PermissionState, Registry,
-    SessionStore, ToolCaller, Ui,
+    ApprovalDecision, ApprovalRequest, Config, EntryKind, ExtCtx, Headless, LoadOptions, Paths,
+    PermissionGate, PermissionState, Registry, SessionStore, ToolCaller, Ui, UiBridge, UiError,
 };
 use azazel_lua::{CodeExt, CodeLimits, LuaExt};
 use azazel_team::{BUILTIN_AGENTS, Team, TeamDeps, TeamExt};
@@ -72,6 +73,11 @@ struct Bench {
 
 impl Bench {
     fn new(mode: &str, limits: CodeLimits) -> Bench {
+        Bench::with_cap(mode, limits, 7200)
+    }
+
+    /// Like `new`, with `background_max_secs` for background scripts.
+    fn with_cap(mode: &str, limits: CodeLimits, cap_secs: u64) -> Bench {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         let home = dir.path().join("home");
@@ -93,9 +99,10 @@ impl Bench {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
-        services.insert(Arc::new(azazel_tools::eval::EvalSettings::from_switches(
-            true, true, true,
-        )));
+        services.insert(Arc::new(
+            azazel_tools::eval::EvalSettings::from_switches(true, true, true)
+                .with_background_max_secs(cap_secs),
+        ));
         let registry = Arc::new(Registry::new(ExtCtx {
             services: services.clone(),
             cwd: paths.cwd.clone(),
@@ -1072,5 +1079,152 @@ async fn classify_asks_the_judge_role_and_counts_as_a_call() {
     assert_eq!(
         refused.text_content(),
         "script error: classify: there are 1 choices; give from 2 to 20"
+    );
+}
+
+/// A user who is present and would approve everything, counting how often they were asked.
+struct Approver {
+    asked: AtomicUsize,
+}
+
+#[async_trait]
+impl UiBridge for Approver {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+        Ok(true)
+    }
+    async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+        Ok(0)
+    }
+    async fn input(&self, _: &str) -> Result<String, UiError> {
+        Err(UiError::NoUser)
+    }
+    fn notify(&self, _: azazel_core::ext::Level, _: &str) {}
+    async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
+        Some(ApprovalDecision::AllowOnce)
+    }
+}
+
+/// The text of `job output` for `id` once the job is no longer running.
+async fn finished_job(bench: &Bench, id: &str) -> String {
+    for _ in 0..400 {
+        let text = bench
+            .call("job", json!({ "action": "output", "id": id }))
+            .await
+            .text_content();
+        if !text.contains(&format!("[{id}: running")) {
+            return text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("{id} did not end");
+}
+
+async fn start_background(bench: &Bench, code: &str) -> String {
+    let started = bench
+        .call(
+            "eval",
+            json!({ "language": "luau", "code": code, "background": true }),
+        )
+        .await;
+    assert!(!started.is_error, "{}", started.text_content());
+    started.details.unwrap()["job"].as_str().unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_script_is_denied_instead_of_asking_even_when_a_user_is_present() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    let user = Arc::new(Approver {
+        asked: AtomicUsize::new(0),
+    });
+    bench.services.insert(Arc::new(Ui(user.clone())));
+    let marker = bench.paths.project_root.join("ran.txt");
+    let command = format!("echo ran > \"{}\"", marker.display());
+
+    let id = start_background(
+        &bench,
+        &format!("return tools.shell({{ command = {command:?} }})"),
+    )
+    .await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("needed approval"), "{text}");
+    assert!(text.contains("foreground"), "{text}");
+    assert!(text.contains(&format!("[{id}: failed")), "{text}");
+    assert_eq!(user.asked.load(Ordering::SeqCst), 0);
+    assert!(!marker.exists());
+
+    // The same call in the foreground does ask, and runs once approved.
+    let foreground = bench
+        .run(&format!("return tools.shell({{ command = {command:?} }})"))
+        .await;
+    assert!(!foreground.is_error, "{}", foreground.text_content());
+    assert_eq!(user.asked.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_script_returns_at_once_runs_as_a_job_and_job_kill_stops_it() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    bench.registry.tools.add("test", Slow::new("nap", Access::Read));
+
+    let started = std::time::Instant::now();
+    let id = start_background(
+        &bench,
+        "for n = 1, 1000 do tools.nap({ n = n }) end return 'done'",
+    )
+    .await;
+    assert!(started.elapsed() < Duration::from_millis(140));
+    assert_eq!(id, "lua-1");
+    let listed = bench
+        .call("job", json!({ "action": "list" }))
+        .await
+        .text_content();
+    assert!(listed.contains("lua-1  running"), "{listed}");
+
+    let stopped = bench.call("job", json!({ "action": "kill", "id": &id })).await;
+    assert_eq!(stopped.text_content(), "stopping lua-1");
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("[lua-1: killed"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_script_that_finishes_leaves_its_result_in_the_job_output() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    let id = start_background(&bench, "print('working') return 'all done'").await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("working") && text.contains("all done"), "{text}");
+    assert!(text.contains("[lua-1: finished"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_script_is_stopped_at_the_wall_clock_cap() {
+    let bench = Bench::with_cap("auto", CodeLimits::default(), 1);
+    bench.registry.tools.add("test", Slow::new("nap", Access::Read));
+    let id = start_background(
+        &bench,
+        "for n = 1, 1000 do tools.nap({ n = n }) end return 'done'",
+    )
+    .await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("stopped after 1 s"), "{text}");
+    assert!(text.contains("[lua-1: timed out"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn background_is_refused_for_other_languages() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    let refused = bench
+        .call(
+            "eval",
+            json!({ "language": "python", "code": "print(1)", "background": true }),
+        )
+        .await;
+    assert!(refused.is_error);
+    assert!(
+        refused.text_content().contains("only Luau"),
+        "{}",
+        refused.text_content()
     );
 }
