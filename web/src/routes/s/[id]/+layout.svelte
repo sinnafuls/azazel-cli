@@ -11,6 +11,7 @@
 	import { Session } from '$lib/session/session.svelte';
 	import { setSession } from '$lib/context';
 	import { toasts } from '$lib/toasts.svelte';
+	import { aboveToasts } from '$lib/toast-area.svelte';
 	import { sessions } from '$lib/sessions.svelte';
 	import { basename } from '$lib/format';
 	import { homePath } from '$lib/sidebar';
@@ -198,6 +199,7 @@
 		<header
 			class="flex h-14 shrink-0 items-center gap-2 border-b px-4 pt-[env(safe-area-inset-top)]"
 			data-session-header
+			{@attach aboveToasts}
 		>
 			{#if !viewport.wide}
 				<Sidebar.Trigger class="-ml-1.5" aria-label="Open the sidebar" />

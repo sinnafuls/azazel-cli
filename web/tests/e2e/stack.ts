@@ -1,5 +1,7 @@
-import { test as base, expect, type Page } from '@playwright/test';
+import { chromium, test as base, expect, type Page } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
 	cpSync,
 	existsSync,
@@ -19,6 +21,46 @@ const exe = process.platform === 'win32' ? 'azazel.exe' : 'azazel';
 const binary =
 	process.env.AZAZEL_BIN ??
 	join(process.env.CARGO_TARGET_DIR ?? join(root, 'target'), 'debug', exe);
+
+// The browser the agents of a session drive (the `browser` tool): the Chromium Playwright downloaded,
+// the same build on every machine. On Linux that build does not start without `--no-sandbox` where
+// user namespaces are restricted (the CI runners), so there the host looks for an installed browser
+// itself, as the Rust tests of the browser do. AZAZEL_BROWSER names another one.
+const agentBrowser =
+	process.env.AZAZEL_BROWSER ??
+	(process.platform === 'linux' ? undefined : chromium.executablePath());
+
+/**
+ * Serves `html` as the only page of a web server on this machine, for the agents' browser to open
+ * (the `browser` tool opens http and https addresses only).
+ */
+export async function serve(html: string): Promise<{ url: string; close: () => Promise<void> }> {
+	const server = createServer((_, res) => {
+		res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+		res.end(html);
+	});
+	await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+	return {
+		url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/`,
+		close: () =>
+			new Promise((done) => {
+				server.close(() => done());
+				server.closeAllConnections();
+			})
+	};
+}
+
+/** A script whose lead opens `url` in the agents' browser and then says `text`. */
+export const browses = (url: string, text: string) => ({
+	lead: [
+		{
+			reply: {
+				tool_calls: [{ id: 'b1', name: 'browser', input: { action: 'open', url } }]
+			}
+		},
+		{ reply: { text } }
+	]
+});
 
 /** `azazel remote` in front of one scripted background session, in a home and project of their own. */
 export class Stack {
@@ -67,6 +109,7 @@ export class Stack {
 			...process.env,
 			AZAZEL_HOME: join(this.dir, 'home'),
 			AZAZEL_MOCK_SCRIPT: join(this.dir, 'script.json'),
+			...(agentBrowser ? { AZAZEL_BROWSER: agentBrowser } : {}),
 			...(this.mockTools ? { AZAZEL_MOCK_TOOLS: '1' } : {})
 		};
 	}

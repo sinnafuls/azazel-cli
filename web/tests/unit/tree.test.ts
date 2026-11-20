@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { entryFor, type TreeEntry } from '$lib/session/tree';
+import { entryFor, rewindable, type TreeEntry } from '$lib/session/tree';
 import type { AssistantItem, Item, UserItem } from '$lib/session/reduce';
 
 const user = (id: string, text: string): UserItem => ({
@@ -78,5 +78,27 @@ describe('entryFor', () => {
 		const notice: Item = { kind: 'notice', id: 'n', agent: 'lead', level: 'info', text: 'hi' };
 		expect(entryFor(TREE, [notice], notice)).toBeNull();
 		expect(entryFor([], items, items[0])).toBeNull();
+	});
+});
+
+describe('rewindable', () => {
+	const checkpoint = (id: string): TreeEntry => ({ id, kind: 'checkpoint' });
+	it("lists the prompts a checkpoint was taken before, not the notes written in the user's name", () => {
+		const tree: TreeEntry[] = [
+			checkpoint('c1'),
+			entry('e1', 'user', 'create hello'),
+			entry('e2', 'assistant', 'All done'),
+			entry('e3', 'user', '<done-check>'),
+			entry('e4', 'assistant', 'Nothing was run, so the change is unverified.'),
+			checkpoint('c2'),
+			entry('e5', 'user', 'And thanks.'),
+			checkpoint('c3'),
+			entry('e6', 'user', 'I rewound the project files to how they were before this prompt: x'),
+			checkpoint('c4'),
+			entry('x1', 'user', 'On a branch that was left', { current: false }),
+			entry('e7', 'user', 'The last one')
+		];
+		expect(rewindable(tree).map((e) => e.id)).toEqual(['e1', 'e5', 'e7']);
+		expect(rewindable([entry('e1', 'user', 'no checkpoint before it')])).toEqual([]);
 	});
 });

@@ -11,6 +11,7 @@
 	import { ui } from '$lib/ui.svelte';
 	import { viewport } from '$lib/media.svelte';
 	import { toasts } from '$lib/toasts.svelte';
+	import { aboveToasts, toastArea } from '$lib/toast-area.svelte';
 	import { newChat } from '$lib/newchat.svelte';
 	import { isMac, shortcutFor } from '$lib/shortcuts';
 	import Brand from '$lib/components/Brand.svelte';
@@ -91,6 +92,7 @@
 					role="note"
 					aria-label="Full access warning"
 					data-full-access
+					{@attach aboveToasts}
 				>
 					<ShieldAlert class="size-4 shrink-0 text-destructive" />
 					<span>Full access: this browser can do anything on this computer</span>
@@ -124,4 +126,11 @@
 	/>
 {/if}
 
-<Toaster position={viewport.wide ? 'bottom-right' : 'top-center'} closeButton />
+<!-- At the top of the chat's column, under the banner and the header (src/lib/toast-area.svelte.ts):
+     at the bottom right a toast lay on the composer's Send button, at the very top on the header. -->
+<Toaster
+	position={viewport.wide ? 'top-right' : 'top-center'}
+	offset={{ top: toastArea.top + 16, right: toastArea.right + 16 }}
+	mobileOffset={{ top: toastArea.top + 16 }}
+	closeButton
+/>

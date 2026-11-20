@@ -1,6 +1,6 @@
 // Finding the entry of the session file that a message of the transcript stands for. History rows
 // carry their entry id; what arrived live does not, so it is looked up in `get_tree`.
-import type { Item } from './reduce';
+import { BRANCH_NOTE, type Item } from './reduce';
 
 /** A row of `get_tree`. */
 export interface TreeEntry {
@@ -57,4 +57,31 @@ export function entryFor(tree: TreeEntry[], items: Item[], item: Item): string |
 		if (sameText(entries[i].text, text)) return entries[i].id;
 	// A prompt's place is reliable (one entry per prompt); a reply's is not (one per model turn).
 	return role === 'user' && at ? at.id : null;
+}
+
+// How the notes start that the host writes into the conversation in the user's name: a shell
+// command the user ran, a rewind of the files, a branch that was left (`is_note` in
+// crates/azazel-cli/src/tui/slash.rs).
+const HOST_NOTES = ['I ran `', 'I rewound the project files', BRANCH_NOTE];
+
+/**
+ * The prompts on the current branch a rewind can go back to, oldest first: the user messages a
+ * checkpoint was taken before, which is what the host asks of a rewind too. A row of `get_tree` does
+ * not say who wrote a user message, and an automatic note (the done check's, an advisor's) is one
+ * too; but a checkpoint is only taken before a prompt, so a note in the middle of a run has none.
+ */
+export function rewindable(tree: TreeEntry[]): TreeEntry[] {
+	const out: TreeEntry[] = [];
+	let checkpointed = false;
+	for (const e of tree) {
+		if (e.current === false) continue;
+		if (e.kind === 'checkpoint') checkpointed = true;
+		else if (e.role === 'user' && (e.kind === 'message' || !e.kind)) {
+			const text = e.text ?? '';
+			if (HOST_NOTES.some((note) => text.startsWith(note))) continue;
+			if (checkpointed && text) out.push(e);
+			checkpointed = false;
+		}
+	}
+	return out;
 }

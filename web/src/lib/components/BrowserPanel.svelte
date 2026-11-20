@@ -287,7 +287,7 @@
 				</h3>
 				{#if holding}
 					<form onsubmit={go} novalidate data-browser-address>
-						<InputGroup.Root>
+						<InputGroup.Root class="overflow-clip">
 							<InputGroup.Addon>
 								<InputGroup.Button size="icon-xs" aria-label="Back" onclick={() => nav('back')}>
 									<ArrowLeft />

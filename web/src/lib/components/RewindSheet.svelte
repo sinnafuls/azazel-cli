@@ -2,7 +2,7 @@
 	// Going back to an earlier prompt: pick the prompt (unless a message's button already did), then
 	// what to restore: the conversation, the files, or both.
 	import type { Session } from '$lib/session/session.svelte';
-	import type { TreeEntry } from '$lib/session/tree';
+	import { rewindable, type TreeEntry } from '$lib/session/tree';
 	import { ui } from '$lib/ui.svelte';
 	import { toasts } from '$lib/toasts.svelte';
 	import { ago } from '$lib/format';
@@ -41,7 +41,7 @@
 		session
 			.tree()
 			.then((t) => {
-				prompts = t.filter((e) => e.current !== false && e.role === 'user' && e.text).reverse();
+				prompts = rewindable(t).reverse();
 			})
 			.catch((e) => (error = e instanceof Error ? e.message : String(e)));
 	});

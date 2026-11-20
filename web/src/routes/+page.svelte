@@ -8,6 +8,7 @@
 	import { Button } from '$lib/components/ui/button';
 	import { ui } from '$lib/ui.svelte';
 	import { viewport } from '$lib/media.svelte';
+	import { aboveToasts } from '$lib/toast-area.svelte';
 	import { sessions } from '$lib/sessions.svelte';
 	import { newChat } from '$lib/newchat.svelte';
 	import SquarePen from '@lucide/svelte/icons/square-pen';
@@ -27,6 +28,7 @@
 	<div class="flex min-h-0 flex-1 flex-col">
 		<header
 			class="flex h-14 shrink-0 items-center gap-2 border-b px-4 pt-[env(safe-area-inset-top)]"
+			{@attach aboveToasts}
 		>
 			<Sidebar.Trigger aria-label="Open the sidebar" />
 			<span class="mr-auto"><Brand /></span>

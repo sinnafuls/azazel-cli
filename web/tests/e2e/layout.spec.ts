@@ -671,6 +671,35 @@ async function settle(page: Page) {
 	});
 }
 
+/** Fails when a toast lies on the header, on the banner above it or on the composer's Send button. */
+async function toastsClear(page: Page, state: string) {
+	const seen = await page.evaluate(() => {
+		const toasts = Array.from(document.querySelectorAll('[data-sonner-toast]'));
+		const parts = Array.from(
+			document.querySelectorAll(
+				'[data-session-header], [data-full-access], [data-composer] button[type=submit]'
+			)
+		);
+		const covered: string[] = [];
+		for (const toast of toasts) {
+			const a = toast.getBoundingClientRect();
+			for (const part of parts) {
+				const b = part.getBoundingClientRect();
+				const x = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+				const y = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+				if (x > 0 && y > 0)
+					covered.push(
+						`${part.getAttribute('aria-label') ?? part.tagName.toLowerCase()}: ${Math.round(x)}x${Math.round(y)}px`
+					);
+			}
+		}
+		return { toasts: toasts.length, parts: parts.length, covered };
+	});
+	expect(seen.toasts, `${state}: toasts on screen`).toBeGreaterThan(0);
+	expect(seen.parts, `${state}: the header and the Send button`).toBeGreaterThanOrEqual(2);
+	expect(seen.covered.join('; '), `${state}: what the toasts cover`).toBe('');
+}
+
 const OPEN =
 	'[role=dialog]:visible, [role=alertdialog]:visible, [role=menu]:visible, [data-slot=popover-content]:visible';
 
@@ -1072,6 +1101,7 @@ for (const view of VIEWS)
 				const toast = page.locator('[data-sonner-toast]');
 				await expect(toast).toBeVisible();
 				await capture('toast');
+				await toastsClear(page, 'toast');
 				// It leaves by itself; nothing after this is measured while it does.
 				await expect(toast).toHaveCount(0, { timeout: 20_000 });
 				await box.fill('');
@@ -1083,6 +1113,7 @@ for (const view of VIEWS)
 				await expect(toast).toHaveAttribute('data-type', 'error');
 				await page.mouse.move(width - 2, 2);
 				await capture('toast-error');
+				await toastsClear(page, 'toast-error');
 				// A warning that comes while the error is still there: the two, one above the other.
 				await box.fill('/name ');
 				await box.press('Enter');
@@ -1092,10 +1123,12 @@ for (const view of VIEWS)
 				await toast.first().hover();
 				await expect(toast.last()).toHaveAttribute('data-expanded', 'true');
 				await capture('toast-stack');
+				await toastsClear(page, 'toast-stack');
 				await closeToast.last().click();
 				await expect(toast).toHaveCount(1);
 				await page.mouse.move(width - 2, 2);
 				await capture('toast-warning');
+				await toastsClear(page, 'toast-warning');
 				await closeToast.click();
 				await expect(toast).toHaveCount(0);
 				await box.fill('');
@@ -1250,8 +1283,10 @@ for (const view of VIEWS)
 				await page.getByRole('menuitem', { name: 'Rewind…' }).click();
 				const rewind = page.getByRole('dialog', { name: 'Rewind' });
 				const prompts = rewind.getByRole('list', { name: 'Prompts' }).getByRole('button');
-				// Newest first: the two from the page, the note of the done check, the first prompt.
-				await expect(prompts).toHaveCount(4);
+				// Newest first: the two from the page and the first prompt. The note of the done check is a
+				// user message of the conversation too, and is not one of them.
+				await expect(prompts).toHaveCount(3);
+				await expect(prompts.filter({ hasText: 'done-check' })).toHaveCount(0);
 				await expect(prompts.first().locator('[data-slot=item-title]')).toHaveText('And thanks.');
 				const wordy = prompts.filter({ hasText: 'Now the same for the settings' });
 				await expect(wordy.locator('[data-slot=item-title]')).toHaveCSS(
@@ -1476,6 +1511,7 @@ for (const view of VIEWS)
 				).toBeVisible();
 				await page.mouse.move(width - 2, 2);
 				await capture('limit-toast');
+				await toastsClear(page, 'limit-toast');
 			} finally {
 				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
 				await stack.stop();
