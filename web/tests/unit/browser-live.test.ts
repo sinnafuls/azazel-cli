@@ -271,8 +271,10 @@ describe('what the panel shows', () => {
 
 	it('says that no browser is open, and still offers the sign-in', async () => {
 		await shown({ running: false }, true);
-		expect(status()).toBe('No browser open');
-		expect(screen.getByText('The agent has not opened a browser')).toBeTruthy();
+		expect(status()).toBe('Not open');
+		expect(screen.getByText('The agent has no browser open')).toBeTruthy();
+		// Nothing stands in for a picture there is none of.
+		expect(screen.queryByText('Waiting for the first picture…')).toBeNull();
 		expect(screen.queryByRole('button', { name: 'Take over' })).toBeNull();
 		expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
 	});
@@ -282,11 +284,21 @@ describe('what the panel shows', () => {
 		expect(status()).toBe('Agent working');
 		expect(screen.getByRole('heading', { name: 'Example Domain' })).toBeTruthy();
 		expect(screen.getByText('https://example.com/')).toBeTruthy();
-		// Until the first picture arrives its place is held.
+		// Until the first picture arrives its place says so.
 		expect(screen.queryByRole('img')).toBeNull();
+		expect(screen.getByText('Waiting for the first picture…')).toBeTruthy();
 		h.live.onFrame(FRAME);
 		await vi.waitFor(() => expect(screen.getByRole('img')).toBeTruthy());
+		expect(screen.queryByText('Waiting for the first picture…')).toBeNull();
 		expect((screen.getByRole('img') as HTMLImageElement).alt).toContain('Example Domain');
+	});
+
+	it('calls a tab that has gone nowhere a blank page, not an untitled one', async () => {
+		// A browser that was opened to sign in before the agent opened a page.
+		await shown({ running: true, tab: 'tab-1', url: 'about:blank', title: '' }, true, false);
+		expect(screen.getByRole('heading', { name: 'Blank page' })).toBeTruthy();
+		expect(screen.getByText('about:blank')).toBeTruthy();
+		expect(screen.getByText('Waiting for the first picture…')).toBeTruthy();
 	});
 
 	it('says watching when the agent is idle', async () => {
@@ -342,7 +354,7 @@ describe('what the panel shows', () => {
 
 	it('cannot take over what another device holds', async () => {
 		await shown({ ...OPEN, held: true, held_by_you: false }, true);
-		expect(status()).toBe('Held by another device');
+		expect(status()).toBe('Held elsewhere');
 		expect((screen.getByRole('button', { name: 'Take over' }) as HTMLButtonElement).disabled).toBe(
 			true
 		);

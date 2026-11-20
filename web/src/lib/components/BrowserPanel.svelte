@@ -1,7 +1,11 @@
 <script lang="ts">
-	// The agents' browser, live: the picture of the tab it shows, scaled to fit, with what it is
-	// doing. A device that may control can take it over (the agents wait), and then its clicks, the
-	// wheel and its keys over the picture go to the page, until it hands the browser back.
+	// The agents' browser, live. One header row says what it is on (the page's title over its
+	// address), what it is doing (a badge) and holds the buttons; the picture of the tab fills the
+	// panel under it from edge to edge, scaled to fit. A device that may control can take it over
+	// (the agents wait): an address row then stands under the header, and clicks, the wheel and keys
+	// over the picture go to the page, until the browser is handed back.
+	// The parts answer to the width of the panel, not of the window: the pane beside the chat is
+	// about 215px wide in a 1024px window, where the globe goes and the badge is its mark alone.
 	// The keyboard is taken by a field nobody sees, in the picture: only a field brings up the
 	// keyboard of a phone and is given what an input method, a dead key or a dictation composes.
 	// What is typed there goes to the page and never stays in the field.
@@ -18,6 +22,7 @@
 		editFor,
 		fraction,
 		keysFor,
+		pageTitle,
 		scaleOf,
 		Scrolls,
 		statusOf,
@@ -28,22 +33,35 @@
 	import { toasts } from '$lib/toasts.svelte';
 	import { viewport } from '$lib/media.svelte';
 	import { cn } from '$lib/utils';
-	import { Button } from '$lib/components/ui/button';
 	import * as Alert from '$lib/components/ui/alert';
+	import { Badge } from '$lib/components/ui/badge';
 	import * as Empty from '$lib/components/ui/empty';
 	import * as InputGroup from '$lib/components/ui/input-group';
-	import { Skeleton } from '$lib/components/ui/skeleton';
 	import { Kbd } from '$lib/components/ui/kbd';
+	import { Spinner } from '$lib/components/ui/spinner';
 	import StateDot from './StateDot.svelte';
 	import Tip from './Tip.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import Globe from '@lucide/svelte/icons/globe';
+	import LogIn from '@lucide/svelte/icons/log-in';
+	import MousePointerClick from '@lucide/svelte/icons/mouse-pointer-click';
 	import RotateCw from '@lucide/svelte/icons/rotate-cw';
+	import Undo2 from '@lucide/svelte/icons/undo-2';
 
 	let {
 		session,
 		canControl,
-		active = true
-	}: { session: Session; canControl: boolean; active?: boolean } = $props();
+		active = true,
+		fill = false,
+		class: className
+	}: {
+		session: Session;
+		canControl: boolean;
+		active?: boolean;
+		/** The panel is as tall as what it is in (the pane), and the picture takes what is left. */
+		fill?: boolean;
+		class?: string;
+	} = $props();
 	const live = $derived(session.browser);
 
 	let pageVisible = $state(true);
@@ -63,12 +81,13 @@
 	const status = $derived(statusOf(live.state, session.busy));
 	const holding = $derived(status === 'you');
 	const picture = $derived(live.picture);
+	// Short: the badge stands in the header beside the title, in a pane that may be narrow.
 	const LABEL: Record<BrowserStatus, string> = {
-		none: 'No browser open',
+		none: 'Not open',
 		watching: 'Watching',
 		agent: 'Agent working',
 		you: 'You have control',
-		other: 'Held by another device'
+		other: 'Held elsewhere'
 	};
 	// The mark of each: grey for nothing, green for a live picture, the accent while the agent
 	// works, amber while the agent waits for a person.
@@ -105,9 +124,9 @@
 	});
 	onDestroy(forget);
 
+	let head = $state<HTMLElement | null>(null);
 	let box = $state<HTMLElement | null>(null);
 	let img = $state<HTMLImageElement | null>(null);
-	let handBack = $state<HTMLButtonElement | null>(null);
 	// The field that takes the keyboard, and where in the box it is: at the last click, so that a
 	// phone keeps that place above its keyboard and an input method opens its list beside it.
 	let keys = $state<HTMLInputElement | null>(null);
@@ -192,7 +211,7 @@
 		if (e.key === 'Escape' && e.shiftKey) {
 			e.preventDefault();
 			e.stopPropagation();
-			handBack?.focus();
+			head?.querySelector<HTMLElement>('[data-browser-hand-back]')?.focus();
 			return;
 		}
 		// Pasting sends this device's clipboard (see `onpaste`), not the one of the host.
@@ -290,98 +309,125 @@
 	}
 </script>
 
-<section aria-label="Browser" class="grid gap-3" data-browser data-status={status}>
+<section
+	aria-label="Browser"
+	class={cn('@container flex min-w-0 flex-col', fill && 'h-full min-h-0', className)}
+	data-browser
+	data-status={status}
+>
 	{#if live.denied}
-		<Empty.Root class="items-start gap-1 p-0 text-left" data-browser-denied>
-			<Empty.Title>Watching needs a control link</Empty.Title>
-			<Empty.Description>
-				This device has a view link. The picture of the agent's browser can show anything a page
-				shows, so only a control link sees it, unless the computer that runs azazel allows view
-				links to watch.
-			</Empty.Description>
+		<Empty.Root class="rounded-none" data-browser-denied>
+			<Empty.Header>
+				<Empty.Title>Watching needs a control link</Empty.Title>
+				<Empty.Description>
+					This device has a view link. The picture of the agent's browser can show anything a page
+					shows, so only a control link sees it, unless the computer that runs azazel allows view
+					links to watch.
+				</Empty.Description>
+			</Empty.Header>
 		</Empty.Root>
 	{:else}
-		<!-- The status has a line of its own, with what it means under it, and the buttons under
-		     that: beside the status they fit a phone but not the pane, and a button that moves when
-		     the status changes is harder to find again. -->
-		<div class="grid gap-2">
-			<p
-				class="flex min-w-0 items-center gap-2 text-sm leading-5 font-medium"
+		<!-- One row, the same in every state: a button that moves when the state changes is harder
+		     to find again. The title and the address are two lines of one block, so each has the
+		     whole width between the globe and the badge. -->
+		<header
+			bind:this={head}
+			class="flex h-12 shrink-0 items-center gap-2 border-b px-3"
+			data-browser-header
+		>
+			<Globe class="size-4 shrink-0 text-muted-foreground @max-xs:hidden" aria-hidden="true" />
+			<div class="min-w-0 flex-1" data-browser-heading>
+				<h3 class="truncate text-sm leading-5 font-medium" data-browser-title>
+					{status === 'none' ? "Agent's browser" : pageTitle(live.state)}
+				</h3>
+				{#if status !== 'none' && live.state?.url}
+					<p class="truncate font-mono text-xs leading-4 text-muted-foreground" data-browser-url>
+						{live.state.url}
+					</p>
+				{/if}
+			</div>
+			<Badge
+				variant="outline"
 				role="status"
+				class="gap-1 pl-1 @max-sm:border-transparent @max-sm:px-0"
 				data-browser-status
 			>
 				<StateDot state={DOT[status]} />
-				<span class="truncate">{LABEL[status]}</span>
-			</p>
-			{#if NOTE[status]}
-				<p class="text-xs leading-relaxed text-muted-foreground" data-browser-note>
-					{NOTE[status]}
-				</p>
-			{/if}
+				<span class="@max-sm:sr-only">{LABEL[status]}</span>
+			</Badge>
 			{#if canControl}
-				<div class="flex items-center gap-2" data-browser-actions>
+				<div class="flex shrink-0 items-center gap-0.5" data-browser-actions>
 					{#if holding}
-						<Button
-							bind:ref={handBack}
-							size="sm"
+						<Tip
+							text="Hand back to the agent"
+							side="bottom"
+							variant="default"
+							aria-label="Hand back"
 							disabled={live.working}
-							onclick={() => take(false)}>Hand back</Button
+							onclick={() => take(false)}
+							data-browser-hand-back><Undo2 /></Tip
 						>
 					{:else if status !== 'none'}
-						<Button
-							size="sm"
+						<Tip
+							text="Take over: the agent waits while you click and type"
+							side="bottom"
+							aria-label="Take over"
 							disabled={live.working || status === 'other'}
-							onclick={() => take(true)}>Take over</Button
+							onclick={() => take(true)}><MousePointerClick /></Tip
 						>
 					{/if}
 					<Tip
-						text="Opens the agent's browser profile in a window on the computer that runs azazel, so you can sign in to sites there. The agent keeps the sign-in."
+						text="Sign in: opens the agent's browser in a window on the computer that runs azazel, so you can sign in to sites there. The agent keeps the sign-in."
 						side="bottom"
-						variant="outline"
-						size="sm"
+						aria-label="Sign in"
 						disabled={live.working}
-						onclick={signIn}>Sign in</Tip
+						onclick={signIn}><LogIn /></Tip
 					>
 				</div>
 			{/if}
-		</div>
+		</header>
 		{#if live.error}
-			<Alert.Root variant="destructive" role="alert">
-				<Alert.Description>{live.error}</Alert.Description>
-			</Alert.Root>
+			<div class="shrink-0 border-b p-3">
+				<Alert.Root variant="destructive" role="alert">
+					<Alert.Description>{live.error}</Alert.Description>
+				</Alert.Root>
+			</div>
 		{/if}
 
 		{#if status === 'none'}
-			<Empty.Root class="items-start gap-1 p-0 text-left" data-browser-empty>
-				<Empty.Title>The agent has not opened a browser</Empty.Title>
-				<Empty.Description>
-					When it does, the page it is on shows here, live.
-					{#if canControl}
-						You can then take over to click and type, and hand back. Sign in opens its browser in a
-						window on the computer that runs azazel.
-					{/if}
-				</Empty.Description>
+			<Empty.Root class="rounded-none" data-browser-empty>
+				<Empty.Header>
+					<Empty.Title>The agent has no browser open</Empty.Title>
+					<Empty.Description>When it opens a page, the page shows here, live.</Empty.Description>
+				</Empty.Header>
 			</Empty.Root>
 		{:else}
-			<div class="grid min-w-0 gap-1.5">
-				<h3 class="truncate text-sm leading-5 font-medium" data-browser-title>
-					{live.state?.title || 'Untitled page'}
-				</h3>
-				{#if holding}
-					<form onsubmit={go} novalidate data-browser-address>
-						<!-- The stock group, with no clip: the empty padding of its addons reaches a few pixels
-						     past its border, which shows nothing and scrolls nothing. -->
-						<InputGroup.Root>
-							<InputGroup.Addon>
-								<InputGroup.Button size="icon-xs" aria-label="Back" onclick={() => nav('back')}>
-									<ArrowLeft />
-								</InputGroup.Button>
-								<InputGroup.Button size="icon-xs" aria-label="Reload" onclick={() => nav('reload')}>
-									<RotateCw />
-								</InputGroup.Button>
-							</InputGroup.Addon>
+			{#if holding}
+				<!-- As in a browser: back and reload beside the address they act on. They stand beside
+				     the group, not in it; the field is as tall as the inside of the group and the one
+				     addon gives up the padding and the margin the stock one reaches past the border
+				     with, so nothing overhangs the group. -->
+				<form
+					class="grid shrink-0 gap-1.5 border-b px-3 py-2"
+					onsubmit={go}
+					novalidate
+					data-browser-address
+				>
+					<div class="flex items-center gap-1">
+						<Tip text="Back" side="bottom" size="icon" aria-label="Back" onclick={() => nav('back')}
+							><ArrowLeft /></Tip
+						>
+						<Tip
+							text="Reload"
+							side="bottom"
+							size="icon"
+							aria-label="Reload"
+							onclick={() => nav('reload')}><RotateCw /></Tip
+						>
+						<InputGroup.Root class="flex-1">
 							<InputGroup.Input
 								bind:value={typed}
+								class="h-full"
 								aria-label="Address"
 								aria-invalid={bad || undefined}
 								placeholder="example.com"
@@ -402,100 +448,117 @@
 									bad = false;
 								}}
 							/>
-							<InputGroup.Addon align="inline-end">
+							<InputGroup.Addon align="inline-end" class="py-0 pr-1 has-[>button]:mr-0">
 								<InputGroup.Button type="submit" size="xs" variant="secondary">Go</InputGroup.Button
 								>
 							</InputGroup.Addon>
 						</InputGroup.Root>
-					</form>
+					</div>
 					{#if bad}
 						<p class="text-xs text-destructive" role="alert">
 							Enter a web address, such as example.com.
 						</p>
 					{/if}
-				{:else}
-					<p class="truncate font-mono text-xs leading-5 text-muted-foreground" data-browser-url>
-						{live.state?.url ?? ''}
-					</p>
-				{/if}
-			</div>
-
-			<!-- The box has the shape of the picture until it would be taller than most of the screen;
-			     then the picture keeps its shape inside it, with bars beside it. -->
-			<!-- It takes the keyboard only while this device holds the browser, as an `application`:
-			     the field in it has the focus then, and the box shows that it has. -->
-			<div
-				bind:this={box}
-				class={cn(
-					'relative max-h-[70svh] w-full overflow-hidden rounded-lg border bg-muted outline-none',
-					holding &&
-						'touch-none focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50'
-				)}
-				style:aspect-ratio="{picture?.width ?? 16} / {picture?.height ?? 9}"
-				data-browser-picture
-				data-vaul-no-drag={holding ? '' : undefined}
-				role={holding ? 'application' : undefined}
-				aria-label={holding
-					? "The agent's browser. Clicks and keys go to its page. Shift and Escape leave it."
-					: undefined}
-				{onmousedown}
-				{onclick}
-				{oncontextmenu}
-				{onwheel}
-				{onkeydown}
-				{onpaste}
-				{onpointerdown}
-				{onpointermove}
-				{onpointerup}
-				onpointercancel={onpointerup}
-			>
-				{#if holding}
-					<!-- One pixel, out of the flow and transparent: it moves nothing and shows nothing.
-					     Its type is 16px at every text size, or a phone zooms in when the field gets the focus. -->
-					<input
-						bind:this={keys}
-						class="pointer-events-none absolute size-px appearance-none border-0 bg-transparent p-0 text-[16px] opacity-0 outline-none"
-						style:left="{caret.x}px"
-						style:top="{caret.y}px"
-						aria-label="Type into the agent's page"
-						type="text"
-						autocomplete="off"
-						autocapitalize="off"
-						autocorrect="off"
-						spellcheck="false"
-						enterkeyhint="enter"
-						data-browser-keys
-						{onbeforeinput}
-						{oninput}
-						oncompositionstart={() => (composing = true)}
-						{oncompositionend}
-					/>
-				{/if}
-				{#if picture}
-					<img
-						bind:this={img}
-						src={picture.src}
-						alt="The page the agent's browser shows{live.state?.title
-							? `: ${live.state.title}`
-							: ''}"
-						class="size-full object-contain select-none"
-						draggable="false"
-					/>
-				{:else}
-					<Skeleton class="size-full rounded-none" aria-label="Waiting for the picture" />
-				{/if}
-			</div>
-			{#if holding}
-				<p class="text-xs leading-relaxed text-muted-foreground" data-browser-hint>
-					{#if viewport.coarse}
-						Tap the picture to click in the page and to type there, drag to scroll it.
-					{:else}
-						Click the picture to use the page: keys and the wheel go to it.
-						<Kbd>Shift</Kbd>
-						<Kbd>Esc</Kbd> leaves it.
-					{/if}
-				</p>
+				</form>
 			{/if}
+
+			<div class={cn('flex min-w-0 flex-col', fill && 'min-h-0 flex-1')} data-browser-body>
+				<!-- No box of its own: the picture is as wide as the panel and has its own shape, until
+				     it would be taller than what is left (of the pane, or of most of the screen in a
+				     sheet); then it keeps its shape inside, with bars beside it. A hairline under it ends
+				     a white page on a white ground. -->
+				<!-- It takes the keyboard only while this device holds the browser, as an `application`:
+				     the field in it has the focus then, and a ring drawn over the picture shows that. -->
+				<div
+					bind:this={box}
+					class={cn(
+						'relative w-full shrink overflow-hidden shadow-[0_1px_0_0_var(--border)] outline-none',
+						fill ? 'min-h-0' : 'max-h-[70svh]',
+						holding &&
+							'touch-none after:pointer-events-none after:absolute after:inset-0 focus-within:after:ring-2 focus-within:after:ring-ring/60 focus-within:after:ring-inset'
+					)}
+					style:aspect-ratio="{picture?.width ?? 16} / {picture?.height ?? 9}"
+					data-browser-picture
+					data-vaul-no-drag={holding ? '' : undefined}
+					role={holding ? 'application' : undefined}
+					aria-label={holding
+						? "The agent's browser. Clicks and keys go to its page. Shift and Escape leave it."
+						: undefined}
+					{onmousedown}
+					{onclick}
+					{oncontextmenu}
+					{onwheel}
+					{onkeydown}
+					{onpaste}
+					{onpointerdown}
+					{onpointermove}
+					{onpointerup}
+					onpointercancel={onpointerup}
+				>
+					{#if holding}
+						<!-- One pixel, out of the flow and transparent: it moves nothing and shows nothing.
+						     Its type is 16px at every text size, or a phone zooms in when the field gets the focus. -->
+						<input
+							bind:this={keys}
+							class="pointer-events-none absolute size-px appearance-none border-0 bg-transparent p-0 text-[16px] opacity-0 outline-none"
+							style:left="{caret.x}px"
+							style:top="{caret.y}px"
+							aria-label="Type into the agent's page"
+							type="text"
+							autocomplete="off"
+							autocapitalize="off"
+							autocorrect="off"
+							spellcheck="false"
+							enterkeyhint="enter"
+							data-browser-keys
+							{onbeforeinput}
+							{oninput}
+							oncompositionstart={() => (composing = true)}
+							{oncompositionend}
+						/>
+					{/if}
+					{#if picture}
+						<img
+							bind:this={img}
+							src={picture.src}
+							alt="The page the agent's browser shows{live.state?.title
+								? `: ${live.state.title}`
+								: ''}"
+							class="size-full object-contain select-none"
+							draggable="false"
+						/>
+					{:else}
+						<!-- A browser is running and no picture of it has come yet: said in words, in the
+						     place the picture will take, and not as a grey box that looks like a page. -->
+						<div
+							class="absolute inset-0 flex flex-col items-center justify-center gap-2 p-3 text-center text-muted-foreground"
+							data-browser-waiting
+						>
+							<Spinner role="presentation" aria-hidden="true" />
+							<p class="text-xs">Waiting for the first picture…</p>
+						</div>
+					{/if}
+				</div>
+				{#if NOTE[status]}
+					<div
+						class="grid shrink-0 gap-1 px-3 py-2 text-xs leading-relaxed text-muted-foreground"
+						data-browser-note
+					>
+						<p>{NOTE[status]}</p>
+						{#if holding}
+							<p data-browser-hint>
+								{#if viewport.coarse}
+									Tap the picture to click in the page and to type there, drag to scroll it.
+								{:else}
+									Click the picture to use the page: keys and the wheel go to it.
+									<Kbd>Shift</Kbd>
+									<Kbd>Esc</Kbd> leaves it.
+								{/if}
+							</p>
+						{/if}
+					</div>
+				{/if}
+			</div>
 		{/if}
 	{/if}
 </section>

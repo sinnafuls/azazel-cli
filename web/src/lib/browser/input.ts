@@ -329,3 +329,19 @@ export function statusOf(state: BrowserState | null, busy: boolean): BrowserStat
 	if (state.held) return state.held_by_you ? 'you' : 'other';
 	return busy ? 'agent' : 'watching';
 }
+
+/**
+ * What the panel calls the page the browser is on: its title, and for a page that has none the
+ * site it is from. A tab that has not gone anywhere yet (`about:blank`, or no address) is blank.
+ */
+export function pageTitle(state: BrowserState | null): string {
+	const title = state?.title?.trim();
+	if (title) return title;
+	const url = state?.url?.trim() ?? '';
+	if (!url || url === 'about:blank') return 'Blank page';
+	try {
+		return new URL(url).host || url;
+	} catch {
+		return url;
+	}
+}

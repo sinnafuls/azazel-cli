@@ -10,6 +10,7 @@ import {
 	keysFor,
 	scaleOf,
 	Scrolls,
+	pageTitle,
 	statusOf,
 	Typing,
 	wheelDelta,
@@ -451,5 +452,26 @@ describe('what the browser is doing', () => {
 		expect(statusOf({ running: true }, true)).toBe('agent');
 		expect(statusOf({ running: true, held: true, held_by_you: true }, true)).toBe('you');
 		expect(statusOf({ running: true, held: true, held_by_you: false }, false)).toBe('other');
+	});
+});
+
+describe('what the page is called', () => {
+	it('is its title', () => {
+		expect(pageTitle({ running: true, url: 'https://example.com/a', title: ' Docs ' })).toBe(
+			'Docs'
+		);
+	});
+	it('is a blank page for a tab that has gone nowhere yet', () => {
+		// A browser that was opened to sign in, before the agent opened a page.
+		expect(pageTitle({ running: true, url: 'about:blank', title: '' })).toBe('Blank page');
+		expect(pageTitle({ running: true, tab: null, url: null, title: null })).toBe('Blank page');
+		expect(pageTitle({ running: true })).toBe('Blank page');
+		expect(pageTitle(null)).toBe('Blank page');
+	});
+	it('is the site for a page without a title', () => {
+		expect(pageTitle({ running: true, url: 'https://example.com:8443/a?b=1', title: '' })).toBe(
+			'example.com:8443'
+		);
+		expect(pageTitle({ running: true, url: 'not an address', title: null })).toBe('not an address');
 	});
 });

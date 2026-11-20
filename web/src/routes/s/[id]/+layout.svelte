@@ -319,17 +319,19 @@
 				<Tabs.Trigger value="browser" class="px-1.5 after:bg-brand">Browser</Tabs.Trigger>
 			</Tabs.List>
 		</div>
-		<div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
-			<Tabs.Content value="agents">
+		<!-- The padding is each tab's own: the Browser tab has none, its picture reaches the edges. -->
+		<div class="scroll-thin min-h-0 flex-1 overflow-y-auto">
+			<Tabs.Content value="agents" class="p-4">
 				<AgentHub {session} canControl={app.canControl} active={agentId ?? 'lead'} />
 			</Tabs.Content>
-			<Tabs.Content value="usage"><UsagePanel {session} /></Tabs.Content>
+			<Tabs.Content value="usage" class="p-4"><UsagePanel {session} /></Tabs.Content>
 			<!-- A tab that is not chosen stays on the page, hidden: the panel is told, and stops watching. -->
-			<Tabs.Content value="browser">
+			<Tabs.Content value="browser" class="h-full">
 				<BrowserPanel
 					{session}
 					canControl={app.canControl}
 					active={ui.rightTab === 'browser' && ui.rightOpen}
+					fill
 				/>
 			</Tabs.Content>
 		</div>
@@ -402,9 +404,11 @@
 			{ value: 'browser', label: 'Browser' }
 		]}
 	/>
+	<!-- In the sheet the Browser panel reaches the edges too, past the padding of the sheet's body. -->
 	{#if panel === 'usage'}<UsagePanel {session} />{:else if panel === 'browser'}<BrowserPanel
 			{session}
 			canControl={app.canControl}
+			class="-mx-4 -mb-4 border-t"
 		/>{:else}<AgentHub {session} canControl={app.canControl} active={agentId ?? 'lead'} />{/if}
 </Sheet>
 
