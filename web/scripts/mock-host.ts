@@ -1305,7 +1305,7 @@ function runCommand(s: MockSession, name: string, args: string): Frame | string 
 		case 'tools':
 			return {
 				outcome: 'show',
-				text: 'Built in   read write edit glob grep shell job web_fetch web_search lsp todo task\nMCP        github (6)  linear (3)\nExtensions run_code'
+				text: 'Built in   read write edit glob grep shell job web_fetch web_search lsp todo task\nMCP        github (6)  linear (3)\nExtensions (none)'
 			};
 		case 'dirs':
 			return { outcome: 'show', text: `${s.s.cwd}\n/home/dev/shared-protos (added)` };

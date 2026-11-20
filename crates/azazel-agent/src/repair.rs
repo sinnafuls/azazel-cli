@@ -12,7 +12,7 @@ use serde_json::{Map, Number, Value};
 use crate::tool::Tool;
 
 /// Names other harnesses give the tools, and the tool each stands for.
-const ALIASES: [(&str, &str); 7] = [
+const ALIASES: [(&str, &str); 8] = [
     ("bash", "shell"),
     ("str_replace", "edit"),
     ("apply_edit", "edit"),
@@ -20,6 +20,9 @@ const ALIASES: [(&str, &str); 7] = [
     ("list_dir", "read"),
     ("ls", "read"),
     ("todowrite", "todo"),
+    // 0.17 folded `run_code` into `eval`; sessions and habits from before still call it. Kept for
+    // one release.
+    ("run_code", "eval"),
 ];
 
 /// A call as it is run: the tool its name stands for, and its input after repair.
@@ -75,6 +78,15 @@ pub(crate) fn prepare(call_id: String, name: String, mut input: Value, tools: &[
     let mut repairs = Vec::new();
     if aliased {
         repairs.push(format!("called as `{name}`; the tool is `{}`", tool.name()));
+        // `run_code` took only `code` and ran Luau; `eval` needs to be told.
+        if name.eq_ignore_ascii_case("run_code")
+            && tool.name() == "eval"
+            && let Some(object) = input.as_object_mut()
+            && !object.contains_key("language")
+        {
+            object.insert("language".to_string(), Value::String("luau".to_string()));
+            repairs.push("`eval` needs `language: \"luau\"` for what `run_code` ran".to_string());
+        }
     }
     // Arguments that were not JSON at all are refused whole, not guessed at.
     if input.get(INVALID_JSON_KEY).is_none() {
@@ -446,7 +458,7 @@ mod tests {
 
     #[test]
     fn other_harnesses_names_and_another_case_resolve_to_the_real_tool() {
-        let tools: Vec<Arc<dyn Tool>> = ["shell", "edit", "grep", "read", "todo", "Glob"]
+        let tools: Vec<Arc<dyn Tool>> = ["shell", "edit", "grep", "read", "todo", "eval", "Glob"]
             .into_iter()
             .map(|name| Arc::new(Named(name)) as Arc<dyn Tool>)
             .collect();
@@ -465,6 +477,22 @@ mod tests {
         let with_bash: Vec<Arc<dyn Tool>> = vec![Arc::new(Named("bash")), Arc::new(Named("shell"))];
         let (tool, aliased) = resolve("bash", &with_bash).unwrap();
         assert_eq!((tool.name(), aliased), ("bash", false));
+
+        let old = prepare(
+            "c2".into(),
+            "run_code".into(),
+            json!({"code": "return 1"}),
+            &tools,
+        );
+        assert_eq!(old.name, "eval");
+        assert_eq!(old.input, json!({"language": "luau", "code": "return 1"}));
+        let kept = prepare(
+            "c3".into(),
+            "run_code".into(),
+            json!({"language": "python", "code": "1"}),
+            &tools,
+        );
+        assert_eq!(kept.input["language"], "python");
 
         let prepared = prepare("c1".into(), "bash".into(), json!({}), &tools);
         assert_eq!(prepared.name, "shell");

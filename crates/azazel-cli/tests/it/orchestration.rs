@@ -184,7 +184,7 @@ fn a_coordinating_lead_has_no_tool_that_edits_or_runs_commands_and_stays_so_afte
     assert!(output.status.success(), "{}", stderr(&output));
     let request = sandbox.requests().remove(0).1;
     let tools = tool_names(&request);
-    for withheld in ["write", "edit", "shell", "job", "pty", "run_code"] {
+    for withheld in ["write", "edit", "shell", "job", "pty", "eval"] {
         assert!(!tools.contains(&withheld.to_string()), "{withheld} in {tools:?}");
     }
     for kept in ["task", "agent_wait", "read", "glob", "grep", "todo", "ask_user"] {

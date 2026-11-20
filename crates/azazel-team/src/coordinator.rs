@@ -312,7 +312,7 @@ mod tests {
         "task",
         "agent_wait",
         "worktree_apply",
-        "run_code",
+        "eval",
         "job",
         "mcp__github__create_issue",
         "report",

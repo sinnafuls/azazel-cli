@@ -300,9 +300,17 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         "memory_search" | "semantic_search" | "tool_search" => field("query"),
         "session_recall" => recall_summary(input),
         "skill" => field("name"),
-        "run_code" => field("code").map(|code| {
+        "eval" => field("code").map(|code| {
             let lines = code.trim().lines().count();
-            format!("Luau script, {lines} line{}", if lines == 1 { "" } else { "s" })
+            let language = match field("language").as_deref() {
+                Some("python" | "py") => "Python",
+                Some("javascript" | "js" | "node") => "JavaScript",
+                _ => "Luau",
+            };
+            format!(
+                "{language} script, {lines} line{}",
+                if lines == 1 { "" } else { "s" }
+            )
         }),
         "pty" => field("action").map(|action| pty_summary(&action, input)),
         "job" => Some(format!(
@@ -996,8 +1004,15 @@ mod tests {
             "src/a.rs"
         );
         assert_eq!(
-            tool_summary("run_code", &json!({"code": "\nlocal a = 1\nreturn a\n"})),
+            tool_summary(
+                "eval",
+                &json!({"language": "luau", "code": "\nlocal a = 1\nreturn a\n"})
+            ),
             "Luau script, 2 lines"
+        );
+        assert_eq!(
+            tool_summary("eval", &json!({"language": "python", "code": "print(1)"})),
+            "Python script, 1 line"
         );
         assert_eq!(
             tool_summary("grep", &json!({"pattern": "fn main", "path": "src"})),
