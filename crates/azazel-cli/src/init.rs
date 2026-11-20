@@ -71,11 +71,19 @@ static STAGED: AtomicU64 = AtomicU64::new(0);
 /// Nothing is written when `change` fails. Writers of one process take turns; `change` must not
 /// write a config file itself.
 pub fn edit_config(config: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
+    edit_config_if(config, |doc| change(doc).map(|()| true))
+}
+
+/// [`edit_config`] for a `change` that says whether it changed anything: when it did not (`false`),
+/// nothing is written, so the file is not created or rewritten for nothing.
+fn edit_config_if(config: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<bool>) -> Result<()> {
     let _turn = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
     let config = resolve_link(config);
     let config = config.as_path();
     let mut doc = read_document(config)?;
-    change(&mut doc)?;
+    if !change(&mut doc)? {
+        return Ok(());
+    }
     if let Some(dir) = config.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
@@ -107,14 +115,18 @@ pub fn edit_config(config: &Path, change: impl FnOnce(&mut DocumentMut) -> Resul
 
 /// Sets the key at `path` (`["editor", "mode"]`) in the config file at `config` to `value`, or
 /// removes it when `value` is `None`, keeping comments and everything else as written. Missing
-/// tables on the way are created.
+/// tables on the way are created for a value; a removal with a table missing has nothing to
+/// remove and writes nothing.
 pub fn set_config_value(config: &Path, path: &[&str], value: Option<Item>) -> Result<()> {
     let Some((key, tables)) = path.split_last() else {
         bail!("no setting named");
     };
-    edit_config(config, |doc| {
+    edit_config_if(config, |doc| {
         let mut table = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
         for (depth, name) in tables.iter().enumerate() {
+            if value.is_none() && !table.contains_key(name) {
+                return Ok(false);
+            }
             table = table
                 .entry(name)
                 .or_insert(Item::Table(Table::new()))
@@ -135,7 +147,7 @@ pub fn set_config_value(config: &Path, path: &[&str], value: Option<Item>) -> Re
                 table.remove(key);
             }
         }
-        Ok(())
+        Ok(true)
     })
 }
 
@@ -298,6 +310,30 @@ pub async fn run(paths: &Paths) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removing_a_key_below_a_missing_table_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        set_config_value(&config, &["tui", "theme"], None).unwrap();
+        assert!(!config.exists(), "a removal created the file");
+        std::fs::write(
+            &config,
+            "# mine
+[editor]
+mode = \"vim\"
+",
+        )
+        .unwrap();
+        set_config_value(&config, &["tui", "popups", "x"], None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "# mine
+[editor]
+mode = \"vim\"
+"
+        );
+    }
 
     #[test]
     fn a_nested_setting_is_written_kept_beside_comments_and_removed_again() {
