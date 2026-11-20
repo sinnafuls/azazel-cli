@@ -73,7 +73,7 @@ detach = ["dep:interprocess", "dep:process-wrap", "dep:winsafe"]
 # `azazel remote`: a web page and a WebSocket server that follow and steer background sessions from a
 # browser or a phone.
 remote = ["dep:azazel-remote", "detach"]
-test-support = ["azazel-ai/test-support"]
+test-support = ["azazel-ai/test-support", "azazel-browser?/test-support"]
 
 [dependencies]
 azazel-ai.workspace = true

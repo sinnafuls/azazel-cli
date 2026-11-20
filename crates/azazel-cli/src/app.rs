@@ -860,7 +860,8 @@ impl App {
                     )),
                     cli.profile.clone(),
                 )
-                .with_on_limit(&config.profiles.on_limit),
+                .with_on_limit(&config.profiles.on_limit)
+                .with_project_disables(crate::profiles::project_sets_disabled(&loaded.layers)),
             ),
             home_config: paths.home_config(),
             on_limit: config.profiles.on_limit.clone(),

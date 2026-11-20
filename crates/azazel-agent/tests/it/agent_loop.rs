@@ -2164,6 +2164,36 @@ async fn a_reply_that_stalls_is_dropped_and_the_retry_says_how_long_the_model_wa
 }
 
 #[tokio::test]
+async fn a_retry_says_how_many_attempts_there_are_how_long_it_waits_and_why() {
+    let mut session = start(Setup::default());
+    session.mock.push("a", MockStep::fail(AiError::Overloaded));
+    session.mock.push("a", MockStep::text("through"));
+    let events = session.run("go").await;
+
+    // attempt, max_attempts, delay_ms, error
+    type Retry = (u32, Option<u32>, Option<u64>, Option<String>);
+    let retries: Vec<Retry> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Retry {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error,
+                ..
+            } => Some((*attempt, *max_attempts, *delay_ms, error.clone())),
+            _ => None,
+        })
+        .collect();
+    // The policy of `start` asks the model 3 times in all and waits 1 ms before the first retry.
+    assert_eq!(
+        retries,
+        [(1, Some(3), Some(1), Some("provider overloaded".to_string()))]
+    );
+    assert_eq!(session.mock.requests_for("a").len(), 2);
+}
+
+#[tokio::test]
 async fn follow_ups_run_after_idle_and_model_changes_apply_to_the_next_request() {
     let mut session = start(Setup {
         tools: vec![slow("wait", Access::Exec, 150, 1)],

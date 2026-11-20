@@ -1135,15 +1135,7 @@ impl Tui {
                 false => format!("running {}", tool.name),
             }),
         };
-        let waiting = self.retrying.as_ref().map(|wait| {
-            let left = wait.until.saturating_duration_since(Instant::now());
-            crate::routing::retry_status(
-                wait.attempt,
-                wait.max_attempts,
-                left.as_secs_f64().ceil() as u64,
-                wait.error.as_deref(),
-            )
-        });
+        let waiting = self.retrying.as_ref().map(|wait| wait.status(Instant::now()));
         let running = waiting.or(running);
         let (what, phase) = match &running {
             Some(running) => (running.as_str(), tick),
@@ -1478,13 +1470,7 @@ impl Tui {
                 self.run_failed = true;
                 self.attend_end(Some(&error), took);
                 self.fail(&error);
-                let keys: Vec<String> = self
-                    .keymap
-                    .keys_for("retry")
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect();
-                self.info(&crate::routing::retry_hint(&keys));
+                self.info(&failure_hint(&self.keymap));
             }
             AgentEvent::ToolStart { .. }
             | AgentEvent::ToolUpdate { .. }
@@ -2839,6 +2825,64 @@ struct Retrying {
     max_attempts: Option<u32>,
     until: Instant,
     error: Option<String>,
+}
+
+impl Retrying {
+    /// The working line while the router waits: the attempt to come, the wait that is left at
+    /// `now` and why the last one failed.
+    fn status(&self, now: Instant) -> String {
+        let left = self.until.saturating_duration_since(now);
+        crate::routing::retry_status(
+            self.attempt,
+            self.max_attempts,
+            left.as_secs_f64().ceil() as u64,
+            self.error.as_deref(),
+        )
+    }
+}
+
+/// What follows the error of a run that failed: how to send the prompt again, with the keys
+/// `keymap` binds to `retry`.
+fn failure_hint(keymap: &Keymap) -> String {
+    let keys: Vec<String> = keymap.keys_for("retry").iter().map(ToString::to_string).collect();
+    crate::routing::retry_hint(&keys)
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn the_working_line_while_retrying_counts_the_attempt_the_wait_and_the_error() {
+        let now = Instant::now();
+        let mut wait = Retrying {
+            attempt: 1,
+            max_attempts: Some(3),
+            until: now + Duration::from_millis(3200),
+            error: Some(
+                "provider overloaded
+second line"
+                    .to_string(),
+            ),
+        };
+        assert_eq!(wait.status(now), "retrying 2/3 in 4s: provider overloaded");
+        // The wait is over: no countdown, and an unlimited policy has no total.
+        wait.until = now;
+        wait.max_attempts = None;
+        wait.error = None;
+        assert_eq!(wait.status(now), "retrying (attempt 2)");
+    }
+
+    #[test]
+    fn a_failed_run_says_which_keys_send_the_prompt_again() {
+        assert_eq!(
+            failure_hint(&Keymap::defaults()),
+            "/retry or f5 sends your last prompt again"
+        );
+        let mut keymap = Keymap::defaults();
+        keymap.merge_toml("retry = []").unwrap();
+        assert_eq!(failure_hint(&keymap), "/retry sends your last prompt again");
+    }
 }
 
 #[cfg(test)]

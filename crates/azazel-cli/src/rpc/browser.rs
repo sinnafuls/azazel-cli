@@ -111,7 +111,7 @@ mod real {
 
     use azazel_browser::{BrowserSession, BrowserStateInfo, LiveButton, LiveInput};
     use azazel_protocol::{BrowserInput, MouseButton};
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::{broadcast, mpsc};
 
     use super::*;
 
@@ -135,9 +135,10 @@ mod real {
         jobs: mpsc::UnboundedSender<Job>,
         /// The holders that watch.
         watching: Arc<Mutex<HashSet<String>>>,
-        /// Counts the watchers that arrived: every pump sends the latest picture again when it
-        /// changes, so that a new watcher gets one at once, even when the page is still.
-        resend: watch::Sender<u64>,
+        /// Names the watchers that arrived: the pump of that holder (and no other) sends the
+        /// latest picture again, so that a new watcher gets one at once, even when the page is
+        /// still.
+        resend: broadcast::Sender<String>,
     }
 
     impl Browser {
@@ -146,7 +147,7 @@ mod real {
             let session = services.get::<BrowserSession>()?;
             let (jobs, queue) = mpsc::unbounded_channel();
             let watching = Arc::new(Mutex::new(HashSet::new()));
-            let resend = watch::channel(0).0;
+            let resend = broadcast::channel(16).0;
             tokio::spawn(work(session.clone(), watching.clone(), resend.clone(), queue));
             Some(Arc::new(Browser {
                 session,
@@ -240,13 +241,14 @@ mod real {
                             }
                             state(&states.borrow_and_update().clone());
                         }
-                        changed = resend.changed() => {
-                            if changed.is_err() {
-                                return;
+                        arrived = resend.recv() => match arrived {
+                            Ok(who) if who != holder => {}
+                            // Behind: some watcher's name was lost, and it may be this one.
+                            Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                                picture(frames.borrow().clone());
                             }
-                            resend.borrow_and_update();
-                            picture(frames.borrow().clone());
-                        }
+                            Err(broadcast::error::RecvError::Closed) => return,
+                        },
                     }
                 }
             })
@@ -312,7 +314,7 @@ mod real {
     async fn work(
         session: Arc<BrowserSession>,
         watching: Arc<Mutex<HashSet<String>>>,
-        resend: watch::Sender<u64>,
+        resend: broadcast::Sender<String>,
         mut queue: mpsc::UnboundedReceiver<Job>,
     ) {
         let set = |holder: &str, on: bool| {
@@ -346,7 +348,7 @@ mod real {
                                 session.watch(on).await;
                             }
                             if on {
-                                resend.send_modify(|n| *n += 1);
+                                let _ = resend.send(holder.clone());
                             }
                             Ok(())
                         }
@@ -410,6 +412,72 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// A watcher that arrives is sent the latest picture; the watchers that were there are not
+    /// sent it again.
+    #[cfg(feature = "browser")]
+    #[tokio::test]
+    async fn a_new_watcher_is_sent_the_latest_picture_and_the_others_are_not() {
+        use azazel_browser::{BrowserSession, LiveSettings, Settings};
+        use tokio::sync::mpsc;
+
+        let session = Arc::new(BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: std::path::PathBuf::new(),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
+            live: LiveSettings::default(),
+        }));
+        let services = Services::new();
+        services.insert(session.clone());
+        let browser = Browser::of(&services).expect("the session has a browser");
+        let client = |holder: &str| {
+            let (tx, rx) = mpsc::unbounded_channel::<String>();
+            let pump = browser.pump_to(holder.to_string(), move |line, picture| {
+                if picture {
+                    let _ = tx.send(line);
+                }
+            });
+            (rx, pump)
+        };
+        let watch = |holder: &str| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            browser.run(
+                holder.to_string(),
+                Command::BrowserWatch { on: true },
+                Box::new(move |outcome| {
+                    let _ = tx.send(outcome);
+                }),
+            );
+            rx
+        };
+        let seq = |line: String| {
+            serde_json::from_str::<Value>(&line).expect("a frame")["seq"]
+                .as_u64()
+                .expect("a seq")
+        };
+
+        let (mut first, _first) = client("a");
+        let (mut second, _second) = client("b");
+        watch("a").await.expect("answered").expect("watching");
+        session.publish_picture("t1", "AAAA".to_string());
+        assert_eq!(seq(first.recv().await.expect("a picture")), 1);
+
+        // `b` arrives while the page is still: it gets the picture that is there.
+        watch("b").await.expect("answered").expect("watching");
+        assert_eq!(seq(second.recv().await.expect("a picture")), 1);
+
+        // `a` was sent nothing for it: its next picture is the next one.
+        session.publish_picture("t1", "AAAA".to_string());
+        assert_eq!(seq(first.recv().await.expect("a picture")), 2);
+        assert_eq!(seq(second.recv().await.expect("a picture")), 2);
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        assert!(first.try_recv().is_err(), "a was sent a picture twice");
+        assert!(second.try_recv().is_err(), "b was sent a picture twice");
+    }
 
     #[test]
     fn a_client_is_sent_one_picture_at_a_time_and_every_other_line() {

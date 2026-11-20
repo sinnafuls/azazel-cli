@@ -1715,6 +1715,12 @@ impl BrowserSession {
         self.feed.tx.subscribe()
     }
 
+    /// Puts a picture into the live view as the screencast would. For the tests of other crates.
+    #[cfg(feature = "test-support")]
+    pub fn publish_picture(&self, tab: &str, data: String) {
+        self.feed.publish(tab, data);
+    }
+
     /// What the browser is doing; changes when the tab, its address, the hold or whether a browser
     /// runs change.
     pub fn states(&self) -> watch::Receiver<BrowserStateInfo> {

@@ -362,6 +362,20 @@ pub struct Book {
     launch: Option<String>,
     /// `[profiles] on_limit`, which an edit must leave usable.
     on_limit: String,
+    /// A project's config sets `profiles.disabled`, which replaces the home list in this project.
+    project_disables: bool,
+}
+
+/// Whether a project layer of the configuration sets `profiles.disabled`.
+pub fn project_sets_disabled(layers: &[Layer]) -> bool {
+    layers.iter().any(|layer| {
+        layer.kind != LayerKind::Home
+            && layer
+                .table
+                .get("profiles")
+                .and_then(|profiles| profiles.get("disabled"))
+                .is_some()
+    })
 }
 
 impl Book {
@@ -377,7 +391,14 @@ impl Book {
             access,
             launch,
             on_limit: String::new(),
+            project_disables: false,
         }
+    }
+
+    /// Says that a project's config sets `profiles.disabled` (see [`project_sets_disabled`]).
+    pub fn with_project_disables(mut self, sets: bool) -> Book {
+        self.project_disables = sets;
+        self
     }
 
     pub fn with_on_limit(mut self, on_limit: &str) -> Book {
@@ -511,7 +532,14 @@ impl Book {
             edit,
         )?;
         self.write(&mut held, home_config, &change)?;
-        let (line, touched) = edit::describe(&change);
+        let (mut line, touched) = edit::describe(&change);
+        if self.project_disables
+            && matches!(change, edit::Change::Disable { .. } | edit::Change::Enable { .. })
+        {
+            line.push_str(
+                "; this project's config sets profiles.disabled, and its list replaces the home one here, so this changes nothing in this project",
+            );
+        }
         let reapply = touched
             .filter(|name| on == Some(name.as_str()))
             .map(|name| match &change {
@@ -645,6 +673,67 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "unknown profile `dear`; known: claude, gpt, cheap, thorough, frontend, research, mine"
+        );
+    }
+
+    #[test]
+    fn disabling_a_profile_warns_when_the_project_sets_its_own_disabled_list() {
+        let layer = |kind, text: &str| Layer {
+            kind,
+            path: "config.toml".into(),
+            table: text.parse().unwrap(),
+        };
+        let home_only = [layer(
+            LayerKind::Home,
+            "[profiles]
+disabled = [\"gpt\"]
+",
+        )];
+        let with_project = [
+            layer(
+                LayerKind::Home,
+                "[profiles]
+disabled = [\"gpt\"]
+",
+            ),
+            layer(
+                LayerKind::Project,
+                "[profiles]
+disabled = [\"research\"]
+",
+            ),
+        ];
+        assert!(!project_sets_disabled(&home_only));
+        assert!(project_sets_disabled(&with_project));
+
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("config.toml");
+        let book = |layers: &[Layer]| {
+            Book::new(
+                every_in(&BTreeMap::new(), layers),
+                Vec::new(),
+                Arc::new(|_: &str| Access::Ready),
+                None,
+            )
+            .with_project_disables(project_sets_disabled(layers))
+        };
+        let disable = |book: &Book, name: &str, edit: edit::Edit| {
+            let _ = name;
+            book.edit(&home, &edit, &BTreeMap::new(), None).unwrap().line
+        };
+
+        let plain = disable(&book(&home_only), "gpt", edit::Edit::Disable("gpt".to_string()));
+        assert_eq!(plain, "profile gpt is disabled");
+
+        let warned = disable(
+            &book(&with_project),
+            "claude",
+            edit::Edit::Disable("claude".to_string()),
+        );
+        assert!(
+            warned.starts_with("profile claude is disabled; this project's config sets profiles.disabled")
+                && warned.contains("replaces the home one"),
+            "{warned}"
         );
     }
 
