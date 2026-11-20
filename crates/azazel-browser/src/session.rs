@@ -2105,6 +2105,9 @@ impl BrowserSession {
 
     /// Closes the browser if it runs and lets go of a hold. The next action starts a new browser.
     pub async fn shutdown(&self) {
+        // The state lock first, as every action takes it before it looks at the hold: an action
+        // that is running keeps the hold it started under until it is done.
+        let mut state = self.state.lock().await;
         self.hold.lock().unwrap_or_else(PoisonError::into_inner).take();
         self.mark();
         self.released.notify_waiters();
@@ -2112,9 +2115,10 @@ impl BrowserSession {
             old.cancel.cancel();
         }
         self.feed.clear();
-        if let Some(running) = self.state.lock().await.take() {
+        if let Some(running) = state.take() {
             running.close(Duration::from_secs(2)).await;
         }
+        drop(state);
         self.settle(None).await;
     }
 }
@@ -2422,6 +2426,23 @@ mod tests {
             session.user_input("a", LiveInput::Back).await.unwrap_err(),
             "take the browser over first"
         );
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_running_action_before_it_lets_go_of_the_hold() {
+        let session = open_session();
+        session.take("a", false).unwrap();
+        let busy = session.state.lock().await;
+        let closing = tokio::spawn({
+            let session = session.clone();
+            async move { session.shutdown().await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(session.holds("a"), "the hold went while an action still ran");
+        assert!(!closing.is_finished());
+        drop(busy);
+        closing.await.unwrap();
+        assert!(!session.holds("a"));
     }
 
     #[tokio::test]
