@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use azazel_ai::Block;
 use azazel_core::runaway::Runaway;
 use azazel_core::{
-    Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Level, Outcome, Registrar, Ui,
+    Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Level, Outcome, Registrar, StartSource, Ui,
 };
 use serde_json::Value;
 
@@ -489,7 +489,11 @@ impl EventHandler for Guards {
     async fn handle(&self, event: &mut Event, ctx: &ExtCtx) -> Outcome {
         match event {
             Event::UserPrompt { .. } => *locked(&self.prompt) = Prompt::default(),
-            Event::SessionStart { .. } => self.verified.reset(),
+            // A new or cleared session has changed nothing. A resume (a fork, a move in the tree)
+            // keeps the edits of this process, which still have to be checked.
+            Event::SessionStart { source } if matches!(source, StartSource::Startup | StartSource::Clear) => {
+                self.verified.reset();
+            }
             Event::ToolCall {
                 agent,
                 call_id,

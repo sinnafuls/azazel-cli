@@ -472,6 +472,28 @@ async fn the_session_knows_whether_its_changes_were_checked_whichever_guards_are
 }
 
 #[tokio::test]
+async fn a_resume_keeps_the_open_edits_and_a_clear_forgets_them() {
+    let bench = bench(guards());
+    let lead = agent("lead", 0);
+    let state = || bench.registry.services.get::<Verification>().unwrap().state();
+    bench.prompt().await;
+    bench.changed(&lead, "src/a.rs").await;
+    assert_eq!(state(), Some(false));
+    bench
+        .emit(Event::SessionStart {
+            source: StartSource::Resume,
+        })
+        .await;
+    assert_eq!(state(), Some(false));
+    bench
+        .emit(Event::SessionStart {
+            source: StartSource::Clear,
+        })
+        .await;
+    assert_eq!(state(), None);
+}
+
+#[tokio::test]
 async fn a_check_that_an_edit_by_another_agent_overtook_does_not_clear_that_edit() {
     let bench = bench(guards());
     let lead = agent("lead", 0);
