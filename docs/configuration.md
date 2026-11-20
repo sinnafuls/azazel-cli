@@ -201,6 +201,7 @@ thinking = "low"
 | | `max_turns` | `0` | Requests the lead may make per prompt; `0` is no limit. `--max-turns` sets it for one run |
 | `[tools]` | `disabled` | `[]` | Tool names withheld from every agent; see [tools](tools.md) |
 | | `defer` | `["mcp__*", "browser", "screen", "debug", "sprite_sheet", "generate_*", "schedule", "pty", "http", "list_mcp_resources", "worktree_apply", "worktree_discard", "memory_forget"]` | Tools kept out of the prompt until the model searches for them, on Claude 4.5 and later through Anthropic's API; a trailing `*` covers every name it starts; see [deferred tools](tools.md#deferred-tools) |
+| | `code_first` | `false` | Give the model full schemas only for `read`, `edit`, `write`, `shell`, `eval`, `ask_user`, `todo` and `task` (and `patch`, `plan_submit` and the goal and report tools where they apply); it calls every other tool from a Luau `eval` script. Needs `tools.eval.luau`; see [code-first mode](tools.md#code-first-mode) |
 | | `max_result_bytes` | `50000` | Tool output beyond this is cut and saved as an artifact |
 | | `shell_timeout_secs` | `120` | Default time limit of a `shell` call |
 | | `cache_reads` | `true` | A repeated `read`, `grep` or `glob` that gives the same result while the earlier one is still in the context is answered with a short note; see [tools](tools.md#repeated-reads-retries-and-time-limits) |

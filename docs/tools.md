@@ -719,6 +719,34 @@ The four `generate_*` tools are registered only when a media backend has credent
 
 See [mcp](mcp.md).
 
+### Code-first mode
+
+With `[tools] code_first = true` the model gets full schemas for a small core only: `read`, `edit`, `write`,
+`shell`, `eval`, `ask_user`, `todo` and `task`, plus `patch` where it replaces `edit`, `plan_submit`, and the
+goal and report tools of runs that must end themselves. Every other tool (search, web, LSP, MCP, memory, the
+browser, and so on) is left out of the tool list and called from a Luau script in `eval`:
+
+```lua
+local hits = tools.grep{ pattern = "TODO", path = "src" }
+return tools.read{ path = "src/main.rs" }
+```
+
+`eval`'s description lists those tools as one-line signatures, as many as fit in about 6000 characters, and
+the rest by name; `tools.describe(name)` gives the arguments of any of them. A script can also call a tool
+that is in the list. Tools that need a person's decision (`ask_user`, `task`) stay direct calls.
+
+- The list and the description are fixed for the session, so the provider's prompt cache stays valid. An MCP
+  server that connects after the description was built is not in it; reach its tools with `tools.search` or
+  `tools["mcp__server__tool"]`.
+- `defer` and `tool_search` do not apply to hidden tools: they are not in the list at all.
+- Permissions, hooks and the read guard apply to a call from a script exactly as to a direct one.
+- Sub-agents follow the lead unless their definition has a `tools:` list, which is kept as written. The
+  coordinator is never code-first.
+- It needs Luau in `eval` (`tools.eval.luau = true`, in a build with the `lua` feature). Without it azazel
+  logs a warning and ignores the setting.
+- `tools/code-first-compare.py` runs one task several times in each mode with `azazel -p` and compares tokens,
+  cache reads, cost and time from the usage log, so you can see whether the mode pays off with your model.
+
 ### Deferred tools
 
 On Claude 4.5 and later through Anthropic's own API, the tools `[tools] defer` names are sent with
@@ -863,6 +891,7 @@ background_max_secs = 7200            # longest a background Luau script may run
 | Key | Default | Meaning |
 |---|---|---|
 | `disabled` | `[]` | Tools removed for every agent, by name (also MCP and extension tools) |
+| `code_first` | `false` | Full schemas only for a core of tools; the rest are called from Luau `eval` scripts; see [code-first mode](#code-first-mode) |
 | `defer` | MCP tools and seldom used built-in tools | Tools kept out of the prompt until the model searches for them; see [deferred tools](#deferred-tools) |
 | `max_result_bytes` | `50000` | Size above which a result is cut and spilled to an artifact |
 | `shell_timeout_secs` | `120` | Timeout of a `shell` call without `timeout_secs` |
