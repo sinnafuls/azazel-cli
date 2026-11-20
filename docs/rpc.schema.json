@@ -1322,6 +1322,10 @@
               "minimum": 0,
               "maximum": 255,
               "default": 0
+            },
+            "continues": {
+              "type": "boolean",
+              "default": false
             }
           },
           "required": [
@@ -1329,7 +1333,7 @@
             "x",
             "y"
           ],
-          "description": "A click, or with `count` 2 a double click."
+          "description": "A click, or with `count` 2 a double click: the host plays every press of it, the first\nand the second. With `continues` the presses before the last one were sent already (the\nsecond click of a slow double click, after its first went as a click of its own), and\nthe host plays the last press only, as press number `count`."
         },
         {
           "type": "object",

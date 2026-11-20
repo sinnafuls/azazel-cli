@@ -1625,7 +1625,10 @@ pub struct Forgotten {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrowserInput {
-    /// A click, or with `count` 2 a double click.
+    /// A click, or with `count` 2 a double click: the host plays every press of it, the first
+    /// and the second. With `continues` the presses before the last one were sent already (the
+    /// second click of a slow double click, after its first went as a click of its own), and
+    /// the host plays the last press only, as press number `count`.
     Click {
         x: f64,
         y: f64,
@@ -1633,6 +1636,8 @@ pub enum BrowserInput {
         button: MouseButton,
         #[serde(default)]
         count: u8,
+        #[serde(default)]
+        continues: bool,
     },
     /// Scrolls the wheel at the point by `dy` pixels (down is positive).
     Scroll { x: f64, y: f64, dy: f64 },

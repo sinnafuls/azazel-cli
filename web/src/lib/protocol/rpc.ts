@@ -312,6 +312,7 @@ export type BrowserInput =
 			 */
 			button?: 'left' | 'middle' | 'right';
 			count?: number;
+			continues?: boolean;
 	  }
 	| {
 			kind: 'scroll';

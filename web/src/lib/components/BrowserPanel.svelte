@@ -79,7 +79,9 @@
 	};
 
 	const send = (input: BrowserInput) => void live.input(input);
-	const clicks = new Clicks((x, y, count) => send({ kind: 'click', x, y, count }));
+	const clicks = new Clicks((x, y, count, continues) =>
+		send({ kind: 'click', x, y, count, ...(continues && { continues }) })
+	);
 	const scrolls = new Scrolls((x, y, dy) => send({ kind: 'scroll', x, y, dy }));
 	const typing = new Typing(send);
 	/** Sends what still waits, in the order it was done. */

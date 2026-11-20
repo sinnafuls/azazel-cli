@@ -119,11 +119,14 @@ impl LiveButton {
 /// What a user does in the picture. `x` and `y` are fractions (0 to 1) of the picture.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LiveInput {
+    /// `count` is which press in a row the last one is (2: a double click). With `continues`
+    /// the page already got the presses before it, and gets the last one only.
     Click {
         x: f64,
         y: f64,
         button: LiveButton,
         count: u8,
+        continues: bool,
     },
     Scroll {
         x: f64,
@@ -141,6 +144,14 @@ pub enum LiveInput {
     },
     Back,
     Reload,
+}
+
+/// The presses a click plays, each by its number in the row (`clickCount`): all of them up to
+/// `count`, or the last one alone when the ones before it were played by earlier clicks. A page
+/// counts presses, so none may reach it twice.
+pub(crate) fn presses(count: u8, continues: bool) -> std::ops::RangeInclusive<u8> {
+    let last = count.clamp(1, 3);
+    if continues { last..=last } else { 1..=last }
 }
 
 /// What the last screencast picture shows, to map a position in it to the page.
@@ -471,6 +482,7 @@ mod tests {
             y: 0.2,
             button: LiveButton::Left,
             count: 1,
+            continues: false,
         };
         actions.record(&LiveInput::Navigate {
             url: "https://example.com/in".into(),
@@ -520,6 +532,23 @@ mod tests {
         for secret in ["s3cret", "token", "pw", "abc", "next"] {
             assert!(!note.contains(secret), "{secret} in {note}");
         }
+    }
+
+    #[test]
+    fn a_click_that_continues_a_row_plays_its_last_press_only() {
+        let played = |count, continues| presses(count, continues).collect::<Vec<u8>>();
+        // A click, a double click and a triple click sent whole.
+        assert_eq!(played(1, false), [1]);
+        assert_eq!(played(2, false), [1, 2]);
+        assert_eq!(played(3, false), [1, 2, 3]);
+        // The second and the third click of a slow row: the page has the ones before.
+        assert_eq!(played(2, true), [2]);
+        assert_eq!(played(3, true), [3]);
+        // No count is one press, and no row is longer than three.
+        assert_eq!(played(0, false), [1]);
+        assert_eq!(played(0, true), [1]);
+        assert_eq!(played(9, false), [1, 2, 3]);
+        assert_eq!(played(9, true), [3]);
     }
 
     #[test]

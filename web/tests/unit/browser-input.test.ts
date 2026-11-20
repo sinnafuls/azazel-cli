@@ -223,7 +223,17 @@ describe('clicks', () => {
 	const make = () => {
 		const t = clock();
 		const sent: [number, number, number][] = [];
-		return { t, sent, clicks: new Clicks((x, y, n) => sent.push([x, y, n]), 220, t.c) };
+		/** Which presses the page got, as the host plays what was sent: each by its number in the row. */
+		const presses: number[] = [];
+		const clicks = new Clicks(
+			(x, y, n, continues) => {
+				sent.push([x, y, n]);
+				for (let press = continues ? n : 1; press <= n; press++) presses.push(press);
+			},
+			220,
+			t.c
+		);
+		return { t, sent, presses, clicks };
 	};
 
 	it('sends a click once no second one followed', () => {
@@ -241,6 +251,59 @@ describe('clicks', () => {
 		clicks.click(0.2, 0.3, 2);
 		t.advance(1000);
 		expect(sent).toEqual([[0.2, 0.3, 2]]);
+	});
+
+	it('gives the page two presses for a slow double click, not three', () => {
+		const { t, sent, presses, clicks } = make();
+		clicks.click(0.2, 0.3, 1);
+		// The second click comes after the first stopped waiting and went.
+		t.advance(300);
+		expect(presses).toEqual([1]);
+		clicks.click(0.2, 0.3, 2);
+		t.advance(1000);
+		expect(sent).toEqual([
+			[0.2, 0.3, 1],
+			[0.2, 0.3, 2]
+		]);
+		expect(presses).toEqual([1, 2]);
+	});
+
+	it('gives the page three presses for a triple click, fast or slow', () => {
+		const fast = make();
+		fast.clicks.click(0.5, 0.5, 1);
+		fast.t.advance(90);
+		fast.clicks.click(0.5, 0.5, 2);
+		fast.t.advance(90);
+		fast.clicks.click(0.5, 0.5, 3);
+		fast.t.advance(1000);
+		expect(fast.presses).toEqual([1, 2, 3]);
+
+		const slow = make();
+		for (const nth of [1, 2, 3]) {
+			slow.clicks.click(0.5, 0.5, nth);
+			slow.t.advance(300);
+		}
+		expect(slow.presses).toEqual([1, 2, 3]);
+		// A fourth click in the row is one more press, the most the host counts.
+		slow.clicks.click(0.5, 0.5, 4);
+		expect(slow.presses).toEqual([1, 2, 3, 3]);
+	});
+
+	it('gives the page one press for a click sent early because a key followed, then one more', () => {
+		const { presses, clicks } = make();
+		clicks.click(0.4, 0.4, 1);
+		clicks.flush();
+		clicks.click(0.4, 0.4, 2);
+		expect(presses).toEqual([1, 2]);
+	});
+
+	it('sends a double click whole when its first click was forgotten', () => {
+		const { t, presses, clicks } = make();
+		clicks.click(0.4, 0.4, 1);
+		clicks.drop();
+		t.advance(300);
+		clicks.click(0.4, 0.4, 2);
+		expect(presses).toEqual([1, 2]);
 	});
 
 	it('sends two clicks in two places as two clicks, in order', () => {

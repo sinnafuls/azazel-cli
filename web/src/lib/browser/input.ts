@@ -184,37 +184,50 @@ export class Scrolls {
 
 /**
  * Clicks. A double click is one command with `count: 2`, which the host plays as both presses, so
- * the first click of a pair must not be sent on its own: a click waits `ms` for a second one.
- * `flush` sends a click that waits at once (before a key, so that what is typed lands where the
- * click put the caret).
+ * the first click of a pair is not sent on its own: a click waits `ms` for a second one. A click
+ * that follows clicks of its row which went already (a slow double click, the third of a triple
+ * click) is sent with `continues`: the host then plays its press alone, as press number `count`,
+ * so the page gets every press once. `flush` sends a click that waits at once (before a key, so
+ * that what is typed lands where the click put the caret).
  */
 export class Clicks {
 	private timer: unknown = null;
 	private waiting: { x: number; y: number } | null = null;
+	/** How many clicks of the row that is going on the host was sent. */
+	private sent = 0;
 	constructor(
-		private readonly send: (x: number, y: number, count: number) => void,
+		private readonly send: (x: number, y: number, count: number, continues: boolean) => void,
 		private readonly ms = 220,
 		private readonly clock: Clock = realClock
 	) {}
 	/** `nth` is which click in a row this is, as the browser counts it (`MouseEvent.detail`). */
 	click(x: number, y: number, nth = 1) {
 		if (nth >= 2) {
-			// The second of a pair (or the third: the host plays up to three). When the first already
-			// went (a slow double click), the page still gets its double click from this one.
-			this.drop();
-			return this.send(x, y, Math.min(nth, 3));
+			// The host plays up to three presses in a row. It has the clicks before this one when
+			// each of them went; when the first still waits, or one was forgotten, it plays them all.
+			const continues = !this.waiting && this.sent >= nth - 1;
+			this.forgetWaiting();
+			this.sent = nth;
+			return this.send(x, y, Math.min(nth, 3), continues);
 		}
 		this.flush();
+		this.sent = 0;
 		this.waiting = { x, y };
 		this.timer = this.clock.setTimeout(() => this.flush(), this.ms);
 	}
 	flush() {
 		const w = this.waiting;
-		this.drop();
-		if (w) this.send(w.x, w.y, 1);
+		this.forgetWaiting();
+		if (!w) return;
+		this.sent = 1;
+		this.send(w.x, w.y, 1, false);
 	}
-	/** Forgets a click that waits. */
+	/** Forgets a click that waits, and the row it began. */
 	drop() {
+		this.forgetWaiting();
+		this.sent = 0;
+	}
+	private forgetWaiting() {
 		if (this.timer !== null) this.clock.clearTimeout(this.timer);
 		this.timer = null;
 		this.waiting = null;

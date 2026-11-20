@@ -762,6 +762,7 @@ async fn a_watched_tab_sends_pictures_and_a_taken_over_browser_holds_the_agent_u
                 y: 0.25,
                 button: azazel_browser::LiveButton::Left,
                 count: 1,
+                continues: false,
             },
         )
         .await
@@ -798,4 +799,66 @@ async fn a_watched_tab_sends_pictures_and_a_taken_over_browser_holds_the_agent_u
     assert_eq!(session.states().borrow().watchers, 0);
     session.shutdown().await;
     assert!(!session.states().borrow().running);
+}
+
+/// A page that keeps the number of every press it gets (`MouseEvent.detail`) and counts its
+/// double clicks.
+const PRESS_PAGE: &str = r#"<!doctype html>
+<html><head><title>presses</title></head>
+<body style="margin:0">
+<button style="position:fixed;left:0;top:0;width:100vw;height:50vh">Big</button>
+<script>
+window.downs = [];
+window.doubles = 0;
+addEventListener('mousedown', (e) => window.downs.push(e.detail));
+addEventListener('dblclick', () => window.doubles++);
+</script>
+</body></html>"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_click_that_continues_a_row_reaches_the_page_as_one_press() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bench = Bench::new(dir.path());
+    let site = serve(PRESS_PAGE).await;
+    bench.ok(json!({ "action": "open", "url": site })).await;
+
+    // A click is placed in the picture, so one has to have arrived.
+    let session = bench.session.clone();
+    let mut frames = session.frames();
+    session.watch(true).await;
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while frames.borrow_and_update().is_none() {
+            frames.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+
+    let click = |count, continues| azazel_browser::LiveInput::Click {
+        x: 0.5,
+        y: 0.25,
+        button: azazel_browser::LiveButton::Left,
+        count,
+        continues,
+    };
+    session.take("phone", false).unwrap();
+    // A slow double click: the first click went on its own, the second continues it.
+    session.user_input("phone", click(1, false)).await.unwrap();
+    session.user_input("phone", click(2, true)).await.unwrap();
+    // The third of a triple click, then a double click sent whole.
+    session.user_input("phone", click(3, true)).await.unwrap();
+    session.user_input("phone", click(2, false)).await.unwrap();
+    session.give_back("phone");
+
+    let seen = bench
+        .ok(json!({ "action": "eval", "expression": "window.downs.join(',') + ' doubles ' + window.doubles" }))
+        .await;
+    assert!(seen.contains("\"1,2,3,1,2 doubles 2\""), "{seen}");
+
+    session.watch(false).await;
+    session.shutdown().await;
 }

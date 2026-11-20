@@ -367,7 +367,13 @@ mod real {
 
     fn input_of(input: BrowserInput) -> Result<LiveInput, String> {
         Ok(match input {
-            BrowserInput::Click { x, y, button, count } => LiveInput::Click {
+            BrowserInput::Click {
+                x,
+                y,
+                button,
+                count,
+                continues,
+            } => LiveInput::Click {
                 x: fraction("x", x)?,
                 y: fraction("y", y)?,
                 button: match button {
@@ -376,6 +382,7 @@ mod real {
                     MouseButton::Right => LiveButton::Right,
                 },
                 count,
+                continues,
             },
             BrowserInput::Scroll { x, y, dy } => LiveInput::Scroll {
                 x: fraction("x", x)?,

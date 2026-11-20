@@ -1931,10 +1931,16 @@ impl BrowserSession {
                 .ok_or_else(|| "the picture of the page has not arrived yet".to_string())
         };
         match &input {
-            LiveInput::Click { x, y, button, count } => {
+            LiveInput::Click {
+                x,
+                y,
+                button,
+                count,
+                continues,
+            } => {
                 let (x, y) = at(*x, *y)?;
                 running.mouse(&session, "mouseMoved", x, y, json!({})).await?;
-                for n in 1..=(*count).clamp(1, 3) {
+                for n in live::presses(*count, *continues) {
                     let extra = json!({ "button": button.name(), "clickCount": n });
                     running
                         .mouse(&session, "mousePressed", x, y, extra.clone())
