@@ -185,6 +185,8 @@ pub(crate) struct Models {
     pub(super) profile_target: Option<String>,
     /// A profile to put the cursor on once the next change is answered.
     pub(super) profile_pick: Option<String>,
+    /// What to say once the pending hide or show of a built-in profile is answered.
+    pub(super) profile_said: Option<String>,
     pub(super) action: usize,
     pub(super) top: Cell<usize>,
     pub(super) side_top: Cell<usize>,
@@ -241,6 +243,7 @@ impl Models {
             profile_cursor: 0,
             profile_target: None,
             profile_pick: None,
+            profile_said: None,
             action: 0,
             top: Cell::new(0),
             side_top: Cell::new(0),
@@ -1779,13 +1782,18 @@ impl Models {
         }
         let selected = self.focus == Focus::Body || self.narrow.get();
         let detail_rows = if rows >= 6 { 3 } else { 0 };
-        let list_rows = rows - detail_rows;
-        placed.list = (2, list_rows);
         let models = self.items.iter().filter_map(|item| match item {
             Item::Model(at) => self.data.rows.get(*at),
             Item::Rule => None,
         });
         let columns = list::Columns::of(models, width);
+        // A row of titles over the columns, when there is room for it and rows to show.
+        let header = columns
+            .header(width, theme)
+            .filter(|_| rows - detail_rows >= 3 && !self.items.is_empty());
+        let head_rows = usize::from(header.is_some());
+        let list_rows = rows - detail_rows - head_rows;
+        placed.list = (2 + head_rows, list_rows);
         let total = self.items.len();
         if total == 0 {
             let mut lines = vec![theme.paint(Role::Muted, &self.empty_reason())];
@@ -1830,6 +1838,9 @@ impl Models {
             })
             .collect();
         lines.resize(list_rows, String::new());
+        if let Some(header) = header {
+            lines.insert(0, header);
+        }
         if detail_rows > 0 {
             lines.push(String::new());
             match self.selected_model() {

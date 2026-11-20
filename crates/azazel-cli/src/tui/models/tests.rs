@@ -8,6 +8,9 @@ use azazel_tui::mouse::{Mouse, MouseKind};
 use azazel_tui::{Glyph, GlyphLevel, Glyphs, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::profiles::edit::Edit;
+use crate::profiles::{Entry, Profile, ProfileSource, Usability};
+
 use super::screen::{Data, Models, Opening, Scope, Step};
 use super::{FavouriteChange, Request};
 
@@ -610,16 +613,16 @@ fn the_mouse_scrolls_selects_activates_and_picks_chips() {
     // A frame places what the mouse finds.
     shown(&screen, 140, 20);
     let at = |row: usize, column: usize, kind: MouseKind| Mouse { kind, row, column };
-    // Body rows start on the box's row 3 (border, status, search); the body column after the
-    // sidebar.
+    // Model rows start on the box's row 4 (border, status, search, column titles); the body
+    // column after the sidebar.
     let body = 2 + screen.placed.borrow().body + 1;
     let first = screen.selected_model().unwrap().model.clone();
-    screen.on_mouse(at(4, body, MouseKind::Press));
+    screen.on_mouse(at(5, body, MouseKind::Press));
     let second = screen.selected_model().unwrap().model.clone();
     assert_ne!(first, second);
     assert!(screen.strip.is_none());
     // A second click on it opens the role strip.
-    screen.on_mouse(at(4, body, MouseKind::Press));
+    screen.on_mouse(at(5, body, MouseKind::Press));
     assert!(screen.strip.is_some());
     shown(&screen, 140, 20);
     let (row, chips) = screen.placed.borrow().strip.clone().unwrap();
@@ -663,4 +666,114 @@ fn below_eighty_columns_tab_steps_through_the_scopes() {
     let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
     let hints = screen.hints(&theme);
     assert!(hints.iter().any(|hint| hint.key == format!("{}{}", theme.glyph(Glyph::MoreUp), theme.glyph(Glyph::MoreDown))));
+}
+
+fn entry(name: &str, source: ProfileSource, builtin: bool, enabled: bool) -> Entry {
+    Entry {
+        profile: Profile {
+            name: name.to_string(),
+            source,
+            roles: [("default".to_string(), vec![OPUS.parse().unwrap()])].into(),
+        },
+        usability: Usability {
+            usable: true,
+            missing_logins: Vec::new(),
+            unknown_providers: Vec::new(),
+        },
+        enabled,
+        builtin,
+    }
+}
+
+fn on_profiles(entries: Vec<Entry>) -> Models {
+    let mut data = data();
+    data.profiles = entries;
+    Models::new(
+        data,
+        &Opening {
+            role: None,
+            provider: None,
+            profiles: true,
+        },
+        &BTreeSet::new(),
+        Glyphs::default(),
+    )
+}
+
+fn hint_keys(screen: &Models) -> Vec<String> {
+    screen
+        .hints(&Theme::dark())
+        .into_iter()
+        .map(|hint| hint.key)
+        .filter(|key| key.chars().count() == 1 && key.chars().all(|c| c.is_ascii_lowercase()))
+        .collect()
+}
+
+#[test]
+fn profile_hints_list_the_keys_that_act_on_the_selected_row() {
+    let mut screen = on_profiles(vec![
+        entry("claude", ProfileSource::Builtin, true, true),
+        entry("gpt", ProfileSource::User, true, true),
+        entry("mine", ProfileSource::User, false, true),
+        entry("team", ProfileSource::Project, false, true),
+    ]);
+    assert_eq!(hint_keys(&screen), ["n", "c", "e", "f", "d"]);
+    press(&mut screen, KeyCode::Down);
+    assert_eq!(hint_keys(&screen), ["n", "c", "e", "f", "d", "x"]);
+    press(&mut screen, KeyCode::Down);
+    assert_eq!(hint_keys(&screen), ["n", "c", "e", "f", "r", "x"]);
+    press(&mut screen, KeyCode::Down);
+    assert_eq!(hint_keys(&screen), ["n", "c"]);
+}
+
+#[test]
+fn hiding_a_built_in_profile_says_so_and_how_to_undo_it() {
+    let mut screen = on_profiles(vec![entry("claude", ProfileSource::Builtin, true, true)]);
+    assert!(matches!(
+        press(&mut screen, KeyCode::Char('d')),
+        Some(Request::EditProfile(Edit::Disable(name))) if name == "claude"
+    ));
+    screen.profiles_changed(
+        Ok("profile claude is disabled".to_string()),
+        vec![entry("claude", ProfileSource::Builtin, true, false)],
+        None,
+        None,
+    );
+    assert!(shown(&screen, 120, 20)[0].contains("claude hidden; d shows it again"));
+    assert!(hint_keys(&screen).contains(&"d".to_string()));
+    assert!(matches!(
+        press(&mut screen, KeyCode::Char('d')),
+        Some(Request::EditProfile(Edit::Enable(name))) if name == "claude"
+    ));
+    screen.profiles_changed(
+        Ok("profile claude is enabled".to_string()),
+        vec![entry("claude", ProfileSource::Builtin, true, true)],
+        None,
+        None,
+    );
+    assert!(shown(&screen, 120, 20)[0].contains("claude shown again; d hides it"));
+}
+
+#[test]
+fn the_model_list_titles_its_context_output_and_price_columns() {
+    let screen = screen(Opening::default());
+    let lines = shown(&screen, 140, 20);
+    let head = lines
+        .iter()
+        .find(|line| line.contains("ctx") && line.contains("out") && line.contains("price"))
+        .unwrap_or_else(|| panic!("no header in {lines:#?}"));
+    // Each title sits over its column: the right edge of the title is the right edge of the cells.
+    let row = lines.iter().find(|line| line.contains("200k")).unwrap();
+    let end = |line: &str, needle: &str| {
+        let at = line.find(needle).unwrap();
+        text::width(&line[..at]) + text::width(needle)
+    };
+    assert_eq!(end(head, "ctx"), end(row, "200k"));
+    assert_eq!(end(head, "out"), end(row, "64k"));
+    // Clicks still land on the row they are drawn on.
+    let first = lines
+        .iter()
+        .position(|line| line.contains("anthropic/") || line.contains("openai/"))
+        .unwrap();
+    assert!(first >= 3, "{lines:#?}");
 }

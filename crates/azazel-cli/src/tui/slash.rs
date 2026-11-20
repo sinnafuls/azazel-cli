@@ -601,13 +601,7 @@ impl Tui {
     }
 
     fn help(&mut self) {
-        let commands = self.commands();
-        let widest = commands.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-        let mut out = String::new();
-        for (name, about) in commands {
-            out.push_str(&format!("/{name:<widest$}  {}\n", first_line(&about)));
-        }
-        out.push_str("\n@path attaches a file · !command runs in your shell · /keys lists key bindings");
+        let out = help_text(&self.commands(), self.width(), self.theme.glyph(Glyph::Ellipsis));
         self.info(&out);
     }
 
@@ -976,6 +970,20 @@ pub(crate) fn is_note(message: &str) -> bool {
         || message.starts_with(crate::branch::BRANCH_NOTE)
 }
 
+/// The text of `/help` for a terminal `width` columns wide: each description gets what its
+/// name leaves of the width, so it is cut only when the terminal is too narrow for it.
+fn help_text(commands: &[(String, String)], width: usize, ellipsis: &str) -> String {
+    let widest = commands.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    let room = width.saturating_sub(widest + 3).max(20);
+    let mut out = String::new();
+    for (name, about) in commands {
+        let about = azazel_tui::text::truncate(about.lines().next().unwrap_or_default(), room, ellipsis);
+        out.push_str(&format!("/{name:<widest$}  {about}\n"));
+    }
+    out.push_str("\n@path attaches a file · !command runs in your shell · /keys lists key bindings");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use azazel_tui::{RESET, SelectList, text};
@@ -1078,5 +1086,26 @@ mod tests {
         assert!(row.contains(&preview));
         assert_eq!(row.matches(RESET).count(), 1);
         assert_eq!(text::width(row), 40);
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::help_text;
+
+    #[test]
+    fn help_descriptions_use_the_width_and_are_cut_only_when_it_is_short() {
+        let long = "a description that is clearly longer than seventy columns, which used to be cut with an ellipsis at that width".to_string();
+        let commands = vec![
+            ("model".to_string(), long.clone()),
+            ("x".to_string(), "short".to_string()),
+        ];
+        let wide = help_text(&commands, 140, "…");
+        assert!(wide.contains(&long), "{wide}");
+        assert!(!wide.contains('…'));
+        let narrow = help_text(&commands, 60, "…");
+        assert!(narrow.lines().next().unwrap().ends_with('…'), "{narrow}");
+        assert!(narrow.lines().all(|line| azazel_tui::text::width(line) <= 100));
+        assert!(narrow.lines().next().unwrap().chars().count() <= 60);
     }
 }

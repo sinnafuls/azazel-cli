@@ -1509,10 +1509,10 @@ The body shows the scope selected in the sidebar:
   comes from, whether your logins can use it, whether it is turned off, and a mark on the current one.
   `Enter` switches to it, `n` makes a new one from the roles as they are now, `c` copies the selected one,
   `e` sets one of its roles with the model picker and `f` adds a fallback to one, `r` renames a saved
-  profile, `d` turns a built-in off or on (`[profiles] disabled`), and `x` deletes a saved profile or, on a
+  profile, `d` hides a built-in or shows it again (`[profiles] disabled`; the status row says which, and that `d` undoes it), and `x` deletes a saved profile or, on a
   built-in you edited, goes back to the built-in. Editing a built-in saves your own
   `[profiles.<name>.roles]` over it. Every change is written to `~/.azazel/config.toml` at once, and a
-  change to the current profile applies to the session straight away. The `/profile` picker opens this view too.
+  change to the current profile applies to the session straight away. The hint row at the bottom lists only the keys that act on the selected row. The `/profile` picker opens this view too.
 - **A provider without a credential**: which variable to set, `Sign in` for a provider with a sign-in and
   `Add API key` for one that takes a key, then the models its catalogue entry lists. `Enter` runs the sign-in or
   asks for the key, and the screen comes back on that provider with its models.
@@ -1562,7 +1562,7 @@ Appearance, which changes the running UI at once) chooses the set; `AZAZEL_GLYPH
 |---|---|
 | `unicode` | Symbols every modern terminal font has: `❯ ✔ ✘ ⚠ ⑂ ◫ ↯ ⬢`, rounded frames, braille spinner |
 | `nerd` | The same frames and spinner, with icons from a [Nerd Font](https://www.nerdfonts.com) in place of the symbols, and an icon before every file and directory in [tool cards](#tool-cards). The terminal must use such a font; azazel cannot tell whether it does |
-| `ascii` | Plain ASCII only: `>` for the prompt, `-` rules, tables and tool cards drawn with `+`, `-` and a vertical bar, `[+] [!] [-]` for the state of a tool call, `[x] [~] [ ]` todo marks, `* - +` bullets, a spinner that turns through `-`, `\`, a vertical bar and `/`, a vertical bar between status segments, `...` where text is cut, words for icons (`git: main`, `ctx 42%`), and the opening banner in thin letters |
+| `ascii` | Plain ASCII only: `>` for the prompt, `-` rules, tables and tool cards drawn with `+`, `-` and a vertical bar, `[+] [!] [-]` for the state of a tool call, `[x] [~] [ ]` todo marks, `* - +` bullets, a spinner that pulses through `.`, `o` and `O` (no `-` or vertical bar, which it would be mistaken for beside the rules), a vertical bar between status segments, `...` where text is cut, words for icons (`git: main`, `ctx 42%`), and the opening banner in thin letters |
 | `auto` (default) | `unicode`, or `ascii` when `LC_ALL`, `LC_CTYPE` or `LANG` names an encoding that is not UTF-8 |
 
 An icon that would only repeat the word beside it is left out at the `ascii` level (`2 agents`, not

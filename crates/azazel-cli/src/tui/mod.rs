@@ -869,7 +869,7 @@ impl Tui {
             "/settings accounts and models",
             "ctrl+c twice quits",
         ];
-        self.info(&keys.join(separator));
+        self.info(&phrases_in_lines(&keys, separator, width).join("\n"));
         let skipped = match self.backend.local() {
             Some(local) => local.app.ignored_settings.join(", "),
             None => String::new(),
@@ -2783,6 +2783,22 @@ pub(crate) fn project_files(root: &std::path::Path, ignored: bool) -> Vec<String
         .collect()
 }
 
+/// `phrases` joined by `separator` into lines of at most `width` columns, a phrase never split
+/// across two lines (one wider than `width` stands alone and is wrapped by the caller).
+fn phrases_in_lines(phrases: &[&str], separator: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for phrase in phrases {
+        match lines.last_mut() {
+            Some(line) if text::width(line) + text::width(separator) + text::width(phrase) <= width => {
+                line.push_str(separator);
+                line.push_str(phrase);
+            }
+            _ => lines.push((*phrase).to_string()),
+        }
+    }
+    lines
+}
+
 fn first_line(prompt: &str) -> String {
     let line = prompt.lines().next().unwrap_or_default();
     text::truncate(line, 70, "…")
@@ -2838,6 +2854,33 @@ mod paste_tests {
             "{sent}"
         );
         assert!(azazel_tools::gh::references(&sent).is_empty(), "{sent}");
+    }
+
+    #[test]
+    fn the_start_hint_wraps_between_phrases_never_inside_one() {
+        let keys = [
+            "enter sends",
+            "/settings accounts and models",
+            "ctrl+c twice quits",
+        ];
+        let lines = phrases_in_lines(&keys, " | ", 40);
+        assert_eq!(
+            lines,
+            [
+                "enter sends",
+                "/settings accounts and models",
+                "ctrl+c twice quits"
+            ]
+        );
+        let lines = phrases_in_lines(&keys, " | ", 60);
+        assert_eq!(
+            lines,
+            [
+                "enter sends | /settings accounts and models",
+                "ctrl+c twice quits"
+            ]
+        );
+        assert_eq!(phrases_in_lines(&keys, " | ", 200).len(), 1);
     }
 
     #[test]

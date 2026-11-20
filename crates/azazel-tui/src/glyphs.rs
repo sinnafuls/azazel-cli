@@ -279,7 +279,8 @@ const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 const ASCII_BULLETS: [&str; 3] = ["*", "-", "+"];
 
 const BRAILLE: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const ASCII_SPINNER: &[&str] = &["-", "\\", "|", "/"];
+/// No `-` or `|`: next to the `--` rule and the `|` between segments they read as more of either.
+const ASCII_SPINNER: &[&str] = &[".", "o", "O", "o"];
 
 /// The symbol table of one [`GlyphLevel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

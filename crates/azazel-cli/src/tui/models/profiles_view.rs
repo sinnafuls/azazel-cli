@@ -93,8 +93,9 @@ impl Models {
         current: Option<String>,
         roles: Option<Roles>,
     ) {
+        let said = self.profile_said.take();
         match result {
-            Ok(line) => self.status = Some((Role::Success, line)),
+            Ok(line) => self.status = Some((Role::Success, said.unwrap_or(line))),
             Err(why) => {
                 self.strip = None;
                 self.status = Some((Role::Error, why));
@@ -116,25 +117,33 @@ impl Models {
             self.glyphs.get(Glyph::MoreUp),
             self.glyphs.get(Glyph::MoreDown)
         );
-        let mut hints = vec![Hint::new(arrows, "move"), Hint::new("enter", "switch")];
+        let mut hints = vec![Hint::new(arrows, "move")];
         let Some(entry) = self.selected_profile() else {
             hints.push(Hint::new("n", "new"));
             return hints;
         };
-        hints.push(Hint::new("n", "new"));
-        hints.push(Hint::new("c", "copy"));
-        hints.push(Hint::new("e", "edit role"));
-        hints.push(Hint::new("f", "fallback"));
-        if !entry.builtin {
-            hints.push(Hint::new("r", "rename"));
+        if entry.enabled && entry.usability.usable {
+            hints.push(Hint::new("enter", "switch"));
         }
-        if entry.builtin {
-            hints.push(Hint::new("d", if entry.enabled { "disable" } else { "enable" }));
+        // Only keys that do something here: the others answer with why they cannot.
+        let own = entry.profile.source != ProfileSource::Project;
+        let editable = self.data.profiles_editable;
+        if editable {
+            hints.push(Hint::new("n", "new"));
+            hints.push(Hint::new("c", "copy"));
         }
-        match (entry.builtin, entry.profile.source) {
-            (true, ProfileSource::User) => hints.push(Hint::new("x", "reset")),
-            (false, _) => hints.push(Hint::new("x", "delete")),
-            _ => {}
+        if editable && own {
+            hints.push(Hint::new("e", "edit role"));
+            hints.push(Hint::new("f", "fallback"));
+            if !entry.builtin {
+                hints.push(Hint::new("r", "rename"));
+                hints.push(Hint::new("x", "delete"));
+            } else {
+                hints.push(Hint::new("d", if entry.enabled { "hide" } else { "show" }));
+                if entry.profile.source == ProfileSource::User {
+                    hints.push(Hint::new("x", "reset"));
+                }
+            }
         }
         hints
     }
@@ -364,11 +373,21 @@ impl Models {
             self.warn(format!("{name} is one you saved: x deletes it"));
             return super::screen::Step::Pending;
         }
-        let edit = match entry.enabled {
-            true => Edit::Disable(name),
-            false => Edit::Enable(name),
+        let (edit, said) = match entry.enabled {
+            true => (
+                Edit::Disable(name.clone()),
+                format!("{name} hidden; d shows it again"),
+            ),
+            false => (
+                Edit::Enable(name.clone()),
+                format!("{name} shown again; d hides it"),
+            ),
         };
-        self.edit_profile(edit)
+        let step = self.edit_profile(edit);
+        if matches!(step, super::screen::Step::Do(_)) {
+            self.profile_said = Some(said);
+        }
+        step
     }
 
     /// `x`: deletes a saved profile, or takes your version of a built-in one away; asks first.

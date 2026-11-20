@@ -125,6 +125,16 @@ impl Columns {
                 .max(text::width(&crate::models::compact(row.max_output)));
             columns.price = columns.price.max(text::width(&price(row)));
         }
+        // Wide enough for the titles over them.
+        for (cell, title) in [
+            (&mut columns.context, "ctx"),
+            (&mut columns.output, "out"),
+            (&mut columns.price, "price"),
+        ] {
+            if *cell > 0 {
+                *cell = (*cell).max(title.len());
+            }
+        }
         // The marks of what a model can do: two cells.
         let fixed = RAIL + MIN_NAME + GAP + 2;
         let needed = |c: &Columns| {
@@ -143,6 +153,31 @@ impl Columns {
             drop(&mut columns);
         }
         columns
+    }
+
+    /// The row of titles over the columns, laid out as [`row`] lays out its cells; empty when
+    /// there are no columns.
+    pub(super) fn header(&self, width: usize, theme: &Theme) -> Option<Line> {
+        if self.context + self.output + self.price == 0 {
+            return None;
+        }
+        let right_width = self.width().min(width.saturating_sub(RAIL + 1));
+        let name_room = width.saturating_sub(RAIL + right_width);
+        let mut cells = String::new();
+        for (shown, title) in [(self.context, "ctx"), (self.output, "out"), (self.price, "price")] {
+            if shown > 0 {
+                cells.push_str(&" ".repeat(GAP));
+                cells.push_str(&format!("{title:>shown$}"));
+            }
+        }
+        let cells = text::truncate(&cells, right_width, "");
+        let line = format!(
+            "{}{}{}",
+            " ".repeat(RAIL),
+            " ".repeat(name_room),
+            theme.paint(Role::Muted, &cells)
+        );
+        Some(text::truncate(&line, width, ""))
     }
 
     /// Columns the cells take on the right of a row, gaps included.
