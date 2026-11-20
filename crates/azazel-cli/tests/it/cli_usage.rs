@@ -104,7 +104,8 @@ fn a_lone_word_close_to_a_subcommand_is_a_typo_and_anything_else_is_a_prompt() {
     let typo = sandbox.azazel(&["sesions"]);
     assert_eq!(typo.status.code(), Some(2));
     assert!(
-        stderr(&typo).contains("unknown command `sesions`; did you mean `sessions`?"),
+        stderr(&typo).contains("unknown command `sesions`; did you mean `sessions`?")
+            && stderr(&typo).contains("To send `sesions` as a prompt, run `azazel -- sesions`."),
         "{}",
         stderr(&typo)
     );

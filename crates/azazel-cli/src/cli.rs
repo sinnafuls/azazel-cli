@@ -1098,14 +1098,58 @@ fn global_options_of(subcommand: &str) -> Option<&'static [&'static str]> {
         "remote-dir",
         "remote-azazel",
     ];
-    match subcommand {
-        "goal" | "rpc" | "acp" | "host" | "bg" | "attach" | "remote" | "schedule" | "mcp" | "open" => None,
-        "ps" | "logs" | "kill" => Some(WITH_HOST),
-        "sessions" | "context" | "export" => Some(WITH_SESSIONS),
-        "roles" => Some(&["cwd", "set", "trust", "profile", "thinking"]),
-        _ => Some(LIGHT),
+    const WITH_THINKING: &[&str] = &["cwd", "set", "trust", "profile", "thinking"];
+    // A subcommand that is in none of the lists keeps every option in its help: a new one is
+    // never left without options it accepts (the test below makes a list a decision).
+    if LIGHT_COMMANDS.contains(&subcommand) {
+        Some(LIGHT)
+    } else if HOST_COMMANDS.contains(&subcommand) {
+        Some(WITH_HOST)
+    } else if SESSION_COMMANDS.contains(&subcommand) {
+        Some(WITH_SESSIONS)
+    } else if subcommand == "roles" {
+        Some(WITH_THINKING)
+    } else {
+        None
     }
 }
+
+/// Subcommands that run a session, or take what they need from the whole command line: their
+/// help lists every option.
+#[cfg(test)]
+const SESSION_RUNNERS: &[&str] = &[
+    "goal", "rpc", "acp", "host", "bg", "attach", "remote", "schedule", "mcp", "open",
+];
+const HOST_COMMANDS: &[&str] = &["ps", "logs", "kill"];
+const SESSION_COMMANDS: &[&str] = &["sessions", "context", "export"];
+/// Subcommands that use the working directory, `--set`, `--trust` and `--profile` and nothing else.
+const LIGHT_COMMANDS: &[&str] = &[
+    "help",
+    "init",
+    "doctor",
+    "bug",
+    "login",
+    "logout",
+    "auth",
+    "config",
+    "secrets",
+    "models",
+    "completions",
+    "changelog",
+    "usage",
+    "stats",
+    "update",
+    "ext",
+    "migrate",
+    "pkg",
+    "skills",
+    "lsp",
+    "browser",
+    "rules",
+    "memory",
+    "index",
+    "rag",
+];
 
 /// The number of single-character edits (insertions, deletions, substitutions and swaps of two
 /// neighbours) that turn `a` into `b`.
@@ -1187,7 +1231,9 @@ impl Cli {
         let escaped = std::env::args_os().any(|arg| arg == "--");
         if !escaped && let Some(word) = cli.mistyped_subcommand(&command) {
             let close = closest_subcommand(&command, &word).unwrap_or_default();
-            eprintln!("azazel: unknown command `{word}`; did you mean `{close}`?");
+            eprintln!(
+                "azazel: unknown command `{word}`; did you mean `{close}`? To send `{word}` as a prompt,                  run `azazel -- {word}`."
+            );
             std::process::exit(i32::from(crate::print::EXIT_USAGE));
         }
         cli
@@ -1328,4 +1374,34 @@ pub enum Discovery {
     ContextFiles,
     Mcp,
     Memory,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_subcommand_is_listed_for_what_its_help_shows_of_the_global_options() {
+        let command = <Cli as clap::CommandFactory>::command();
+        let listed = |name: &str| {
+            SESSION_RUNNERS.contains(&name)
+                || LIGHT_COMMANDS.contains(&name)
+                || HOST_COMMANDS.contains(&name)
+                || SESSION_COMMANDS.contains(&name)
+                || name == "roles"
+        };
+        let unlisted: Vec<&str> = command
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .filter(|name| !listed(name))
+            .collect();
+        assert!(
+            unlisted.is_empty(),
+            "decide which global options these subcommands show in `--help`: {unlisted:?}"
+        );
+        // Whatever a subcommand hides stays accepted, and one in no list shows everything.
+        assert_eq!(global_options_of("not-a-listed-command"), None);
+        assert_eq!(global_options_of("goal"), None);
+        assert!(global_options_of("doctor").is_some_and(|used| used.contains(&"cwd")));
+    }
 }
