@@ -1359,17 +1359,16 @@ impl App {
         if let Some(typed) = &report {
             team.expect_lead_report(typed.clone());
         }
-        // Code-first mode needs the Luau engine, which hidden tools are reached through.
-        let code_first = if config.tools.code_first && !cfg!(feature = "lua") {
+        // Code-first mode needs Luau, which hidden tools are reached through.
+        let code_first = if !config.tools.code_first {
+            None
+        } else if !eval_luau(&config.tools.eval) {
             tracing::warn!(
-                "tools.code_first is ignored: this build of azazel has no Luau (the `lua` feature)"
+                "tools.code_first is ignored: it needs Luau in eval (tools.eval.luau = true, in a build with the `lua` feature)"
             );
             None
         } else {
-            config
-                .tools
-                .code_first
-                .then(|| Arc::new(code_first_hiding(agent_defs, lead_agent.clone())))
+            Some(Arc::new(code_first_hiding(agent_defs, lead_agent.clone())))
         };
         if let Some(code_first) = &code_first {
             services.insert(code_first.clone());
