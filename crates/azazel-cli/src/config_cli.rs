@@ -43,7 +43,7 @@ fn is_known(path: &str) -> bool {
     config_keys::keys().iter().any(|(key, _)| {
         let key: Vec<&str> = key.split('.').collect();
         // `tools.format.rs` is under the key `tools.format`; `retry` holds `retry.max_attempts`.
-        key.iter().zip(&wanted).all(|(a, b)| a == b || *a == "*")
+        wanted.len() <= key.len() && key.iter().zip(&wanted).all(|(a, b)| a == b || *a == "*")
     })
 }
 

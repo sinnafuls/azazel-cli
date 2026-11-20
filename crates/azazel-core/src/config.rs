@@ -1518,8 +1518,11 @@ pub fn concatenates(path: &[String]) -> bool {
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
 /// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
-const TRUST_GATED: [(&str, Option<&str>); 26] = [
+const TRUST_GATED: [(&str, Option<&str>); 28] = [
     ("hooks", None),
+    // They choose which models, and so which providers and accounts, the work is sent to.
+    ("roles", None),
+    ("profiles", None),
     ("providers", None),
     ("permissions", Some("allow")),
     ("lsp", None),

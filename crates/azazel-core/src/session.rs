@@ -589,16 +589,29 @@ impl SessionStore {
     /// deleted. A copy held for reading is never deleted.
     pub fn discard_if_empty(&self) -> bool {
         let inner = self.lock();
+        // Only settings chosen at start-up are not data; anything else keeps the session.
         let said = inner.entries.iter().any(|entry| {
-            matches!(
+            !matches!(
                 entry.kind,
-                EntryKind::Message { .. } | EntryKind::SessionInfo { .. } | EntryKind::Pin { .. }
+                EntryKind::ModelChange { .. }
+                    | EntryKind::ModeChange { .. }
+                    | EntryKind::ThinkingChange { .. }
+                    | EntryKind::AgentChange { .. }
+                    | EntryKind::ProfileChange { .. }
             )
         });
         if said || inner.file.is_none() {
             return false;
         }
         let folder = inner.path.parent().map(|dir| dir.join(&inner.header.id));
+        // Scratch files or a sub-agent's transcript in its folder are data too.
+        if folder
+            .as_ref()
+            .and_then(|folder| std::fs::read_dir(folder).ok())
+            .is_some_and(|mut files| files.next().is_some())
+        {
+            return false;
+        }
         let gone = std::fs::remove_file(&inner.path).is_ok();
         if gone && let Some(folder) = folder.filter(|folder| folder.is_dir()) {
             let _ = std::fs::remove_dir_all(folder);

@@ -414,7 +414,7 @@ back. A project needs a trust decision when it has any of:
   or go is installed: checking a file with them runs the project's build scripts, macros or lint configuration;
   see [tools](tools.md#checkers-that-run-the-projects-code)
 
-Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
+Gated settings: `hooks`, `roles`, `profiles`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
 is `bypass`, `lsp`, `debug.adapters`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `tools.eval`, `browser.path`, `editor.command`,
 `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`,

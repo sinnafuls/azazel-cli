@@ -57,6 +57,7 @@ GitHub are its section here.
 - Taking over the agents' browser before the agent has opened a page is refused with "no browser is running", even with `force`; the "browser is running on this profile" message no longer contains a long run of spaces.
 - A new watcher of the agents' browser is sent the latest picture without every other watcher being sent it again; the Profiles page warns when you hide or show a profile in a project whose config sets its own `profiles.disabled`, since that list replaces yours there.
 - `azazel remote`: a button's tooltip no longer opens when focus returns to it after a sheet closes, only on hover or Tab; drawer footers lay their buttons in a row from 640 px, giving tall sheets more room at 200% zoom.
+- A project's config may set `[roles]` and `[profiles]` only once the project is trusted, like `providers`: they choose which models, providers and accounts the work goes to.
 - `azazel remote`: the Send button sends again; since 0.15.0 only Enter did, on phones and desktop alike.
 - `azazel remote`: view-only devices are no longer asked for settings on the Models page, and saving a profile says it needs full access; the Tailscale clean-up leaves an entry with Funnel on alone.
 - `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.
