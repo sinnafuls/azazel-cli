@@ -5,6 +5,20 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-20
+
+### Fixed
+
+- Typing quickly and then pressing Shift+Enter in the Windows console no longer types `[13;2u`, and Esc followed by `O` and a letter in vim mode keeps the letters.
+- The live browser picture on a slow `azazel remote` connection no longer stays on an old frame when the page stops changing.
+- Holding the agents' browser no longer ends after 10 minutes of reading a page or signing in by hand: signing in, any command from the holder and the web page (every 3 minutes) renew the hold.
+- Scrolling the live browser with the mouse wheel is no longer replayed slowly after you stop.
+- Taking the browser back right after handing it back, from the same device, keeps the hold.
+- Closing the browser waits for a running action before it lets go of the hold.
+- The `checked` status-line segment no longer shows `✔ checked` when another agent edited a file while the check was running.
+- `azazel <typo>` says how to send the word as a prompt (`azazel -- <word>`), and every subcommand's `--help` lists the options it accepts.
+- `azazel remote`: the Agents, Usage and Browser tabs stay inside the right-hand pane at 1024 px with wider fonts.
+
 ## [0.16.0] - 2026-11-20
 
 ### Added
