@@ -1597,4 +1597,137 @@ mod tests {
         assert_eq!(models["success"], true, "{models}");
         assert_eq!(models["data"][0]["thinking_levels"], json!(["low", "high"]));
     }
+
+    /// A background session that is running as far as the list can tell: its entry, and its lock held.
+    fn running_entry(home: &std::path::Path, id: &str, cwd: &std::path::Path) -> crate::running::Lock {
+        crate::running::create_run_dir(home).unwrap();
+        crate::running::Entry {
+            id: id.into(),
+            pid: std::process::id(),
+            session_id: format!("session-{id}"),
+            session_file: home.join("none.jsonl"),
+            cwd: cwd.to_path_buf(),
+            name: None,
+            started: "2026-11-20T10:00:00Z".into(),
+            socket: String::new(),
+            version: "0".into(),
+            state: "idle".into(),
+            cost_usd: None,
+            mode: None,
+            args: Vec::new(),
+            interrupted_at: None,
+        }
+        .write(home)
+        .unwrap();
+        crate::running::Lock::acquire(&crate::running::host_lock(home, id))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// A terminal share that also reaches the background sessions of `home`, under `rules`.
+    fn shared(home: &std::path::Path, rules: Rules) -> Arc<TerminalSessions> {
+        let (web, _loop_rx) = mpsc::unbounded_channel();
+        let paths = azazel_core::Paths::discover(home, Some(&home.to_string_lossy()));
+        let background = BackgroundSessions::new(paths, false, Vec::new(), rules, None);
+        TerminalSessions::new(
+            Arc::new(Stub),
+            Arc::default(),
+            Arc::default(),
+            web,
+            false,
+            None,
+            Some(background),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_shared_terminal_lists_its_own_session_first_and_the_background_sessions_after_it() {
+        let scratch = tempfile::tempdir().unwrap();
+        let home = scratch.path().join("azazel");
+        let work = scratch.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let _held = running_entry(&home, "bg01", &work);
+        let rules = Rules {
+            home: home.clone(),
+            user_home: Some(scratch.path().to_path_buf()),
+            roots: vec![work.display().to_string()],
+            anywhere: false,
+        };
+        let sessions = shared(&home, rules);
+        let listed = sessions.list().await;
+        let ids: Vec<(&str, Kind)> = listed.iter().map(|info| (info.id.as_str(), info.kind)).collect();
+        assert_eq!(ids, [(ID, Kind::Terminal), ("bg01", Kind::Background)]);
+        assert!(sessions.can_start());
+        // Other ids are the background sessions' to answer, and none is there.
+        let missing = sessions.open("nope").await.err().unwrap();
+        assert!(missing.contains("no background session nope"), "{missing}");
+        // A share without them stays the one session it was.
+        let (web, _loop_rx) = mpsc::unbounded_channel();
+        let alone = TerminalSessions::new(
+            Arc::new(Stub),
+            Arc::default(),
+            Arc::default(),
+            web,
+            false,
+            None,
+            None,
+        );
+        assert!(!alone.can_start());
+        assert_eq!(alone.list().await.len(), 1);
+        assert!(matches!(
+            alone.start(NewSession::default()).await,
+            Err(StartError::Refused(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_shared_terminal_starts_only_where_azazel_remote_would() {
+        let scratch = tempfile::tempdir().unwrap();
+        let home = scratch.path().join("azazel");
+        let work = scratch.path().join("work");
+        let elsewhere = scratch.path().join("elsewhere");
+        for dir in [&home, &work, &elsewhere] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let rules = Rules {
+            home: home.clone(),
+            user_home: Some(scratch.path().to_path_buf()),
+            roots: vec![work.display().to_string()],
+            anywhere: false,
+        };
+        let sessions = shared(&home, rules);
+        let refused = sessions
+            .start(NewSession {
+                cwd: elsewhere.display().to_string(),
+                ..NewSession::default()
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, StartError::Refused(_)), "{refused:?}");
+        let folders = sessions.folders(None).await.unwrap();
+        assert!(!folders.anywhere);
+        assert_eq!(folders.folders.len(), 1);
+
+        // A saved session outside the folders is answered as an id that is not there.
+        let paths = azazel_core::Paths::discover(&home, Some(&home.to_string_lossy()));
+        let sessions_dir = paths.home.join("projects").join("p").join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let saved = azazel_core::SessionStore::create(&sessions_dir, &elsewhere, None).unwrap();
+        let (known, unknown) = (saved.id(), "00000000-0000-0000-0000-000000000000".to_string());
+        let mut answers = Vec::new();
+        for wanted in [&known, &unknown] {
+            let error = sessions
+                .start(NewSession {
+                    resume: Some(wanted.clone()),
+                    ..NewSession::default()
+                })
+                .await
+                .unwrap_err();
+            let StartError::Invalid(text) = error else {
+                panic!("{error:?}");
+            };
+            answers.push(text.replace(wanted.as_str(), "<id>"));
+        }
+        assert_eq!(answers[0], answers[1]);
+    }
 }
