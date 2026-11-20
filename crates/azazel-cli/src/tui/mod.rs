@@ -1808,29 +1808,9 @@ impl Tui {
         // A terminal's key report (`ESC [ 13 ; 2 u`) can reach a Windows console as an `esc` key
         // press followed by the characters of the report, which must not be typed.
         let event = if cfg!(windows)
-            && let Event::Key(key) = &event
-            && key.code == KeyCode::Esc
-            && key.kind == KeyEventKind::Press
-            && key.modifiers.is_empty()
+            && let Some(esc) = input::is_bare_esc(&event)
         {
-            let esc = *key;
-            let (after, next) = input::read_after_esc(input::next_within_gap);
-            match after {
-                input::AfterEsc::Alone => self.on_key(esc).await,
-                input::AfterEsc::Report(key) => {
-                    if key.kind != KeyEventKind::Release {
-                        self.on_key(key).await;
-                    }
-                }
-                input::AfterEsc::Swallowed => {}
-                input::AfterEsc::Typed(text) => {
-                    self.on_key(esc).await;
-                    for typed in text.chars() {
-                        self.on_key(input::key_for(typed)).await;
-                    }
-                }
-            }
-            match next {
+            match self.after_esc(esc).await {
                 Some(event) => event,
                 None => return,
             }
@@ -1853,9 +1833,17 @@ impl Tui {
                 }
             }
             self.last_burst = Some(Instant::now());
-            // What ended the burst is handled like any other event.
+            // What ended the burst is handled like any other event; an `esc` that ended it may
+            // begin a key report (text, then `shift+enter`) and goes the same way as one that
+            // started the event.
             match after {
-                Some(event) => event,
+                Some(event) => match input::is_bare_esc(&event) {
+                    Some(esc) => match self.after_esc(esc).await {
+                        Some(event) => event,
+                        None => return,
+                    },
+                    None => event,
+                },
                 None => return,
             }
         } else {
@@ -1870,6 +1858,17 @@ impl Tui {
             Event::Mouse(event) => self.on_mouse(event).await,
             _ => {}
         }
+    }
+
+    /// Handles an `esc` key press the Windows console reported: what follows it may be the rest
+    /// of a terminal's key report (`ESC [ 13 ; 2 u`), which must not be typed. Returns the event
+    /// that ended the sequence, still to be handled.
+    async fn after_esc(&mut self, esc: KeyEvent) -> Option<Event> {
+        let (after, next) = input::read_after_esc(input::next_within_gap);
+        for key in input::keys_after_esc(esc, after) {
+            self.on_key(key).await;
+        }
+        next
     }
 
     /// The mouse, which the terminal reports only while a popup is up: what it does inside the

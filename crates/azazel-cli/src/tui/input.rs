@@ -138,22 +138,57 @@ pub(super) fn typed_char(key: &KeyEvent) -> Option<char> {
 /// types. Returns what the keys type, and the event that ended the burst when it was not a key
 /// that types.
 pub(super) fn read_burst(first: char) -> (String, Option<Event>) {
+    read_burst_with(first, |wait| match crossterm::event::poll(wait) {
+        Ok(true) => crossterm::event::read().ok(),
+        _ => None,
+    })
+}
+
+/// [`read_burst`] over any source of events: `next` gets how long it may wait for one.
+pub(super) fn read_burst_with(
+    first: char,
+    mut next: impl FnMut(std::time::Duration) -> Option<Event>,
+) -> (String, Option<Event>) {
     let mut text = String::from(first);
     let mut wait = std::time::Duration::ZERO;
-    while text.len() < BURST_MAX_KEYS && matches!(crossterm::event::poll(wait), Ok(true)) {
+    while text.len() < BURST_MAX_KEYS {
+        let Some(event) = next(wait) else { break };
         // The first look is free, so ordinary typing is never delayed.
         wait = BURST_GAP;
-        match crossterm::event::read() {
-            Ok(Event::Key(key)) if key.kind == KeyEventKind::Release => {}
-            Ok(Event::Key(key)) => match typed_char(&key) {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Release => {}
+            Event::Key(key) => match typed_char(&key) {
                 Some(c) => text.push(c),
                 None => return (text, Some(Event::Key(key))),
             },
-            Ok(other) => return (text, Some(other)),
-            Err(_) => break,
+            other => return (text, Some(other)),
         }
     }
     (text, None)
+}
+
+/// Whether an event is a bare `esc` key press, the start of what a Windows console may hand
+/// over as a terminal's key report.
+pub(super) fn is_bare_esc(event: &Event) -> Option<KeyEvent> {
+    match event {
+        Event::Key(key)
+            if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press && key.modifiers.is_empty() =>
+        {
+            Some(*key)
+        }
+        _ => None,
+    }
+}
+
+/// The keys to deliver for what [`read_after_esc`] found after `esc`.
+pub(super) fn keys_after_esc(esc: KeyEvent, after: AfterEsc) -> Vec<KeyEvent> {
+    match after {
+        AfterEsc::Alone => vec![esc],
+        AfterEsc::Report(key) if key.kind == KeyEventKind::Release => Vec::new(),
+        AfterEsc::Report(key) => vec![key],
+        AfterEsc::Swallowed => Vec::new(),
+        AfterEsc::Typed(text) => std::iter::once(esc).chain(text.chars().map(key_for)).collect(),
+    }
 }
 
 /// What came after an `esc` key press.
@@ -1176,6 +1211,30 @@ mod tests {
         let (after, rest) = read_after_esc(|| events.pop_front());
         assert_eq!(after, AfterEsc::Typed("[1".into()));
         assert_eq!(rest, Some(stop));
+    }
+
+    #[test]
+    fn an_esc_that_ends_a_burst_still_reads_the_key_report_behind_it() {
+        // Text typed fast, then `shift+enter` as `ESC [ 13 ; 2 u`: the burst stops at the `esc`.
+        let mut events = typed("hello");
+        events.push_back(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        events.extend(typed("[13;2u"));
+        let (text, ended_by) = read_burst_with('a', |_| events.pop_front());
+        assert_eq!(text, "ahello");
+        let esc = is_bare_esc(&ended_by.expect("the esc ends the burst")).expect("a bare esc");
+        let (after, rest) = read_after_esc(|| events.pop_front());
+        assert_eq!(rest, None);
+        assert_eq!(
+            keys_after_esc(esc, after),
+            [KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)]
+        );
+        // An `esc` that is a key of its own stays one.
+        assert_eq!(keys_after_esc(esc, AfterEsc::Alone), [esc]);
+        // `esc` then text is both, in order.
+        assert_eq!(
+            keys_after_esc(esc, AfterEsc::Typed("Oh".into())),
+            [esc, key_for('O'), key_for('h')]
+        );
     }
 
     #[test]

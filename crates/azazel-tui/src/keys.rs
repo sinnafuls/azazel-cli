@@ -407,7 +407,7 @@ pub fn decode_escape(after_esc: &str) -> Escape {
             [] => Escape::Incomplete,
             [last] => match xterm_key(*last) {
                 Some(event) => Escape::Key(event),
-                None if (' '..='~').contains(last) => Escape::Ignored,
+                // Any other printable is text typed after `esc` (`esc`, `O`, `h` in vim mode).
                 None => Escape::Invalid,
             },
             _ => Escape::Invalid,
@@ -929,7 +929,7 @@ mod tests {
 
     #[test]
     fn unknown_complete_sequences_are_swallowed_not_typed() {
-        for text in ["[57358u", "[99999999;2u", "[1;2X", "[200~", "[?1;2c", "[0m", "OZ"] {
+        for text in ["[57358u", "[99999999;2u", "[1;2X", "[200~", "[?1;2c", "[0m"] {
             assert_eq!(decode_escape(text), Escape::Ignored, "{text:?}");
         }
     }
@@ -939,7 +939,7 @@ mod tests {
         for text in ["", "[", "[13", "[13;", "[13;2", "O", "[1;"] {
             assert_eq!(decode_escape(text), Escape::Incomplete, "{text:?}");
         }
-        for text in ["x", "hello", "[13;2uX", "[\u{e9}", "OPQ", "\n"] {
+        for text in ["x", "hello", "[13;2uX", "[\u{e9}", "OPQ", "\n", "Oh", "OZ"] {
             assert_eq!(decode_escape(text), Escape::Invalid, "{text:?}");
         }
         assert_eq!(decode_escape(&format!("[{}", "1;".repeat(40))), Escape::Invalid);
