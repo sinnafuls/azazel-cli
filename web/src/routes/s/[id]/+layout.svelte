@@ -311,10 +311,12 @@
 	<Tabs.Root bind:value={ui.rightTab} class="flex h-full min-h-0 flex-col gap-0">
 		<div class="flex h-14 shrink-0 items-center border-b px-4">
 			<!-- The line under the chosen tab is drawn in the accent. -->
-			<Tabs.List variant="line">
-				<Tabs.Trigger value="agents" class="after:bg-brand">Agents</Tabs.Trigger>
-				<Tabs.Trigger value="usage" class="after:bg-brand">Usage</Tabs.Trigger>
-				<Tabs.Trigger value="browser" class="after:bg-brand">Browser</Tabs.Trigger>
+			<!-- Three tabs fill the narrow 1024 px pane; less side padding keeps them inside it
+			     with fonts that run wider (Linux). -->
+			<Tabs.List variant="line" class="max-w-full">
+				<Tabs.Trigger value="agents" class="px-1.5 after:bg-brand">Agents</Tabs.Trigger>
+				<Tabs.Trigger value="usage" class="px-1.5 after:bg-brand">Usage</Tabs.Trigger>
+				<Tabs.Trigger value="browser" class="px-1.5 after:bg-brand">Browser</Tabs.Trigger>
 			</Tabs.List>
 		</div>
 		<div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
