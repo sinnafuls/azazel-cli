@@ -16,6 +16,7 @@
 #![cfg_attr(not(feature = "detach"), allow(dead_code))]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use azazel_agent::Services;
 use azazel_protocol::{BrowserState, Command, Frame};
@@ -45,6 +46,35 @@ pub(crate) fn missing() -> &'static str {
         "the browser is not available in this session"
     } else {
         "the browser is not part of this build"
+    }
+}
+
+/// The start of a `browser_frame` line, as the protocol writes it.
+pub(crate) const PICTURE: &str = r#"{"type":"browser_frame""#;
+
+/// Lets one picture wait to be written to a client at a time: a client that reads slowly is sent
+/// no more until the last one is out, instead of the pictures piling up in an unbounded queue.
+/// `pictures` counts those waiting; the writer calls [`written`] for every line it has written.
+pub(crate) fn one_picture_in_flight(
+    pictures: Arc<AtomicUsize>,
+    send: impl Fn(String) + Send + Sync + 'static,
+) -> impl Fn(String, bool) + Send + Sync + 'static {
+    move |line, picture| {
+        if picture {
+            if pictures.load(Ordering::SeqCst) > 0 {
+                return;
+            }
+            pictures.fetch_add(1, Ordering::SeqCst);
+        }
+        send(line);
+    }
+}
+
+/// Tells the count of [`one_picture_in_flight`] that a line has been written; `picture` is
+/// whether it was a `browser_frame`.
+pub(crate) fn written(pictures: &AtomicUsize, picture: bool) {
+    if picture {
+        pictures.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -371,5 +401,39 @@ impl Browser {
         _: impl Fn(String, bool) + Send + Sync + 'static,
     ) -> JoinHandle<()> {
         match **self {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    #[test]
+    fn a_client_is_sent_one_picture_at_a_time_and_every_other_line() {
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let pictures = Arc::new(AtomicUsize::new(0));
+        let send = {
+            let sent = sent.clone();
+            one_picture_in_flight(pictures.clone(), move |line| sent.lock().unwrap().push(line))
+        };
+        let picture = |n: u32| format!(r#"{{"type":"browser_frame","seq":{n}}}"#);
+        send(picture(1), true);
+        send(picture(2), true);
+        send(r#"{"type":"browser_state"}"#.to_string(), false);
+        send(picture(3), true);
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            2,
+            "the pictures behind the first were kept"
+        );
+        // The writer wrote the first one: the next may go.
+        written(&pictures, picture(1).starts_with(PICTURE));
+        written(&pictures, false);
+        send(picture(4), true);
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 3);
+        assert!(sent[2].contains(r#""seq":4"#), "{sent:?}");
     }
 }

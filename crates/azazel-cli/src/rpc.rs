@@ -13,7 +13,7 @@ pub(crate) mod session;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
@@ -379,6 +379,9 @@ struct Session {
     browser: Option<Arc<browser::Browser>>,
     /// Tells the client what the browser does, from the first `browser_*` command on.
     browser_pump: Option<tokio::task::JoinHandle<()>>,
+    /// How many pictures of the browser wait to be written to the client: it is sent no more
+    /// until the writer has caught up.
+    pictures: Arc<AtomicUsize>,
 }
 
 impl Session {
@@ -802,9 +805,12 @@ impl Session {
             && let Some(browser) = &self.browser
         {
             let out = self.out.clone();
-            self.browser_pump = Some(browser.pump_to(browser::HOLDER.to_string(), move |line, _| {
-                let _ = out.0.send(Some(line));
-            }));
+            self.browser_pump = Some(browser.pump_to(
+                browser::HOLDER.to_string(),
+                browser::one_picture_in_flight(self.pictures.clone(), move |line| {
+                    let _ = out.0.send(Some(line));
+                }),
+            ));
         }
         let out = self.out.clone();
         browser::dispatch(
@@ -1102,11 +1108,18 @@ pub async fn serve(
     mut writer: impl AsyncWrite + Unpin + Send + 'static,
 ) -> u8 {
     let (lines, mut queued) = mpsc::unbounded_channel::<Option<String>>();
-    let writing = tokio::spawn(async move {
-        while let Some(Some(mut line)) = queued.recv().await {
-            line.push('\n');
-            if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err() {
-                break;
+    let pictures = Arc::new(AtomicUsize::new(0));
+    let writing = tokio::spawn({
+        let pictures = pictures.clone();
+        async move {
+            while let Some(Some(mut line)) = queued.recv().await {
+                let was_picture = line.starts_with(browser::PICTURE);
+                line.push('\n');
+                let written = writer.write_all(line.as_bytes()).await.is_ok() && writer.flush().await.is_ok();
+                browser::written(&pictures, was_picture);
+                if !written {
+                    break;
+                }
             }
         }
     });
@@ -1115,7 +1128,7 @@ pub async fn serve(
         let line = lines.next_line().await.ok().flatten()?;
         Some((line, lines))
     });
-    serve_lines(app, active, input, lines, Arc::default()).await;
+    serve_lines(app, active, input, lines, Arc::default(), pictures).await;
     let _ = writing.await;
     EXIT_OK
 }
@@ -1130,13 +1143,15 @@ pub(crate) fn hello() -> Frame {
 
 /// Serves the session: command lines come from `input`, frames go to `lines` as JSON text. Ends
 /// when `input` does, and says so with a last `None`. The `hello` frame is the caller's to send;
-/// `waiting` lets the caller see which requests to the user are still open.
+/// `waiting` lets the caller see which requests to the user are still open. `pictures` counts the
+/// pictures of the browser waiting to be written to the client, which its writer lowers.
 pub(crate) async fn serve_lines(
     app: Arc<App>,
     active: Active,
     input: impl futures::Stream<Item = String>,
     lines: mpsc::UnboundedSender<Option<String>>,
     waiting: Arc<Waiting>,
+    pictures: Arc<AtomicUsize>,
 ) {
     let out = Out(lines);
     // Requests from agents go through the loop below rather than straight out, so they are written
@@ -1194,6 +1209,7 @@ pub(crate) async fn serve_lines(
         listed: Default::default(),
         browser: browser::Browser::of(&app_services),
         browser_pump: None,
+        pictures,
     };
 
     let mut input = std::pin::pin!(input);

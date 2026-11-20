@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use azazel_core::{Event, Level};
@@ -315,7 +315,7 @@ pub async fn run(app: Arc<App>, active: Active, options: Options) -> u8 {
         Some((line, commands))
     });
     tokio::join!(
-        rpc::serve_lines(app, active, commands, lines, waiting),
+        rpc::serve_lines(app, active, commands, lines, waiting, Arc::default()),
         host.serve(listener, frames, watched),
     );
     let _ = std::fs::remove_file(running::entry_file(&home, &id));
@@ -326,9 +326,6 @@ pub async fn run(app: Arc<App>, active: Active, options: Options) -> u8 {
     drop(alive);
     EXIT_OK
 }
-
-/// The start of a `browser_frame` line, as the protocol writes it.
-const PICTURE: &str = r#"{"type":"browser_frame""#;
 
 /// Whether a `ui_request` frame asks for an answer.
 fn asks(frame: &Value) -> bool {
@@ -761,12 +758,10 @@ impl Host {
         self.pictures.insert(conn, pictures.clone());
         tokio::spawn(async move {
             while let Some(mut line) = queued.recv().await {
-                let picture = line.starts_with(PICTURE);
+                let was_picture = line.starts_with(browser::PICTURE);
                 line.push('\n');
                 let written = writer.write_all(line.as_bytes()).await.is_ok() && writer.flush().await.is_ok();
-                if picture {
-                    pictures.fetch_sub(1, Ordering::SeqCst);
-                }
+                browser::written(&pictures, was_picture);
                 if !written {
                     break;
                 }
@@ -901,15 +896,12 @@ impl Host {
         ) else {
             return;
         };
-        let pump = browser.pump_to(browser::holder_of(conn), move |line, picture| {
-            if picture {
-                if pictures.load(Ordering::SeqCst) > 0 {
-                    return;
-                }
-                pictures.fetch_add(1, Ordering::SeqCst);
-            }
-            let _ = lines.send(line);
-        });
+        let pump = browser.pump_to(
+            browser::holder_of(conn),
+            browser::one_picture_in_flight(pictures, move |line| {
+                let _ = lines.send(line);
+            }),
+        );
         if let Some(old) = self.pumps.insert(conn, pump) {
             old.abort();
         }
