@@ -21,6 +21,10 @@ pub trait LuauEngine: Send + Sync {
     fn describe(&self, services: &Services, hidden: &[Arc<dyn Tool>]) -> String;
     /// Runs `code` as the agent of `ctx`.
     async fn run(&self, code: String, ctx: &ToolCtx) -> ToolOutput;
+    /// Starts `code` as a background job of the agent of `ctx` and returns at once with the job's
+    /// id. The job ends after `max` of wall-clock time (never when `max` is zero), and the agent is
+    /// woken with its result.
+    fn start(&self, code: String, ctx: &ToolCtx, max: Duration) -> ToolOutput;
 }
 
 /// The service that holds the engine.

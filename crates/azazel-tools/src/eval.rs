@@ -103,18 +103,35 @@ pub fn interpreter(language: Language) -> Option<(PathBuf, Vec<String>)> {
     })
 }
 
-/// `[tools.eval]`: the languages `eval` may run, as a service of the registry.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvalLanguages(pub Vec<Language>);
+/// How long a background Luau script may run when nothing says otherwise.
+const DEFAULT_BACKGROUND_MAX: Duration = Duration::from_secs(7200);
 
-impl EvalLanguages {
+/// `[tools.eval]`: the languages `eval` may run and how long a background script may last, as a
+/// service of the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalSettings {
+    pub languages: Vec<Language>,
+    /// Wall-clock cap of a background Luau script; zero is no cap.
+    pub background_max: Duration,
+}
+
+impl EvalSettings {
     /// Python and JavaScript; Luau only where the application says the build has it.
-    pub fn all() -> EvalLanguages {
-        EvalLanguages(vec![Language::Python, Language::Javascript])
+    pub fn all() -> EvalSettings {
+        EvalSettings {
+            languages: vec![Language::Python, Language::Javascript],
+            background_max: DEFAULT_BACKGROUND_MAX,
+        }
+    }
+
+    /// Sets the cap of a background script, in seconds; zero is no cap.
+    pub fn with_background_max_secs(mut self, secs: u64) -> EvalSettings {
+        self.background_max = Duration::from_secs(secs);
+        self
     }
 
     /// The languages whose switch is on. `luau` arrives already combined with "this build has Lua".
-    pub fn from_switches(python: bool, javascript: bool, luau: bool) -> EvalLanguages {
+    pub fn from_switches(python: bool, javascript: bool, luau: bool) -> EvalSettings {
         let mut languages = Vec::new();
         if python {
             languages.push(Language::Python);
@@ -125,7 +142,10 @@ impl EvalLanguages {
         if luau {
             languages.push(Language::Luau);
         }
-        EvalLanguages(languages)
+        EvalSettings {
+            languages,
+            background_max: DEFAULT_BACKGROUND_MAX,
+        }
     }
 }
 
@@ -134,6 +154,8 @@ pub struct EvalTool {
     env: Arc<AgentEnv>,
     /// The languages `[tools.eval]` turns on; never empty (with none on, the tool is not offered).
     languages: Vec<Language>,
+    /// Wall-clock cap of a background script.
+    background_max: Duration,
     services: Arc<Services>,
     /// The description before the Luau engine can describe itself: everything but its paragraph.
     base: String,
@@ -184,10 +206,17 @@ impl EvalTool {
             default_timeout,
             env,
             languages,
+            background_max: DEFAULT_BACKGROUND_MAX,
             services,
             base,
             description: OnceLock::new(),
         }
+    }
+
+    /// Caps a background script at `max` of wall-clock time; zero is no cap.
+    pub fn with_background_max(mut self, max: Duration) -> Self {
+        self.background_max = max;
+        self
     }
 
     fn offers(&self, language: Language) -> bool {
@@ -219,6 +248,8 @@ struct EvalInput {
     language: Language,
     code: String,
     timeout_secs: Option<u64>,
+    #[serde(default)]
+    background: bool,
 }
 
 #[async_trait]
@@ -238,7 +269,7 @@ impl Tool for EvalTool {
     }
 
     fn schema(&self) -> Value {
-        json!({
+        let mut schema = json!({
             "type": "object",
             "properties": {
                 "language": {"type": "string", "enum": self.languages.iter().map(|l| l.key()).collect::<Vec<_>>()},
@@ -246,7 +277,15 @@ impl Tool for EvalTool {
                 "timeout_secs": {"type": "integer", "minimum": 1, "description": "Python and JavaScript only: seconds the program may run; the shell tool's default when left out"}
             },
             "required": ["language", "code"]
-        })
+        });
+        // Fixed for the session by the configuration and the build, so the tool list never changes.
+        if self.offers(Language::Luau) {
+            schema["properties"]["background"] = json!({
+                "type": "boolean",
+                "description": "Luau only: run the script as a job and return its id at once; `job` shows its output and stops it, and you are woken with its result"
+            });
+        }
+        schema
     }
 
     /// A Luau script touches nothing itself, and each tool call it makes is judged on its own; a
@@ -281,6 +320,11 @@ impl Tool for EvalTool {
             Ok(input) => input,
             Err(error) => return error,
         };
+        if input.background && input.language != Language::Luau {
+            return ToolOutput::error(
+                "`background` runs only Luau scripts; use `shell` with `background` for programs",
+            );
+        }
         if input.language == Language::Luau {
             let Some(engine) = ctx.services.get::<Luau>() else {
                 return ToolOutput::error(
@@ -291,6 +335,9 @@ impl Tool for EvalTool {
                 return ToolOutput::error(
                     "Luau is turned off for eval (tools.eval.luau = false in the configuration)",
                 );
+            }
+            if input.background {
+                return engine.0.start(input.code, ctx, self.background_max);
             }
             return engine.0.run(input.code, ctx).await;
         }
@@ -525,6 +572,9 @@ mod tests {
         }
         async fn run(&self, code: String, _: &ToolCtx) -> ToolOutput {
             ToolOutput::text(format!("ran {code}"))
+        }
+        fn start(&self, code: String, _: &ToolCtx, max: Duration) -> ToolOutput {
+            ToolOutput::text(format!("started {code} for {}s", max.as_secs()))
         }
     }
 

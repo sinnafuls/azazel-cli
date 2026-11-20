@@ -409,6 +409,8 @@ settings! {
             "Let agents run JavaScript programs (node, bun or deno) with the eval tool.";
         "tools.eval.luau": Switch, "Luau in eval",
             "Let agents run Luau scripts that call their other tools with the eval tool (builds with the lua feature).";
+        "tools.eval.background_max_secs": Number, "Background script time limit",
+            "Longest a background Luau script may run, in seconds of wall-clock time; 0 is no limit.";
     }
     Tools / "Language servers" {
         "lsp.servers": Kind::Table, "Servers",

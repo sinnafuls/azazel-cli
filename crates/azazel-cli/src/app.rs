@@ -774,11 +774,14 @@ impl App {
         })?;
         registry
             .services
-            .insert(Arc::new(azazel_tools::eval::EvalLanguages::from_switches(
-                config.tools.eval.python,
-                config.tools.eval.javascript,
-                eval_luau(&config.tools.eval),
-            )));
+            .insert(Arc::new(
+                azazel_tools::eval::EvalSettings::from_switches(
+                    config.tools.eval.python,
+                    config.tools.eval.javascript,
+                    eval_luau(&config.tools.eval),
+                )
+                .with_background_max_secs(config.tools.eval.background_max_secs),
+            ));
         registry.load(&CoreToolsExt {
             shell: shell.clone(),
             shell_timeout: Duration::from_secs(config.tools.shell_timeout_secs),

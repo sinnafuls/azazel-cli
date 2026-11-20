@@ -33,9 +33,22 @@ enum JobState {
     Running,
     Exited(Option<i32>),
     Killed,
+    /// A job that is not a process (a background script) has ended.
+    Ended(TaskEnd),
+}
+
+/// How a job that is not a process ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskEnd {
+    Finished,
+    Failed,
+    TimedOut,
+    Killed,
 }
 
 struct Job {
+    /// The agent the job belongs to; its jobs end with it.
+    agent: Option<String>,
     command: String,
     started: Instant,
     output: Arc<Mutex<OutputBuffer>>,
@@ -47,6 +60,7 @@ struct Job {
 #[derive(Default)]
 pub struct Jobs {
     next: AtomicU64,
+    next_task: AtomicU64,
     jobs: Mutex<BTreeMap<String, Job>>,
 }
 
@@ -125,6 +139,7 @@ impl Jobs {
         locked(&self.jobs).insert(
             id.clone(),
             Job {
+                agent: None,
                 command: command.to_string(),
                 started,
                 output,
@@ -135,8 +150,36 @@ impl Jobs {
         id
     }
 
+    /// Records a job that is not a process, such as a background script, as `<prefix>-N`. What
+    /// it appends to the handle is its output; cancelling the handle's token is `kill`.
+    pub fn start_task(&self, prefix: &str, agent: &str, label: &str) -> TaskHandle {
+        let id = format!("{prefix}-{}", self.next_task.fetch_add(1, Ordering::Relaxed) + 1);
+        let handle = TaskHandle {
+            id: id.clone(),
+            output: Arc::new(Mutex::new(OutputBuffer::new(0, JOB_TAIL_LINES))),
+            state: Arc::new(Mutex::new(JobState::Running)),
+            kill: CancellationToken::new(),
+        };
+        locked(&self.jobs).insert(
+            id,
+            Job {
+                agent: Some(agent.to_string()),
+                command: label.to_string(),
+                started: Instant::now(),
+                output: handle.output.clone(),
+                state: handle.state.clone(),
+                kill: handle.kill.clone(),
+            },
+        );
+        handle
+    }
+
     fn describe(job: &Job) -> String {
         match *locked(&job.state) {
+            JobState::Ended(TaskEnd::Finished) => "finished".to_string(),
+            JobState::Ended(TaskEnd::Failed) => "failed".to_string(),
+            JobState::Ended(TaskEnd::TimedOut) => "timed out".to_string(),
+            JobState::Ended(TaskEnd::Killed) => "killed".to_string(),
             JobState::Running => format!("running for {}s", job.started.elapsed().as_secs()),
             JobState::Exited(Some(code)) => format!("exited with code {code}"),
             JobState::Exited(None) => "exited".to_string(),
@@ -192,6 +235,52 @@ impl Jobs {
     pub fn kill_all(&self) {
         for job in locked(&self.jobs).values() {
             job.kill.cancel();
+        }
+    }
+
+    /// Stops the jobs that belong to `agent`, which has ended.
+    pub fn kill_agent(&self, agent: &str) {
+        for job in locked(&self.jobs).values() {
+            if job.agent.as_deref() == Some(agent) {
+                job.kill.cancel();
+            }
+        }
+    }
+}
+
+/// The running side of a job that is not a process: what the code behind it reports.
+#[derive(Clone)]
+pub struct TaskHandle {
+    id: String,
+    output: Arc<Mutex<OutputBuffer>>,
+    state: Arc<Mutex<JobState>>,
+    kill: CancellationToken,
+}
+
+impl TaskHandle {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Cancelled by `job kill`, by the end of the agent the job belongs to, and by the end of
+    /// the session.
+    pub fn token(&self) -> CancellationToken {
+        self.kill.clone()
+    }
+
+    /// Adds `text`, line by line, to what `job output` shows.
+    pub fn append(&self, text: &str) {
+        let mut output = locked(&self.output);
+        for line in text.lines() {
+            output.push(line);
+        }
+    }
+
+    /// Records how the job ended; the first end counts.
+    pub fn finish(&self, end: TaskEnd) {
+        let mut state = locked(&self.state);
+        if *state == JobState::Running {
+            *state = JobState::Ended(end);
         }
     }
 }

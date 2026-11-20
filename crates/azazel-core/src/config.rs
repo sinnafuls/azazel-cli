@@ -351,7 +351,10 @@ config_table!(EvalConfig {
     /// Let the `eval` tool run JavaScript.
     javascript: bool = true,
     /// Let the `eval` tool run Luau scripts that call your other tools (builds with the `lua` feature).
-    luau: bool = true
+    luau: bool = true,
+    /// Longest a background Luau script (`eval` with `background: true`) may run, in seconds of
+    /// wall-clock time; 0 is no limit.
+    background_max_secs: u64 = 7200
 });
 config_table!(ScanConfig {
     /// Look for secrets committed to the project with `gitleaks`, once per session.

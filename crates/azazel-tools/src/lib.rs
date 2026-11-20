@@ -50,7 +50,7 @@ pub use pty::{PtyTool, Terminal, TerminalEntry, TerminalState, Terminals};
 pub use read::ReadTool;
 pub use recall::SessionRecallTool;
 pub use search::{GlobTool, GrepTool};
-pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
+pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool, TaskEnd, TaskHandle};
 pub use write::{EditTool, WriteTool};
 
 /// Registers the core tools (`session_recall` among them, `patch` unless `tools.patch` is off,
@@ -150,17 +150,20 @@ impl Extension for CoreToolsExt {
         // session runs is used, and a missing one is named in the result.
         // `[tools.eval]` arrives as a service the application puts in; without it Python and
         // JavaScript are on, and with none on the tool is not offered.
-        let languages = r
+        let settings = r
             .services()
-            .get::<eval::EvalLanguages>()
-            .map_or_else(|| eval::EvalLanguages::all().0, |languages| languages.0.clone());
-        if !languages.is_empty() {
-            r.tool(Arc::new(EvalTool::with_languages(
-                self.shell_timeout,
-                env.clone(),
-                languages,
-                r.services().clone(),
-            )));
+            .get::<eval::EvalSettings>()
+            .map_or_else(eval::EvalSettings::all, |settings| (*settings).clone());
+        if !settings.languages.is_empty() {
+            r.tool(Arc::new(
+                EvalTool::with_languages(
+                    self.shell_timeout,
+                    env.clone(),
+                    settings.languages,
+                    r.services().clone(),
+                )
+                .with_background_max(settings.background_max),
+            ));
         }
         r.tool(Arc::new(ShellTool::new(
             self.shell.clone(),

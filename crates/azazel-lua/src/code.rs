@@ -8,13 +8,16 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource};
+use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
+use azazel_core::hooks::Wake;
 use azazel_core::toolcall::{Luau, LuauEngine};
 use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch,
 };
+use azazel_core::Post;
 use azazel_team::{MemberState, Team};
+use azazel_tools::{Jobs, TaskEnd};
 use futures::StreamExt;
 use mlua::chunk::ChunkMode;
 use mlua::{Function, Lua, MultiValue, Table, VmState};
@@ -64,6 +67,10 @@ const INTRO: &str = "`language: \"luau\"` runs a script that calls your other to
      `tools.search(query)` finds tools not listed below and `tools.describe(name)` returns a tool's \
      description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
      model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
+     With `background: true` the script runs as a job: the call returns its id (`lua-1`) at once, \
+     `job` shows its output and stops it, and you are woken with its result; it is stopped after \
+     `tools.eval.background_max_secs`, and a tool call it makes that needs the user's answer is \
+     refused. \
      `eval` and the agent tools cannot be called through `tools`. A script has no files or \
      processes of its own; it reaches them through `tools`.";
 
@@ -771,6 +778,100 @@ impl LuauEngine for LuauEval {
         describe_tools(&tools)
     }
 
+    fn start(&self, code: String, ctx: &ToolCtx, max: Duration) -> ToolOutput {
+        let Some(caller) = ctx.services.get::<ToolCaller>() else {
+            return ToolOutput::error("scripts cannot call tools in this session");
+        };
+        let Some(jobs) = ctx.services.get::<Jobs>() else {
+            return ToolOutput::error("there is no job list in this session to run a script in");
+        };
+        let label = format!("Luau script, {} lines", code.lines().count());
+        let job = jobs.start_task("lua", &ctx.agent.id, &label);
+        let id = job.id().to_string();
+        // The script has a token of its own: Esc or an abort of the turn leaves it running, and
+        // `job kill`, the end of its agent or of the session stop it.
+        let token = job.token();
+        let progress = job.clone();
+        let job_ctx = ToolCtx {
+            cancel: token.clone(),
+            update: UpdateSink::new(move |line| progress.append(&line)),
+            ..ctx.clone()
+        };
+        let width = ctx
+            .services
+            .get::<Team>()
+            .map_or(PARALLEL, |team| team.max_parallel());
+        let run = Arc::new(Run {
+            ctx: job_ctx,
+            caller,
+            limits: self.limits,
+            calls: AtomicUsize::new(0),
+            printed: Mutex::default(),
+            dropped: AtomicUsize::new(0),
+            limit: Mutex::default(),
+            width,
+            turns: tokio::sync::RwLock::default(),
+        });
+        let (engine, owner) = (LuauEval { limits: self.limits }, ctx.clone());
+        tokio::spawn(async move {
+            let runtime = tokio::runtime::Handle::current();
+            let state = run.clone();
+            let mut work = tokio::task::spawn_blocking(move || runtime.block_on(execute(state, code)));
+            let mut timed_out = false;
+            let limit = async {
+                if max.is_zero() {
+                    std::future::pending::<()>().await;
+                } else {
+                    tokio::time::sleep(max).await;
+                }
+            };
+            let finished = tokio::select! {
+                finished = &mut work => finished,
+                _ = limit => {
+                    timed_out = true;
+                    token.cancel();
+                    (&mut work).await
+                }
+            };
+            let (mut text, mut end) = match finished {
+                Ok(Ok(text)) => (text, TaskEnd::Finished),
+                Ok(Err(text)) => (text, TaskEnd::Failed),
+                Err(_) => ("the script could not be run".to_string(), TaskEnd::Failed),
+            };
+            if timed_out {
+                end = TaskEnd::TimedOut;
+                text.push_str(&format!(
+                    "
+stopped after {} (tools.eval.background_max_secs)",
+                    shown_duration(max)
+                ));
+            } else if token.is_cancelled() {
+                end = TaskEnd::Killed;
+            }
+            if text.trim().is_empty() {
+                text = "(the script printed and returned nothing)".to_string();
+            }
+            job.append(&text);
+            job.finish(end);
+            let state = match end {
+                TaskEnd::Finished => "finished",
+                TaskEnd::Failed => "failed",
+                TaskEnd::TimedOut => "timed out",
+                TaskEnd::Killed => "killed",
+            };
+            let text = engine.bounded(&owner, text);
+            wake_agent(
+                &owner.services,
+                &owner.agent,
+                wake_notice(job.id(), &label, state, &text),
+            );
+        });
+        ToolOutput::text(format!(
+            "started {id}; you will be woken with its result. `job` output and kill work on it."
+        ))
+        .with_details(json!({ "job": id }))
+    }
+
     async fn run(&self, code: String, ctx: &ToolCtx) -> ToolOutput {
         let Some(caller) = ctx.services.get::<ToolCaller>() else {
             return ToolOutput::error("scripts cannot call tools in this session");
@@ -805,6 +906,39 @@ impl LuauEngine for LuauEval {
             Ok(Err(text)) => ToolOutput::error(self.bounded(ctx, text)).with_details(details),
             Err(_) => ToolOutput::error("the script could not be run"),
         }
+    }
+}
+
+/// The message that wakes an agent when its background script has ended.
+fn wake_notice(id: &str, label: &str, state: &str, text: &str) -> String {
+    format!(
+        "<job-exit id=\"{id}\">
+The background script you started has ended: {label}
+{text}
+[{id}: {state}]
+</job-exit>"
+    )
+}
+
+/// Tells the agent that started a background script how it ended: a message to a sub-agent, or
+/// the wake of the lead, as a `wake` hook does it.
+fn wake_agent(services: &Services, agent: &AgentInfo, text: String) {
+    let posted = services
+        .get::<Post>()
+        .is_some_and(|post| (post.0)(&agent.id, text.clone()));
+    if !posted
+        && agent.parent.is_none()
+        && let Some(wake) = services.get::<Wake>()
+    {
+        (wake.0)(text);
+    }
+}
+
+/// How long a script that has been stopped for time is said to have run.
+fn shown_duration(max: Duration) -> String {
+    match max.as_secs() {
+        0 => format!("{} ms", max.as_millis()),
+        secs => format!("{secs} s"),
     }
 }
 

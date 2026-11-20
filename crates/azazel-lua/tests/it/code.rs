@@ -93,7 +93,7 @@ impl Bench {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
-        services.insert(Arc::new(azazel_tools::eval::EvalLanguages::from_switches(
+        services.insert(Arc::new(azazel_tools::eval::EvalSettings::from_switches(
             true, true, true,
         )));
         let registry = Arc::new(Registry::new(ExtCtx {
