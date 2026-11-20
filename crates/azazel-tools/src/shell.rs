@@ -238,6 +238,15 @@ impl Jobs {
         }
     }
 
+    /// How many jobs that are not processes (background scripts) are still running. Each of them
+    /// wakes its agent when it ends.
+    pub fn running_tasks(&self) -> usize {
+        locked(&self.jobs)
+            .values()
+            .filter(|job| job.agent.is_some() && *locked(&job.state) == JobState::Running)
+            .count()
+    }
+
     /// Stops the jobs that belong to `agent`, which has ended.
     pub fn kill_agent(&self, agent: &str) {
         for job in locked(&self.jobs).values() {

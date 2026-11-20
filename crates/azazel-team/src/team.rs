@@ -795,6 +795,10 @@ impl Inner {
             status: finished.state.label().to_string(),
         };
         self.deps.bus.emit(&mut event).await;
+        // What the agent left running in the background (a Luau script) ends with it.
+        if let Some(jobs) = self.deps.services.get::<azazel_tools::Jobs>() {
+            jobs.kill_agent(&info.id);
+        }
         self.announce();
         if deliver && let Some(parent) = info.parent.as_deref().and_then(|parent| self.handle_of(parent)) {
             parent.follow_up(UserInput::text(finished.as_message()));
@@ -1194,6 +1198,9 @@ impl Team {
                 handle.shutdown().await;
             }
             self.inner.deps.permissions.forget_agent(&member.info.id);
+            if let Some(jobs) = self.inner.deps.services.get::<azazel_tools::Jobs>() {
+                jobs.kill_agent(&member.info.id);
+            }
             if let Some(caller) = self.inner.deps.services.get::<ToolCaller>() {
                 caller.forget_agent(&member.info.id);
             }

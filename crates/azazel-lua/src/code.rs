@@ -853,7 +853,6 @@ stopped after {} (tools.eval.background_max_secs)",
                 text = "(the script printed and returned nothing)".to_string();
             }
             job.append(&text);
-            job.finish(end);
             let state = match end {
                 TaskEnd::Finished => "finished",
                 TaskEnd::Failed => "failed",
@@ -866,6 +865,9 @@ stopped after {} (tools.eval.background_max_secs)",
                 &owner.agent,
                 wake_notice(job.id(), &label, state, &text),
             );
+            // After the wake: a run that waits for its background scripts (print mode) sees one
+            // as running until its agent has been told.
+            job.finish(end);
         });
         ToolOutput::text(format!(
             "started {id}; you will be woken with its result. `job` output and kill work on it."

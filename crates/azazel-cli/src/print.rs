@@ -235,7 +235,14 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
                         .iter()
                         .any(|member| member.id != lead && member.state.is_active())
                 });
-                if !pending {
+                // A background script wakes the lead when it ends, and that is a turn of its own;
+                // the script's own wall-clock cap bounds the wait.
+                let scripts = app
+                    .registry
+                    .services
+                    .get::<azazel_tools::Jobs>()
+                    .is_some_and(|jobs| jobs.running_tasks() > 0);
+                if !pending && !scripts {
                     #[cfg(feature = "test-support")]
                     if let Some((text, images)) = queued.next(app.config.tui.queue_mode) {
                         match app.submit(active, text, images).await {
