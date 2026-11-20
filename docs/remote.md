@@ -85,8 +85,10 @@ when it was last used, number of messages; the project on screen first). Picking
 in the folder it worked in, and opens it; when a background session has it open already, that one is opened. It needs
 control access, like New chat, and the same rules decide about the folder.
 
-Trusting a folder for good is done on the computer, by running azazel in it once. `/remote`, which shares the session
-of a terminal, does not start other sessions.
+Trusting a folder for good is done on the computer, by running azazel in it once. A browser with control access to a
+session shared with `/remote` can start, list and continue background sessions too, under the same folder rules; the
+shared terminal session comes first in its list. Those sessions are detached like the ones `azazel remote` starts: they
+keep running after the browser disconnects and after the terminal's azazel exits.
 
 ```toml
 [remote]
@@ -110,8 +112,9 @@ the agents, tools and permissions are this process's, and what a browser sends r
 While the session is shared, a line above the input says so and how many browsers are attached. An approval or a
 question is shown at the terminal and in the browsers at once: the first answer wins and the other side's request
 closes. A secret that an agent asks for is asked at the terminal only. A browser can send prompts, steer, queue a
-follow-up, stop the run and change the mode, model and thinking level; every other command answers that it is not
-available from a shared terminal session. A browser that reconnects resumes from the last frame it saw.
+follow-up, stop the run and change the mode, model and thinking level of the shared session, and start or continue
+[background sessions](#starting-a-session-from-the-browser) beside it; other commands for the shared session answer that they
+are not available from a shared terminal session. A browser that reconnects resumes from the last frame it saw.
 
 ## From a phone: Cloudflare
 

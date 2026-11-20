@@ -236,7 +236,7 @@
 					<ShieldAlert class="text-warning" />
 					<Alert.Description>
 						This folder is not trusted. The session starts once someone at the computer allows it in
-						the terminal of azazel remote.
+						the azazel terminal there.
 					</Alert.Description>
 				</Alert.Root>
 			{/if}
