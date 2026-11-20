@@ -1086,6 +1086,26 @@ async fn the_status_of_a_working_agent_shows_its_tool_its_words_and_its_files() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn what_an_agent_left_running_in_the_background_ends_with_it() {
+    let bench = Bench::new(4, false).await;
+    bench
+        .mock
+        .push("w", MockStep::tools("", &[("n", "nap", json!({ "ms": 20_000 }))]));
+    let id = spawn_for_lead(&bench, "worker", "nap", "w").await;
+    until_state(&bench, &id, napping).await;
+
+    // The agent and the lead each have a script running; only the agent's ends with it.
+    let jobs = bench.registry.services.get::<azazel_tools::Jobs>().unwrap();
+    let theirs = jobs.start_task("lua", &id, "a script of the worker");
+    let ours = jobs.start_task("lua", "lead", "a script of the lead");
+    bench.team.stop(&id).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), theirs.token().cancelled())
+        .await
+        .expect("the worker's script was not stopped when the worker ended");
+    assert!(!ours.token().is_cancelled());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_running_agent_keeps_its_models_when_roles_change_and_a_new_one_uses_them() {
     let bench = Bench::new(4, false).await;
     let on_role = |prompt: &str| azazel_team::SpawnRequest {
