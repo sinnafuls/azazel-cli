@@ -58,7 +58,7 @@ pub use session::{
 };
 pub use skills::{Skill, SkillGrants, SkillGrantsExt, SkillRegistry, SkillRoot, SkillSource};
 pub use subagent::{SubagentRunner, Subagents};
-pub use toolcall::ToolCaller;
+pub use toolcall::{Luau, LuauEngine, ToolCaller};
 pub use tracker::{FileTracker, Freshness};
 pub use trust::TrustStore;
 pub use ui::{

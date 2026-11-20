@@ -349,7 +349,9 @@ config_table!(EvalConfig {
     /// Let the `eval` tool run Python.
     python: bool = true,
     /// Let the `eval` tool run JavaScript.
-    javascript: bool = true
+    javascript: bool = true,
+    /// Let the `eval` tool run Luau scripts that call your other tools (builds with the `lua` feature).
+    luau: bool = true
 });
 config_table!(ScanConfig {
     /// Look for secrets committed to the project with `gitleaks`, once per session.
@@ -1281,7 +1283,8 @@ impl Config {
             source_name: "merged configuration".to_string(),
             message,
         })?;
-        let warnings = fold_presets(&mut config);
+        let mut warnings = fold_presets(&mut config);
+        warnings.extend(fold_run_code(&mut config));
         for warning in &warnings {
             tracing::warn!("{warning}");
         }
@@ -1367,6 +1370,94 @@ fn fold_presets(config: &mut Config) -> Vec<String> {
             )),
             false => {
                 config.profiles.entries.insert(name.clone(), preset.clone());
+            }
+        }
+    }
+    warnings
+}
+
+/// The tool `eval` took over from in 0.17.
+const OLD_LUAU_TOOL: &str = "run_code";
+
+/// Rewrites the settings that name the `run_code` tool, which is now `eval` with `language: "luau"`,
+/// so that a rule written for it keeps meaning the Luau scripts. One warning for each rewrite.
+fn fold_run_code(config: &mut Config) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (list, rules) in [
+        ("allow", &mut config.permissions.allow),
+        ("ask", &mut config.permissions.ask),
+        ("deny", &mut config.permissions.deny),
+    ] {
+        let mut changed = false;
+        for rule in rules.iter_mut() {
+            if let Ok(parsed) = rule.parse::<crate::permissions::Rule>()
+                && parsed.tool == OLD_LUAU_TOOL
+            {
+                *rule = "eval(luau)".to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            let mut seen: Vec<String> = Vec::new();
+            rules.retain(|rule| {
+                let new = !seen.contains(rule);
+                seen.push(rule.clone());
+                new
+            });
+            warnings.push(format!(
+                "permissions.{list}: `{OLD_LUAU_TOOL}` is now `eval(luau)`; change it in your configuration"
+            ));
+        }
+    }
+    if config.tools.disabled.iter().any(|name| name == OLD_LUAU_TOOL) {
+        config.tools.disabled.retain(|name| name != OLD_LUAU_TOOL);
+        config.tools.eval.luau = false;
+        warnings.push(format!(
+            "tools.disabled: `{OLD_LUAU_TOOL}` is gone; Luau scripts are switched off with tools.eval.luau = false, \
+             which is now set"
+        ));
+    }
+    if config.tools.defer.iter().any(|name| name == OLD_LUAU_TOOL) {
+        config.tools.defer.retain(|name| name != OLD_LUAU_TOOL);
+        warnings.push(format!(
+            "tools.defer: `{OLD_LUAU_TOOL}` is removed; eval, which runs Luau scripts now, is never deferred"
+        ));
+    }
+    for (event, hooks) in &mut config.hooks {
+        for (index, hook) in hooks.iter_mut().enumerate() {
+            let Some(matcher) = hook.matcher.clone() else {
+                continue;
+            };
+            let number = index + 1;
+            if matcher.trim() == OLD_LUAU_TOOL {
+                hook.matcher = Some("eval".to_string());
+                if hook.when.is_none() {
+                    hook.when = Some("eval(luau)".to_string());
+                    warnings.push(format!(
+                        "hooks.{event} #{number}: matcher `{OLD_LUAU_TOOL}` is now matcher `eval` with if = \"eval(luau)\""
+                    ));
+                } else {
+                    warnings.push(format!(
+                        "hooks.{event} #{number}: matcher `{OLD_LUAU_TOOL}` is now `eval`, and the hook now fires for \
+                         every eval language; put \"eval(luau)\" in its `if` to keep to Luau"
+                    ));
+                }
+            } else if matcher.split('|').any(|word| word.trim() == OLD_LUAU_TOOL) {
+                let rewritten: Vec<&str> = matcher
+                    .split('|')
+                    .map(|word| {
+                        if word.trim() == OLD_LUAU_TOOL {
+                            "eval"
+                        } else {
+                            word
+                        }
+                    })
+                    .collect();
+                hook.matcher = Some(rewritten.join("|"));
+                warnings.push(format!(
+                    "hooks.{event} #{number}: `{OLD_LUAU_TOOL}` in the matcher is now `eval`, and the hook now fires \
+                     for every eval language"
+                ));
             }
         }
     }

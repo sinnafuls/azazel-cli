@@ -1,15 +1,30 @@
-//! Calling a tool on an agent's behalf from outside the agent loop (a script run by `run_code`, a
+//! Calling a tool on an agent's behalf from outside the agent loop (a Luau script run by `eval`, a
 //! Luau extension), through the same gate a call the model makes itself passes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use azazel_agent::agent::ABORTED_TEXT;
-use azazel_agent::{Gate, GateDecision, Tool, ToolCtx, ToolOutput, ToolSource};
+use azazel_agent::{Gate, GateDecision, Services, Tool, ToolCtx, ToolOutput, ToolSource};
 use serde_json::Value;
 
 use crate::ext::ToolRegistry;
+
+/// The Luau engine behind `eval`'s `luau` language. It lives in `azazel-lua`; `azazel-tools` reaches
+/// it through the [`Luau`] service, so a build without the `lua` feature simply has none.
+#[async_trait]
+pub trait LuauEngine: Send + Sync {
+    /// The Luau part of `eval`'s description; built once, after `ToolCaller` exists. `hidden` holds
+    /// the tools that are callable only from a script (empty unless the tools are code-first).
+    fn describe(&self, services: &Services, hidden: &[Arc<dyn Tool>]) -> String;
+    /// Runs `code` as the agent of `ctx`.
+    async fn run(&self, code: String, ctx: &ToolCtx) -> ToolOutput;
+}
+
+/// The service that holds the engine.
+pub struct Luau(pub Arc<dyn LuauEngine>);
 
 /// How long a cancelled tool gets to wind down before its task is dropped.
 const ABORT_GRACE: Duration = Duration::from_secs(2);

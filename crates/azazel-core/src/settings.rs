@@ -407,6 +407,8 @@ settings! {
             "Let agents run Python programs with the eval tool. Off for both languages, eval is not offered.";
         "tools.eval.javascript": Switch, "JavaScript in eval",
             "Let agents run JavaScript programs (node, bun or deno) with the eval tool.";
+        "tools.eval.luau": Switch, "Luau in eval",
+            "Let agents run Luau scripts that call their other tools with the eval tool (builds with the lua feature).";
     }
     Tools / "Language servers" {
         "lsp.servers": Kind::Table, "Servers",
