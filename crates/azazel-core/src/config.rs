@@ -286,8 +286,19 @@ pub const DEFAULT_DEFERRED: [&str; 13] = [
     "memory_forget",
 ];
 
+/// The tools the model keeps full schemas for in code-first mode (`[tools] code_first`): the
+/// others are called from a Luau `eval` script. `patch` joins them where it replaces `edit`, and
+/// the goal and report tools of runs that must end themselves are never hidden.
+pub const CODE_FIRST_CORE: [&str; 8] = [
+    "read", "edit", "write", "shell", "eval", "ask_user", "todo", "task",
+];
+
 config_table!(ToolsConfig {
     disabled: Vec<String> = Vec::new(),
+    /// Give the model full schemas only for read, edit, write, shell, eval, ask_user, todo and task;
+    /// every other tool is called from a Luau `eval` script, which lists their signatures. Needs
+    /// `tools.eval.luau`.
+    code_first: bool = false,
     /// Tools kept out of the prompt until the model searches for them, where the provider
     /// searches for tools itself (Claude 4.5 and later on Anthropic's API). A name ending in `*`
     /// covers every tool it starts.

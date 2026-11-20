@@ -31,6 +31,9 @@ use crate::script::{describe, locked};
 const EVAL: &str = "eval";
 /// The description's list of callable tool names stays within about 500 tokens.
 const LISTING_CHARS: usize = 2_000;
+/// In code-first mode the tools that are only callable from a script are listed as signatures,
+/// within about 1.5k tokens; the rest of them by name.
+const CODE_FIRST_LISTING_CHARS: usize = 6_000;
 /// What `print` keeps; a script that prints more is told so.
 const MAX_PRINTED_BYTES: usize = 1024 * 1024;
 /// How long a cancelled script gets to wind down the tool call it is waiting for.
@@ -178,25 +181,60 @@ fn first_sentence(description: &str) -> String {
     sentence.trim_end_matches('.').chars().take(140).collect()
 }
 
-/// The description with the tools a script can call, by name only: their arguments are those of
-/// the tools the model is offered, and `tools.describe` gives them for the rest. Listing every
-/// signature here cost more than a thousand tokens of every request.
-fn describe_tools(tools: &[Arc<dyn Tool>]) -> String {
-    let mut names = tools
-        .iter()
-        .map(|tool| tool.name())
-        .filter(|name| !blocked(name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    if names.len() > LISTING_CHARS {
-        let mut end = LISTING_CHARS;
-        while !names.is_char_boundary(end) {
+/// `text` cut to at most `max` bytes, with `…` where it was cut.
+fn cut(mut text: String, max: usize) -> String {
+    if text.len() > max {
+        let mut end = max;
+        while !text.is_char_boundary(end) {
             end -= 1;
         }
-        names.truncate(end);
-        names.push('…');
+        text.truncate(end);
+        text.push('…');
     }
-    let mut out = format!("{INTRO}\n\nCallable tools: {names}\n");
+    text
+}
+
+/// The description with the tools a script can call. The tools the model is offered are listed by
+/// name only: their arguments are in its tool list, and `tools.describe` gives them for the rest.
+/// Listing every signature here cost more than a thousand tokens of every request. The `hidden`
+/// tools (code-first mode) are in no tool list, so their signatures are listed, as many as fit in
+/// [`CODE_FIRST_LISTING_CHARS`], and the rest by name.
+fn describe_tools(tools: &[Arc<dyn Tool>], hidden: &[Arc<dyn Tool>]) -> String {
+    let names = |tools: &[&Arc<dyn Tool>]| {
+        cut(
+            tools
+                .iter()
+                .map(|tool| tool.name())
+                .collect::<Vec<_>>()
+                .join(", "),
+            LISTING_CHARS,
+        )
+    };
+    let is_hidden = |tool: &Arc<dyn Tool>| hidden.iter().any(|other| other.name() == tool.name());
+    let offered: Vec<&Arc<dyn Tool>> = tools
+        .iter()
+        .filter(|tool| !blocked(tool.name()) && !is_hidden(tool))
+        .collect();
+    let mut out = format!("{INTRO}\n\nCallable tools: {}\n", names(&offered));
+    let hidden: Vec<&Arc<dyn Tool>> = hidden.iter().filter(|tool| !blocked(tool.name())).collect();
+    if !hidden.is_empty() {
+        out.push_str("\nTools you call only from a script (they are not in your tool list):\n");
+        let mut used = 0;
+        let mut listed = 0;
+        for tool in &hidden {
+            let line = signature(tool.as_ref());
+            if used + line.len() + 1 > CODE_FIRST_LISTING_CHARS {
+                break;
+            }
+            used += line.len() + 1;
+            listed += 1;
+            out.push_str(&line);
+            out.push('\n');
+        }
+        if listed < hidden.len() {
+            out.push_str(&format!("More, by name: {}\n", names(&hidden[listed..])));
+        }
+    }
     out.push_str(
         "Any other tool you have is callable by name in the same way; a name that is not an identifier \
          is written `tools[\"the-name\"]{ ... }`.",
@@ -770,12 +808,11 @@ impl LuauEngine for LuauEval {
             depth: 0,
             session_id: String::new(),
         };
-        let mut tools = services
+        let tools = services
             .get::<ToolCaller>()
             .map(|caller| caller.tools.tools(&anyone))
             .unwrap_or_default();
-        tools.extend(hidden.iter().cloned());
-        describe_tools(&tools)
+        describe_tools(&tools, hidden)
     }
 
     fn start(&self, code: String, ctx: &ToolCtx, max: Duration) -> ToolOutput {
@@ -1010,7 +1047,7 @@ mod tests {
             shown("task", "Start agents.", &schema),
             shown(EVAL, "Run code.", &schema),
         ];
-        let listed = describe_tools(&tools);
+        let listed = describe_tools(&tools, &[]);
         assert!(listed.contains("\nCallable tools: read\n"), "{listed}");
         assert!(!listed.contains("task,") && !listed.contains("eval,"), "{listed}");
 
@@ -1019,7 +1056,7 @@ mod tests {
         for i in 0..120 {
             tools.push(shown(&format!("mcp__server__tool_{i}"), &long, &schema));
         }
-        let listed = describe_tools(&tools);
+        let listed = describe_tools(&tools, &[]);
         assert!(
             listed.len() < INTRO.len() + LISTING_CHARS + 400,
             "{}",

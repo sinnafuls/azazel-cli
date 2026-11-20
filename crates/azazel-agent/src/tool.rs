@@ -66,6 +66,48 @@ impl Deferral {
     }
 }
 
+/// Code-first mode (`[tools] code_first`), kept as a service: the tools its predicate names for
+/// an agent are left out of that agent's requests and are called from a Luau `eval` script. The
+/// agent can still call one directly, and scripts reach it through `ToolCaller`. The answer must
+/// not change during a session, or the provider's prompt cache is lost with every change.
+#[derive(Clone)]
+pub struct CodeFirst(pub Arc<dyn Fn(&AgentInfo, &str) -> bool + Send + Sync>);
+
+impl CodeFirst {
+    /// Whether tool `name` is kept out of the requests of `agent`.
+    pub fn hides(&self, agent: &AgentInfo, name: &str) -> bool {
+        (self.0)(agent, name)
+    }
+
+    /// Whether the mode holds for an agent offered `tools`: only with `eval` among them, since
+    /// hidden tools are reached through it. An agent without `eval` (an explicit `tools:` list,
+    /// `--tools`, `tools.disabled`) keeps what it is offered.
+    pub fn applies(&self, tools: &[Arc<dyn Tool>]) -> bool {
+        tools.iter().any(|tool| tool.name() == "eval")
+    }
+
+    /// `tools` without those hidden from `agent`; all of them when the mode does not apply.
+    pub fn visible(&self, agent: &AgentInfo, mut tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool>> {
+        if self.applies(&tools) {
+            tools.retain(|tool| !self.hides(agent, tool.name()));
+        }
+        tools
+    }
+}
+
+/// A tool source that leaves out what code-first mode hides from the agent, for requests that must
+/// carry the tool list the agent's own requests carry (questions asked on the side).
+pub struct CodeFirstVisible {
+    pub inner: Arc<dyn ToolSource>,
+    pub code_first: Arc<CodeFirst>,
+}
+
+impl ToolSource for CodeFirstVisible {
+    fn tools(&self, agent: &AgentInfo) -> Vec<Arc<dyn Tool>> {
+        self.code_first.visible(agent, self.inner.tools(agent))
+    }
+}
+
 /// What `[tools]` asks of every agent, kept as a service: `cache_reads`, `retries`,
 /// `call_timeout_secs`. Without it nothing is cached, retried or limited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

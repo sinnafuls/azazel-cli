@@ -24,8 +24,8 @@ use crate::hooks::{AgentHooks, Recovery, TranscriptSink};
 use crate::inspect::RequestRecord;
 use crate::repair::{self, Prepared};
 use crate::tool::{
-    ArtifactSink, Deferral, Offer, Services, ShapeCtx, ShapeRequest, Shaper, Timeout, Tool, ToolCtx,
-    ToolOutput, ToolSettings, ToolSource, UpdateSink, tool_spec,
+    ArtifactSink, CodeFirst, Deferral, Offer, Services, ShapeCtx, ShapeRequest, Shaper, Timeout, Tool,
+    ToolCtx, ToolOutput, ToolSettings, ToolSource, UpdateSink, tool_spec,
 };
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
@@ -1349,7 +1349,11 @@ impl Core {
         let searching = model
             .as_ref()
             .is_some_and(|model| self.router.searches_tools(model));
-        let (specs, system) = self.offer_tools(&mut tools, searching);
+        let code_first = self
+            .services
+            .get::<CodeFirst>()
+            .filter(|code_first| code_first.applies(&tools));
+        let (specs, system) = self.offer_tools(&mut tools, searching, code_first.as_deref());
         let mut request = Request {
             system,
             messages,
@@ -1382,8 +1386,14 @@ impl Core {
                 cache_boundary: false,
             });
         }
-        // A hook may have withdrawn tools; only what was offered can be called.
-        tools.retain(|t| request.tools.iter().any(|spec| spec.name == t.name()));
+        // A hook may have withdrawn tools; only what was offered can be called, and in code-first
+        // mode what is hidden from the list but reached through a script.
+        tools.retain(|t| {
+            request.tools.iter().any(|spec| spec.name == t.name())
+                || code_first
+                    .as_ref()
+                    .is_some_and(|hidden| hidden.hides(&self.info, t.name()))
+        });
         (request, tools)
     }
 
@@ -1397,6 +1407,7 @@ impl Core {
         &self,
         tools: &mut Vec<Arc<dyn Tool>>,
         searching: bool,
+        code_first: Option<&CodeFirst>,
     ) -> (Vec<ToolSpec>, Vec<SystemPart>) {
         tools.retain(|tool| match tool.offer() {
             Offer::Always => true,
@@ -1404,8 +1415,11 @@ impl Core {
             Offer::Search => !searching,
         });
         let deferral = self.services.get::<Deferral>();
+        // Code-first: hidden tools get no spec (so neither deferral nor a search has anything to
+        // do with them) but stay in `tools`, where a direct call still finds them.
         let mut specs: Vec<ToolSpec> = tools
             .iter()
+            .filter(|tool| !code_first.is_some_and(|hidden| hidden.hides(&self.info, tool.name())))
             .map(|tool| ToolSpec {
                 defer: searching
                     && (matches!(tool.offer(), Offer::Searchable { .. })

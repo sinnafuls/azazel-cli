@@ -1611,6 +1611,14 @@ impl Team {
             };
             (handle, store, tools)
         };
+        // With code-first tools its own requests leave some out, and so must this one.
+        let tools = match (to == LEAD, inner.deps.services.get::<azazel_agent::CodeFirst>()) {
+            (false, Some(code_first)) => Arc::new(azazel_agent::CodeFirstVisible {
+                inner: tools,
+                code_first,
+            }) as Arc<dyn ToolSource>,
+            _ => tools,
+        };
         // Framed with the agent's own prompt and tools, so its cached prefix is reused. The cost
         // is counted below, once the asker is known to have had an answer.
         let side = Arc::new(Side {

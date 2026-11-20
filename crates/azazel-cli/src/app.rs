@@ -418,6 +418,33 @@ pub(crate) fn eval_luau(eval: &azazel_core::config::EvalConfig) -> bool {
     eval.luau && cfg!(feature = "lua")
 }
 
+/// Whether `name` keeps its full schema in code-first mode: the core tools, `patch` where it takes
+/// the place of `edit`, and the tools that end a goal, a plan or a typed run, which an agent must
+/// be able to call itself.
+fn code_first_core(name: &str) -> bool {
+    azazel_core::config::CODE_FIRST_CORE.contains(&name)
+        || name == "patch"
+        || name == "plan_submit"
+        || name == azazel_team::REPORT_TOOL
+        || azazel_team::goal::GOAL_TOOLS.contains(&name)
+}
+
+/// The tools `[tools] code_first` hides: for the lead and for sub-agents whose definition has no
+/// `tools:` list, everything but the core; an explicit list is its author's choice and stays.
+fn code_first_hiding(
+    defs: Arc<azazel_core::agents::AgentDefs>,
+    lead: Arc<LeadAgent>,
+) -> azazel_agent::CodeFirst {
+    azazel_agent::CodeFirst(Arc::new(move |agent: &AgentInfo, name: &str| {
+        let def = if agent.depth == 0 {
+            lead.def()
+        } else {
+            defs.get(&agent.def)
+        };
+        def.is_none_or(|def| def.tools.is_none()) && !code_first_core(name)
+    }))
+}
+
 /// Text given inline, or read from the file named after an `@`.
 fn text_or_file(flag: &str, value: &str, cwd: &std::path::Path) -> Result<String> {
     match value.strip_prefix('@') {
@@ -1314,7 +1341,7 @@ impl App {
             router: router.clone(),
             permissions: permissions.clone(),
             paths: paths.clone(),
-            defs: agent_defs,
+            defs: agent_defs.clone(),
             max_parallel: config.team.max_parallel,
             max_depth: config.team.max_depth,
             max_turns: config.team.max_turns,
@@ -1331,6 +1358,21 @@ impl App {
             .transpose()?;
         if let Some(typed) = &report {
             team.expect_lead_report(typed.clone());
+        }
+        // Code-first mode needs the Luau engine, which hidden tools are reached through.
+        let code_first = if config.tools.code_first && !cfg!(feature = "lua") {
+            tracing::warn!(
+                "tools.code_first is ignored: this build of azazel has no Luau (the `lua` feature)"
+            );
+            None
+        } else {
+            config
+                .tools
+                .code_first
+                .then(|| Arc::new(code_first_hiding(agent_defs, lead_agent.clone())))
+        };
+        if let Some(code_first) = &code_first {
+            services.insert(code_first.clone());
         }
         let lead_tools = Arc::new(LeadTools::new(
             registry.tools.clone(),
@@ -1371,7 +1413,14 @@ impl App {
         services.insert(Arc::new(Side {
             router: router.clone(),
             prompt: registry.prompt.clone(),
-            tools: lead_tools.clone(),
+            // The request of a question asked on the side carries the tools the lead's own do.
+            tools: match code_first {
+                Some(code_first) => Arc::new(azazel_agent::CodeFirstVisible {
+                    inner: lead_tools.clone(),
+                    code_first,
+                }),
+                None => lead_tools.clone(),
+            },
             costs: side_costs.clone(),
         }));
         // What the run has spent, for the cost cap: every agent of the team, the lead included,

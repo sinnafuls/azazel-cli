@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Services, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, AgentInfo, CodeFirst, Services, Tool, ToolCtx, ToolOutput, ToolSource};
 use azazel_core::process::{AgentEnv, RunOptions, run_program};
 use azazel_core::scheme::local_dir;
 use azazel_core::toolcall::{Luau, ToolCaller};
@@ -229,11 +229,29 @@ impl EvalTool {
             return Some(self.base.clone());
         }
         // Before the tool caller exists the extensions are still loading.
-        self.services.get::<ToolCaller>()?;
+        let caller = self.services.get::<ToolCaller>()?;
         let engine = self.services.get::<Luau>()?;
         let mut text = self.base.clone();
         text.push_str("\n\n");
-        text.push_str(&engine.0.describe(&self.services, &[]));
+        // The tools code-first mode keeps out of the tool list are described here instead. The
+        // description is the lead's view, built once.
+        let anyone = AgentInfo {
+            id: "lead".to_string(),
+            def: "lead".to_string(),
+            parent: None,
+            depth: 0,
+            session_id: String::new(),
+        };
+        let hidden: Vec<Arc<dyn Tool>> = match self.services.get::<CodeFirst>() {
+            Some(code_first) => caller
+                .tools
+                .tools(&anyone)
+                .into_iter()
+                .filter(|tool| code_first.hides(&anyone, tool.name()))
+                .collect(),
+            None => Vec::new(),
+        };
+        text.push_str(&engine.0.describe(&self.services, &hidden));
         Some(text)
     }
 }

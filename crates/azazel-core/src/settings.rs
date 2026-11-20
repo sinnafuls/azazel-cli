@@ -366,6 +366,8 @@ settings! {
     Tools / "Tools" {
         "tools.disabled": List, "Disabled tools", "Tool names withheld from every agent.";
         "tools.defer": List, "Deferred tools", "Tools kept out of the prompt until the model searches for them, on Claude 4.5 and later through Anthropic's API; a trailing * covers every name it starts.";
+        "tools.code_first": Switch, "Code-first tools",
+            "Give the model full schemas only for read, edit, write, shell, eval, ask_user, todo and task; it calls every other tool from a Luau eval script (needs tools.eval.luau).";
         "tools.max_result_bytes": Number, "Largest tool result", "Tool output beyond this many bytes is cut and saved as an artifact.";
         "tools.shell_timeout_secs": Number, "Shell time limit", "The default time limit of a shell call, in seconds.";
         "tools.cache_reads": Switch, "Cache repeated reads", "Answer a repeated read, grep or glob with a short note while the earlier result is still in the context.";
