@@ -287,7 +287,9 @@
 				</h3>
 				{#if holding}
 					<form onsubmit={go} novalidate data-browser-address>
-						<InputGroup.Root class="overflow-clip">
+						<!-- The stock group, with no clip: the empty padding of its addons reaches a few pixels
+						     past its border, which shows nothing and scrolls nothing. -->
+						<InputGroup.Root>
 							<InputGroup.Addon>
 								<InputGroup.Button size="icon-xs" aria-label="Back" onclick={() => nav('back')}>
 									<ArrowLeft />

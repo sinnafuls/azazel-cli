@@ -31,6 +31,24 @@ const agentBrowser =
 	(process.platform === 'linux' ? undefined : chromium.executablePath());
 
 /**
+ * Whether the agents have a browser to drive on this machine. Where the host looks for one itself
+ * (Linux), these are the names it tries on PATH; with none of them the `browser` tool fails, and a
+ * test of the agents' browser has nothing to show.
+ */
+export const agentBrowserFound =
+	agentBrowser !== undefined ||
+	[
+		'google-chrome',
+		'google-chrome-stable',
+		'chromium',
+		'chromium-browser',
+		'microsoft-edge',
+		'microsoft-edge-stable',
+		'brave-browser',
+		'brave'
+	].some((name) => spawnSync('which', [name]).status === 0);
+
+/**
  * Serves `html` as the only page of a web server on this machine, for the agents' browser to open
  * (the `browser` tool opens http and https addresses only).
  */

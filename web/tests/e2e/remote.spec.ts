@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { test, expect, Stack, type Page } from './stack';
+import { test, expect, Stack, agentBrowserFound, browses, serve, type Page } from './stack';
 
 const FINAL = 'Wrote and verified hello.txt.';
 
@@ -450,6 +450,76 @@ for (const width of [900, 600])
 		await button.hover();
 		await expect(own).toBeVisible();
 	});
+
+/** A page that is one button: a click anywhere in it changes its title, its text and its colour. */
+const CLICKABLE = `<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Before the click</title>
+		<style>
+			html, body { height: 100%; margin: 0; }
+			button { width: 100%; height: 100%; border: 0; background: #fff; font: 32px system-ui, sans-serif; }
+		</style>
+	</head>
+	<body>
+		<button onclick="document.title = 'Clicked'; this.textContent = 'Clicked'; this.style.background = '#bfdbfe'">
+			Press anywhere
+		</button>
+	</body>
+</html>`;
+
+test("the Browser tab shows the agent's browser; taking over, a click reaches its page", async ({
+	page
+}) => {
+	test.skip(!agentBrowserFound, 'no Chromium-based browser on this machine for the agent to open');
+	const site = await serve(CLICKABLE);
+	const stack = new Stack();
+	try {
+		await stack.start('auto', false, [], browses(site.url, 'Opened the page.'));
+		await openSession(page, stack);
+		await expect(page.getByRole('paragraph').filter({ hasText: 'Opened the page.' })).toBeVisible();
+		await expect(page.locator('[data-status="error"]')).toHaveCount(0);
+
+		const pane = page.getByRole('complementary', { name: 'Agents, usage and browser' });
+		await pane.getByRole('tab', { name: 'Browser' }).click();
+		const panel = pane.locator('[data-browser]');
+		const status = panel.getByRole('status');
+		const title = panel.locator('[data-browser-title]');
+		const picture = panel.locator('[data-browser-picture]');
+		const img = picture.getByRole('img');
+
+		// Watching: where the browser is, and a picture of it that has loaded.
+		await expect(status).toHaveText('Watching');
+		await expect(title).toHaveText('Before the click');
+		await expect(panel.locator('[data-browser-url]')).toHaveText(site.url);
+		await expect(img).toBeVisible();
+		await expect
+			.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
+			.toBeGreaterThan(0);
+		const before = await img.getAttribute('src');
+		expect(before).toMatch(/^data:image\/jpeg;base64,/);
+
+		// Taken over: the address can be typed, and a click on the picture is a click in the page.
+		await panel.getByRole('button', { name: 'Take over' }).click();
+		await expect(status).toHaveText('You have control');
+		await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveValue(site.url);
+		await picture.click();
+		await expect(title).toHaveText('Clicked');
+		// The page changed colour, so the picture is another one.
+		await expect.poll(() => img.getAttribute('src')).not.toBe(before);
+
+		// Handed back: watching again, with nothing to type into.
+		await panel.getByRole('button', { name: 'Hand back' }).click();
+		await expect(status).toHaveText('Watching');
+		await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveCount(0);
+		await expect(panel.getByRole('button', { name: 'Take over' })).toBeEnabled();
+		await expect(title).toHaveText('Clicked');
+	} finally {
+		await stack.stop();
+		await site.close();
+	}
+});
 
 test('a view link watches: no way to send, and settings stay read-only', async ({
 	browser,

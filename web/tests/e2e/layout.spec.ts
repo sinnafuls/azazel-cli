@@ -43,11 +43,14 @@
 //
 // Screenshots and the measurements of every state go to tmp/layout, or to AZAZEL_LAYOUT_SHOTS;
 // those of the profiles (their chip, menu, settings and the notice of a usage limit) to a folder of
-// their own beside each size's, `<size>-<theme>-profiles`.
+// their own beside each size's, `<size>-<theme>-profiles`; those of the Browser tab (no browser,
+// watching a page, holding it) to `<size>-<theme>-browser`, with the boxes of its parts in boxes.json.
+// The last two need a browser for the agent to open: without one on the machine only the first is
+// measured, and the test says so in an annotation.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import type { Locator } from '@playwright/test';
-import { test, expect, Stack, type Page } from './stack';
+import { test, expect, Stack, agentBrowserFound, browses, serve, type Page } from './stack';
 
 const SHOTS =
 	process.env.AZAZEL_LAYOUT_SHOTS ??
@@ -1609,6 +1612,428 @@ for (const view of VIEWS)
 			} finally {
 				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
 				await stack.stop();
+			}
+
+			const report = [...where].map(([f, states]) => `${f}  [${states.join(', ')}]`).sort();
+			expect(report.join('\n'), `${basename(dir)}: ${report.length} findings`).toBe('');
+		});
+
+/** The title of the page the agent's browser is on: too long for one line of the panel. */
+const SITE_TITLE =
+	'Release notes: what changed in the web page, the terminal and the browser tool since the last version, and what to do before updating';
+/** Its path: with it the address is too long for the panel, and for the field it is typed into. */
+const SITE_PATH =
+	'releases/notes/web-page-terminal-and-browser-tool?from=0.15.0&to=0.16.0&show=added,changed,fixed';
+const SITE = `<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>${SITE_TITLE}</title>
+		<style>
+			body { margin: 0; font: 18px/1.5 system-ui, sans-serif; color: #18181b; background: #fff; }
+			header { padding: 24px 40px; background: #18181b; color: #fafafa; }
+			h1 { margin: 0; font-size: 28px; }
+			main { padding: 16px 40px; }
+			li { margin: 6px 0; }
+		</style>
+	</head>
+	<body>
+		<header><h1>Release notes</h1></header>
+		<main>
+			<p>What changed since the last version.</p>
+			<ul>
+				<li>The Browser tab shows the page the agent is on, live.</li>
+				<li>Take over to click and type in it, and hand back.</li>
+				<li>A sheet's buttons stand in a row in a wide window.</li>
+			</ul>
+		</main>
+	</body>
+</html>`;
+
+interface Box {
+	left: number;
+	top: number;
+	right: number;
+	bottom: number;
+	width: number;
+	height: number;
+}
+/** The Browser tab as it is laid out: where each of its parts is. */
+interface BrowserBoxes {
+	status: string;
+	viewport: { width: number; height: number };
+	/** The inside of the box that scrolls the panel: what the panel has to fit in. */
+	room: Box;
+	panel: Box;
+	/** The parts of the panel, from the top, by the attribute that marks each. */
+	parts: Record<string, Box>;
+	buttons: (Box & { name: string })[];
+	/** The field the address is typed into, while this device holds the browser. */
+	input: Box | null;
+	/** The border box of the group around that field, and the buttons inside it. */
+	group: Box | null;
+	controls: (Box & { name: string })[];
+	/** How far anything inside that group reaches past its border box (the padding of its addons). */
+	overhang: { x: number; y: number } | null;
+	/** The picture the host sent, the box it is drawn in, and how it is fitted to that box. */
+	img: (Box & { naturalWidth: number; naturalHeight: number; fit: string }) | null;
+	/** The lines that are cut to the width of the panel: how wide their text is, and how it ends. */
+	cut: Record<string, { text: number; box: number; ends: string }>;
+	/** Whether the keyboard is on the picture. */
+	focused: boolean;
+	/**
+	 * How far the panel's scroller, and the page, can be scrolled sideways; and how much wider than
+	 * the panel what is in it is (the panel scrolls nothing itself, so this is only told).
+	 */
+	sideways: { scroller: number; page: number };
+	widerThanPanel: number;
+	/** How much of the picture is outside what its scroller shows. */
+	pictureHidden: number;
+}
+
+/** Runs in the page: measures the Browser tab that is on screen. */
+function browserBoxes(): BrowserBoxes {
+	const round = (n: number) => Math.round(n * 100) / 100;
+	const box = (r: { left: number; top: number; right: number; bottom: number }): Box => ({
+		left: round(r.left),
+		top: round(r.top),
+		right: round(r.right),
+		bottom: round(r.bottom),
+		width: round(r.right - r.left),
+		height: round(r.bottom - r.top)
+	});
+	const of = (el: Element) => box(el.getBoundingClientRect());
+	const panel = Array.from(document.querySelectorAll<HTMLElement>('[data-browser]')).find((el) =>
+		el.checkVisibility()
+	)!;
+	let scroller = panel.parentElement!;
+	while (scroller.parentElement && !/auto|scroll/.test(getComputedStyle(scroller).overflowY))
+		scroller = scroller.parentElement;
+	const s = getComputedStyle(scroller);
+	const outer = scroller.getBoundingClientRect();
+	const left = outer.left + scroller.clientLeft + parseFloat(s.paddingLeft);
+	const top = outer.top + scroller.clientTop + parseFloat(s.paddingTop);
+	const room = box({
+		left,
+		top,
+		right: outer.left + scroller.clientLeft + scroller.clientWidth - parseFloat(s.paddingRight),
+		bottom: outer.top + scroller.clientTop + scroller.clientHeight - parseFloat(s.paddingBottom)
+	});
+	const parts: Record<string, Box> = {};
+	for (const name of [
+		'status',
+		'note',
+		'actions',
+		'empty',
+		'title',
+		'url',
+		'address',
+		'picture',
+		'hint'
+	]) {
+		const el = panel.querySelector(`[data-browser-${name}]`);
+		if (el) parts[name] = of(el);
+	}
+	const cut: BrowserBoxes['cut'] = {};
+	for (const name of ['title', 'url']) {
+		const el = panel.querySelector<HTMLElement>(`[data-browser-${name}]`);
+		if (el)
+			cut[name] = {
+				text: el.scrollWidth,
+				box: el.clientWidth,
+				ends: getComputedStyle(el).textOverflow
+			};
+	}
+	const picture = panel.querySelector('[data-browser-picture]');
+	const img = picture?.querySelector('img');
+	const input = panel.querySelector('[data-browser-address] input');
+	const group = input?.closest('[data-slot=input-group]');
+	const overhang = { x: 0, y: 0 };
+	if (group) {
+		const g = group.getBoundingClientRect();
+		for (const el of Array.from(group.querySelectorAll('*'))) {
+			const r = el.getBoundingClientRect();
+			overhang.x = round(Math.max(overhang.x, r.right - g.right, g.left - r.left));
+			overhang.y = round(Math.max(overhang.y, r.bottom - g.bottom, g.top - r.top));
+		}
+	}
+	const shown = { top: Math.max(outer.top, 0), bottom: Math.min(outer.bottom, window.innerHeight) };
+	const p = picture?.getBoundingClientRect();
+	return {
+		status: panel.dataset.status ?? '',
+		viewport: { width: window.innerWidth, height: window.innerHeight },
+		room,
+		panel: of(panel),
+		parts,
+		buttons: Array.from(panel.querySelectorAll('[data-browser-actions] button')).map((b) => ({
+			name: (b.textContent ?? '').trim(),
+			...of(b)
+		})),
+		input: input ? of(input) : null,
+		group: group ? of(group) : null,
+		overhang: group ? overhang : null,
+		controls: Array.from(panel.querySelectorAll('[data-browser-address] button')).map((b) => ({
+			name: b.getAttribute('aria-label') ?? (b.textContent ?? '').trim(),
+			...of(b)
+		})),
+		img: img
+			? {
+					...of(img),
+					naturalWidth: img.naturalWidth,
+					naturalHeight: img.naturalHeight,
+					fit: getComputedStyle(img).objectFit
+				}
+			: null,
+		cut,
+		focused: !!picture && document.activeElement === picture,
+		sideways: {
+			scroller: scroller.scrollWidth - scroller.clientWidth,
+			page: document.documentElement.scrollWidth - document.documentElement.clientWidth
+		},
+		widerThanPanel: panel.scrollWidth - panel.clientWidth,
+		pictureHidden: p ? round(Math.max(p.bottom - shown.bottom, shown.top - p.top, 0)) : 0
+	};
+}
+
+/** What has to hold of the Browser tab in every state, at every size. */
+function browserHolds(b: BrowserBoxes, state: string) {
+	const said = (what: string) => `${state}: ${what}: ${JSON.stringify(b)}`;
+	const near = 0.5;
+	expect(b.sideways, said('nothing scrolls sideways')).toEqual({ scroller: 0, page: 0 });
+	expect(b.panel.left, said('the panel starts in its room')).toBeGreaterThanOrEqual(
+		b.room.left - near
+	);
+	expect(b.panel.right, said('the panel ends in its room')).toBeLessThanOrEqual(
+		b.room.right + near
+	);
+	// Every part is inside the panel, and under the part before it.
+	let above = b.panel.top;
+	for (const [name, part] of Object.entries(b.parts)) {
+		expect(part.left, said(`${name} starts in the panel`)).toBeGreaterThanOrEqual(
+			b.panel.left - near
+		);
+		expect(part.right, said(`${name} ends in the panel`)).toBeLessThanOrEqual(b.panel.right + near);
+		expect(part.top, said(`${name} is under what is above it`)).toBeGreaterThanOrEqual(
+			above - near
+		);
+		above = part.bottom;
+	}
+	// The buttons: one row, one height, none on another, all inside the panel.
+	let before = b.panel.left;
+	for (const button of b.buttons) {
+		expect(
+			Math.abs(button.top - b.buttons[0].top),
+			said(`${button.name} is on the row`)
+		).toBeLessThan(near);
+		expect(
+			Math.abs(button.height - b.buttons[0].height),
+			said(`${button.name} is as tall as the others`)
+		).toBeLessThan(near);
+		expect(button.left, said(`${button.name} is beside the one before`)).toBeGreaterThanOrEqual(
+			before - near
+		);
+		expect(button.right, said(`${button.name} ends in the panel`)).toBeLessThanOrEqual(
+			b.panel.right + near
+		);
+		before = button.right;
+	}
+	const picture = b.parts.picture;
+	if (!picture) return;
+	// The picture's box is as wide as the panel and has the shape of the picture, until it would be
+	// taller than 70% of the window; the picture is whole inside it.
+	expect(b.img, said('a picture arrived')).not.toBeNull();
+	const img = b.img!;
+	expect(img.naturalWidth, said('the picture has a width')).toBeGreaterThan(0);
+	expect(img.fit, said('the picture keeps its shape')).toBe('contain');
+	expect(
+		Math.abs(picture.width - b.panel.width),
+		said('the picture is as wide as the panel')
+	).toBeLessThan(near);
+	const most = 0.7 * b.viewport.height;
+	const shaped = (picture.width * img.naturalHeight) / img.naturalWidth;
+	expect(
+		Math.abs(picture.height - Math.min(shaped, most)),
+		said(`the picture is ${Math.min(shaped, most)} tall`)
+	).toBeLessThan(1);
+	for (const [edge, inside] of [
+		['left', img.left >= picture.left - near],
+		['top', img.top >= picture.top - near],
+		['right', img.right <= picture.right + near],
+		['bottom', img.bottom <= picture.bottom + near]
+	] as const)
+		expect(inside, said(`the picture's ${edge} is inside its box`)).toBe(true);
+}
+
+// The Browser tab: before the agent has a browser, while it shows one, and while this device holds it.
+for (const view of VIEWS)
+	for (const theme of THEMES)
+		at(view, `the Browser tab holds at ${view.name}, ${theme}`, async ({ page }) => {
+			const { width, height } = view;
+			const wide = width >= 1024;
+			const dir = join(SHOTS, `${view.name}-${theme}-browser`);
+			mkdirSync(dir, { recursive: true });
+			const measured: Record<string, Measured> = {};
+			const boxes: Record<string, BrowserBoxes> = {};
+			const where = new Map<string, string[]>();
+			let shot = 0;
+			const panel = page.locator('[data-browser]:visible');
+			const capture = async (state: string) => {
+				await page.mouse.move(width - 2, 2);
+				await settle(page);
+				const m = await page.evaluate(audit, 'body');
+				const file = `${String(++shot).padStart(2, '0')}-${state}`;
+				await page.screenshot({ path: join(dir, `${file}.png`) });
+				measured[file] = m;
+				for (const f of m.findings) where.set(f, [...(where.get(f) ?? []), state]);
+				expect(m.rows, `${state}: rows measured`).toBeGreaterThan(0);
+				expect(m.texts, `${state}: texts measured`).toBeGreaterThan(0);
+				const b = await page.evaluate(browserBoxes);
+				boxes[file] = b;
+				browserHolds(b, state);
+				return b;
+			};
+			/** The Browser tab of the pane beside the chat, or of the sheet a narrow window has for it. */
+			const openTab = async () => {
+				if (wide) {
+					const pane = page.locator('[data-right-pane]');
+					await expect(pane).toHaveAttribute('data-right-pane', 'open');
+					await pane.getByRole('tab', { name: 'Browser' }).click();
+				} else {
+					await page.getByRole('button', { name: 'Agents, usage and browser' }).click();
+					await page
+						.getByRole('dialog', { name: 'Agents' })
+						.getByRole('radio', { name: 'Browser' })
+						.click();
+					await expect(page.getByRole('dialog', { name: 'Browser' })).toBeVisible();
+				}
+				await expect(panel).toBeVisible();
+			};
+
+			const site = await serve(SITE);
+			const address = site.url + SITE_PATH;
+			const stack = new Stack();
+			try {
+				await stack.start('auto', false, [], DONE);
+				const idle = stack.sessionId;
+				await page.setViewportSize({ width, height });
+				await page.addInitScript((t) => localStorage.setItem('azazel-theme', t), theme);
+				await page.goto(stack.pair);
+				await expect(page.locator('[data-session-list]:visible a').first()).toBeVisible();
+				const origin = new URL(page.url()).origin;
+				const open = async (id: string, reply: string) => {
+					await page.goto(`${origin}/s/${id}`);
+					await expect(page.locator('html')).toHaveClass(new RegExp(`\\b${theme}\\b`));
+					await expect(page.getByRole('paragraph').filter({ hasText: reply })).toBeVisible();
+					await expect(page.getByRole('combobox', { name: 'Message' })).toBeVisible();
+					await openTab();
+				};
+
+				// No browser: what will show here, and the one button there is something to do with.
+				await open(idle, 'Done.');
+				await expect(panel).toHaveAttribute('data-status', 'none');
+				await expect(panel.getByRole('status')).toHaveText('No browser open');
+				await expect(panel.locator('[data-browser-empty]')).toContainText(
+					'The agent has not opened a browser'
+				);
+				await expect(panel.getByRole('button', { name: 'Take over' })).toHaveCount(0);
+				const none = await capture('none');
+				expect(none.buttons.map((b) => b.name)).toEqual(['Sign in']);
+				expect(none.parts.picture, 'no picture without a browser').toBeUndefined();
+
+				if (!agentBrowserFound) {
+					test.info().annotations.push({
+						type: 'not measured',
+						description:
+							'watching and holding: no Chromium-based browser on this machine for the agent to open'
+					});
+				} else {
+					const browsing = stack.session('open the page', browses(address, 'Opened the page.'));
+					await stack.until({ [browsing]: 'idle' });
+
+					// Watching: the title and the address of the page, each on one line, over its picture.
+					await open(browsing, 'Opened the page.');
+					await expect(page.locator('[data-status="error"]')).toHaveCount(0);
+					await expect(panel).toHaveAttribute('data-status', 'watching');
+					await expect(panel.locator('[data-browser-title]')).toHaveText(SITE_TITLE);
+					await expect(panel.locator('[data-browser-url]')).toHaveText(address);
+					const img = panel.locator('[data-browser-picture]').getByRole('img');
+					await expect
+						.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
+						.toBeGreaterThan(0);
+					const watching = await capture('watching');
+					expect(watching.buttons.map((b) => b.name)).toEqual(['Take over', 'Sign in']);
+					for (const line of ['title', 'url'] as const) {
+						expect(watching.cut[line].text, `the ${line} is longer than its line`).toBeGreaterThan(
+							watching.cut[line].box
+						);
+						expect(watching.cut[line].ends, `the ${line} ends in an ellipsis`).toBe('ellipsis');
+					}
+					expect(watching.focused, 'the picture takes no keys while watching').toBe(false);
+
+					// Holding: what it means, Hand back in place of Take over, the address in a field as
+					// wide as the panel, the keyboard on the picture, and how to leave it.
+					await panel.getByRole('button', { name: 'Take over' }).click();
+					await expect(panel).toHaveAttribute('data-status', 'you');
+					await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveValue(address);
+					await expect(panel.getByRole('application')).toBeFocused();
+					const holding = await capture('holding');
+					expect(holding.buttons.map((b) => b.name)).toEqual(['Hand back', 'Sign in']);
+					expect(holding.focused, 'the keyboard is on the picture').toBe(true);
+					for (const part of ['note', 'address', 'hint'])
+						expect(holding.parts[part], `holding shows its ${part}`).toBeDefined();
+					const field = holding.parts.address;
+					expect(
+						Math.abs(field.width - holding.panel.width),
+						'the address field is as wide as the panel'
+					).toBeLessThan(0.5);
+					// The group is the field, and what is used in it (Back, Reload, the address, Go) is
+					// inside its border, in that order, none on another.
+					const group = holding.group!;
+					expect(
+						Math.abs(group.width - holding.panel.width),
+						'the group of the address is as wide as the panel'
+					).toBeLessThan(0.5);
+					expect(holding.controls.map((c) => c.name)).toEqual(['Back', 'Reload', 'Go']);
+					const [back, reload, go] = holding.controls;
+					const row = [back, reload, { name: 'the address', ...holding.input! }, go];
+					let end = group.left;
+					for (const c of row) {
+						expect(c.left, `${c.name} starts after what is before it`).toBeGreaterThanOrEqual(end);
+						expect(c.top, `${c.name} is under the top of the group`).toBeGreaterThanOrEqual(
+							group.top
+						);
+						expect(c.bottom, `${c.name} is over the bottom of the group`).toBeLessThanOrEqual(
+							group.bottom
+						);
+						end = c.right;
+					}
+					expect(end, 'Go ends in the group').toBeLessThanOrEqual(group.right);
+					// Only the empty padding of the stock addons reaches past the border, by under 4px:
+					// less than the padding around the panel, so nothing scrolls for it (see `sideways`).
+					expect(holding.overhang!.x, 'what reaches past the group sideways').toBeLessThan(4);
+					expect(holding.overhang!.y, 'what reaches past the group vertically').toBeLessThan(4);
+					// Taking over moved nothing above the picture but what it added: the buttons are where
+					// they were, under the note.
+					expect(
+						Math.abs(holding.buttons[0].left - watching.buttons[0].left),
+						'Hand back starts where Take over did'
+					).toBeLessThan(0.5);
+					expect(
+						Math.abs(holding.buttons[0].height - watching.buttons[0].height),
+						'Hand back is as tall as Take over'
+					).toBeLessThan(0.5);
+
+					// The picture, where a short window starts it below the fold.
+					if (holding.pictureHidden > 0) {
+						await panel.locator('[data-browser-picture]').scrollIntoViewIfNeeded();
+						await capture('holding-picture');
+					}
+				}
+			} finally {
+				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
+				writeFileSync(join(dir, 'boxes.json'), JSON.stringify(boxes, null, '\t'));
+				await stack.stop();
+				await site.close();
 			}
 
 			const report = [...where].map(([f, states]) => `${f}  [${states.join(', ')}]`).sort();
