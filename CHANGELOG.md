@@ -5,6 +5,18 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `eval` runs Luau scripts that call your other tools (`language: "luau"`), with `parallel`, `agents.run`, `store`/`load` and a permission check on every call. Switch each language on or off with `[tools.eval] python`, `javascript` and `luau`, in any combination.
+
+### Changed
+
+- `run_code` is now `eval` with `language: "luau"`. Permission rules, `[tools] disabled`/`defer` entries, hook matchers and agent `tools:` lists that name `run_code` are rewritten when loaded, with a warning; a `run_code` call from an older session still works in this release.
+
+### Fixed
+
+- Typing a search that matches no profile on the Profiles page of `/models` no longer crashes the UI.
+
 ## [0.16.1] - 2026-11-20
 
 ### Fixed
