@@ -70,12 +70,8 @@ const INTRO: &str = "`language: \"luau\"` runs a script that calls your other to
      `tools.search(query)` finds tools not listed below and `tools.describe(name)` returns a tool's \
      description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
      model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
-     With `background: true` the script runs as a job: the call returns its id (`lua-1`) at once, \
-     `job` shows its output and stops it, and you are woken with its result; it is stopped after \
-     `tools.eval.background_max_secs`, and a tool call it makes that needs the user's answer is \
-     refused. \
-     `eval` and the agent tools cannot be called through `tools`. A script has no files or \
-     processes of its own; it reaches them through `tools`.";
+     In the background a call that needs the user's answer is refused. \
+     `eval` and the agent tools cannot be called through `tools`.";
 
 /// What bounds one script.
 #[derive(Debug, Clone, Copy)]

@@ -300,7 +300,7 @@ impl Tool for EvalTool {
         if self.offers(Language::Luau) {
             schema["properties"]["background"] = json!({
                 "type": "boolean",
-                "description": "Luau only: run the script as a job and return its id at once; `job` shows its output and stops it, and you are woken with its result"
+                "description": "Luau only: run as a job (`job` shows and stops it); you are woken with its result"
             });
         }
         schema
