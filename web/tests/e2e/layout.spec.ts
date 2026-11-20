@@ -36,11 +36,17 @@
 // in a zoomed window, and the page takes its phone layout as it does there. CSS `zoom` on <html>
 // would leave all three at 1440x900 and scale the rectangles that are measured here.
 //
+// What starts below the fold of a sheet (the last agent of the list, the last choice of the rewind
+// sheet: both do in the zoomed window) is scrolled into view and measured there: all of it is inside
+// the part of the sheet that scrolls, above the footer, and a pointer on it lands on it. Where each
+// was before and after is in reach.json, beside measured.json.
+//
 // Screenshots and the measurements of every state go to tmp/layout, or to AZAZEL_LAYOUT_SHOTS;
 // those of the profiles (their chip, menu, settings and the notice of a usage limit) to a folder of
 // their own beside each size's, `<size>-<theme>-profiles`.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import type { Locator } from '@playwright/test';
 import { test, expect, Stack, type Page } from './stack';
 
 const SHOTS =
@@ -700,6 +706,74 @@ async function toastsClear(page: Page, state: string) {
 	expect(seen.covered.join('; '), `${state}: what the toasts cover`).toBe('');
 }
 
+/** Where a part of a sheet was before it was scrolled to, and where it is in view. */
+interface Reached {
+	/** How much of it the box that scrolls it (or the footer under that box) hid before. */
+	hiddenBefore: number;
+	top: number;
+	bottom: number;
+	/** The part of the screen the box that scrolls it shows. */
+	clipTop: number;
+	clipBottom: number;
+	/** The top of the sheet's footer; null when it has none. */
+	footerTop: number | null;
+	viewport: number;
+	/** What a pointer at its top, its middle and its bottom lands on, when that is not the part. */
+	covered: string[];
+}
+
+/**
+ * Scrolls `target` into view and fails unless all of it is then on screen, inside the box that
+ * scrolls it, above the footer of its sheet, and under nothing else.
+ */
+async function reach(target: Locator, what: string): Promise<Reached> {
+	const place = (el: Element) => {
+		const r = el.getBoundingClientRect();
+		let scroller = el.parentElement;
+		while (scroller && !/auto|scroll/.test(getComputedStyle(scroller).overflowY))
+			scroller = scroller.parentElement;
+		const clip = (scroller ?? document.documentElement).getBoundingClientRect();
+		const footer = el
+			.closest('[role=dialog], [data-slot=card]')
+			?.querySelector('[data-slot$=footer]')
+			?.getBoundingClientRect();
+		const edge = Math.min(clip.bottom, footer?.top ?? Infinity, window.innerHeight);
+		const x = r.left + r.width / 2;
+		const covered = [r.top + 1, r.top + r.height / 2, r.bottom - 1]
+			.map((y) => document.elementFromPoint(x, y))
+			.filter((hit) => !hit || !el.contains(hit))
+			.map((hit) =>
+				hit ? `${hit.tagName.toLowerCase()}[${hit.getAttribute('data-slot') ?? ''}]` : 'nothing'
+			);
+		const round = (n: number) => Math.round(n * 100) / 100;
+		return {
+			hidden: round(Math.max(r.bottom - edge, clip.top - r.top, 0)),
+			top: round(r.top),
+			bottom: round(r.bottom),
+			clipTop: round(clip.top),
+			clipBottom: round(clip.bottom),
+			footerTop: footer ? round(footer.top) : null,
+			viewport: window.innerHeight,
+			covered
+		};
+	};
+	const before = await target.evaluate(place);
+	await target.scrollIntoViewIfNeeded();
+	const { hidden, ...now } = await target.evaluate(place);
+	const seen = { hiddenBefore: before.hidden, ...now };
+	const said = `${what}: ${JSON.stringify(seen)}`;
+	expect(hidden, `${said}: what is still hidden of it`).toBe(0);
+	expect(seen.top, `${said}: its top`).toBeGreaterThanOrEqual(seen.clipTop - 0.5);
+	expect(seen.bottom, `${said}: its bottom`).toBeLessThanOrEqual(seen.clipBottom + 0.5);
+	expect(seen.bottom, `${said}: its bottom`).toBeLessThanOrEqual(seen.viewport + 0.5);
+	if (seen.footerTop !== null)
+		expect(seen.bottom, `${said}: its bottom and the footer`).toBeLessThanOrEqual(
+			seen.footerTop + 0.5
+		);
+	expect(seen.covered, `${said}: what covers it`).toEqual([]);
+	return seen;
+}
+
 const OPEN =
 	'[role=dialog]:visible, [role=alertdialog]:visible, [role=menu]:visible, [data-slot=popover-content]:visible';
 
@@ -766,6 +840,7 @@ for (const view of VIEWS)
 			const dir = join(SHOTS, `${view.name}-${theme}`);
 			mkdirSync(dir, { recursive: true });
 			const measured: Record<string, Measured> = {};
+			const reached: Record<string, Reached> = {};
 			const where = new Map<string, string[]>();
 			let shot = 0;
 
@@ -1302,6 +1377,17 @@ for (const view of VIEWS)
 				await expect(rewind.getByRole('button', { name: 'Back' })).toBeVisible();
 				await page.mouse.move(width - 2, 2);
 				await capture('rewind-choose');
+				// The last choice, which a short window starts below the fold: all of its card can be
+				// brought above the footer, and it is chosen with a click.
+				const files = rewind.getByRole('radio', { name: /^Files only/ });
+				reached['rewind-files-only'] = await reach(
+					rewind.locator('[data-slot=field-label]').filter({ hasText: 'Files only' }),
+					'the choice Files only'
+				);
+				await files.click();
+				await expect(files).toHaveAttribute('aria-checked', 'true');
+				await page.mouse.move(width - 2, 2);
+				await capture('rewind-files-only');
 				await rewind.getByRole('button', { name: 'Cancel' }).click();
 				await expect(rewind).toHaveCount(0);
 				await closeAll(page);
@@ -1368,6 +1454,13 @@ for (const view of VIEWS)
 					.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().right));
 				for (const right of stops)
 					expect(Math.abs(right - stops[0]), 'the Stop buttons end on one edge').toBeLessThan(0.5);
+				// The last agent, which a short window starts below the fold: its whole row can be
+				// brought into view, and its link takes a click there.
+				const last = hub.locator('[data-agent]').last();
+				reached['agents-last'] = await reach(last, 'the last agent');
+				await last.getByRole('link').click({ trial: true });
+				await page.mouse.move(width - 2, 2);
+				await capture('agents-last');
 				await hub.getByRole('button', { name: `Stop ${CALLERS}` }).click();
 				const sure = page.getByRole('alertdialog', { name: `Stop ${CALLERS}?` });
 				await expect(sure.getByRole('button', { name: 'Keep' })).toBeVisible();
@@ -1388,6 +1481,7 @@ for (const view of VIEWS)
 				await capture('agent-page');
 			} finally {
 				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
+				writeFileSync(join(dir, 'reach.json'), JSON.stringify(reached, null, '\t'));
 				await stack.stop();
 			}
 

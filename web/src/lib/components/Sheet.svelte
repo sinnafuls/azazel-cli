@@ -165,8 +165,10 @@
 			{@render head('drawer')}
 			{@render body()}
 			{#if footer}
+				<!-- A row from `sm`, as the footer of the Dialog and of the docked Card: a window zoomed to
+				     200% is that wide and short, and stacked buttons took a quarter of its height. -->
 				<Drawer.Footer
-					class="shrink-0 flex-col-reverse border-t bg-muted/50 pb-[max(1rem,env(safe-area-inset-bottom))]"
+					class="shrink-0 flex-col-reverse border-t bg-muted/50 pb-[max(1rem,env(safe-area-inset-bottom))] sm:flex-row sm:justify-end"
 					>{@render footer()}</Drawer.Footer
 				>
 			{/if}
