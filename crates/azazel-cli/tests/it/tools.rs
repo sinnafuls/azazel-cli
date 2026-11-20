@@ -1,4 +1,4 @@
-//! The tools of the binary as an agent meets them: `run_code`, PDFs, the addresses `read` takes,
+//! The tools of the binary as an agent meets them: `eval` scripts, PDFs, the addresses `read` takes,
 //! format on write, what a loaded skill allows, and programs in terminals.
 
 use std::path::{Path, PathBuf};
@@ -124,7 +124,7 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
         local ran, why = pcall(tools.shell, { command = "echo hi" })
         return table.concat(counts, ", ") .. "; shell ran: " .. tostring(ran) .. " (" .. why .. ")"
     "#;
-    let script = calls(&[("run_code", json!({ "code": code }))]);
+    let script = calls(&[("eval", json!({ "language": "luau", "code": code }))]);
     let output = sandbox.azazel(&script, &[]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
@@ -138,7 +138,7 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     // The model is told which tools a script can call, and the tool does not depend on the
     // Luau extensions being loaded.
     let requests = sandbox.requests();
-    let description = tool(&requests[0], "run_code").unwrap()["description"]
+    let description = tool(&requests[0], "eval").unwrap()["description"]
         .as_str()
         .unwrap();
     let callable: Vec<&str> = description
@@ -150,14 +150,32 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     assert!(callable.contains(&"read"), "{description}");
     assert!(callable.contains(&"shell"), "{description}");
     assert!(!callable.contains(&"task"), "{description}");
+    assert_eq!(tool(&requests[1], "eval").unwrap()["description"], description);
+    // The whole tool list, schemas included, is the same in both requests: the provider caches it.
+    assert_eq!(requests[0]["tools"], requests[1]["tools"]);
     assert_eq!(
-        tool(&requests[1], "run_code").unwrap()["description"],
-        description
+        serde_json::to_string(&requests[0]["tools"]).unwrap(),
+        serde_json::to_string(&requests[1]["tools"]).unwrap()
     );
+    let enumerated = &tool(&requests[0], "eval").unwrap()["schema"];
+    assert!(enumerated.to_string().contains("luau"), "{enumerated}");
 
     let bare = sandbox.azazel(&script, &["--no-extensions"]);
     assert!(bare.status.success(), "{}", stderr(&bare));
-    assert!(tool(&sandbox.requests()[0], "run_code").is_some());
+    assert!(tool(&sandbox.requests()[0], "eval").is_some());
+}
+
+#[cfg(not(feature = "lua"))]
+#[test]
+fn a_build_without_lua_does_not_offer_luau_in_eval() {
+    let sandbox = Sandbox::new();
+    let script = calls(&[("eval", json!({ "language": "luau", "code": "return 1" }))]);
+    let output = sandbox.azazel(&script, &["--mode", "auto"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    let schema = &tool(&requests[0], "eval").unwrap()["schema"];
+    assert!(!schema.to_string().contains("luau"), "{schema}");
+    assert!(sandbox.results()[0].contains("luau"), "{:?}", sandbox.results());
 }
 
 #[test]

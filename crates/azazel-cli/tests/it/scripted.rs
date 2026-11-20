@@ -1,4 +1,4 @@
-//! Scripted orchestration through the binary: `run_code` scripts that start agents, run calls
+//! Scripted orchestration through the binary: `eval` scripts in Luau that start agents, run calls
 //! at the same time, keep values in the session and ask the `judge` role; and virtual models
 //! an extension registers.
 
@@ -107,7 +107,8 @@ impl Sandbox {
 }
 
 fn run_code(id: &str, code: &str) -> Value {
-    json!({ "reply": { "tool_calls": [{ "id": id, "name": "run_code", "input": { "code": code } }] } })
+    let input = json!({ "language": "luau", "code": code });
+    json!({ "reply": { "tool_calls": [{ "id": id, "name": "eval", "input": input }] } })
 }
 
 /// What the tool call `id` returned, from the events of `--output json`.
