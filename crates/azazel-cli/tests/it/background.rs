@@ -1320,12 +1320,12 @@ fn a_client_that_never_asked_for_the_browser_is_told_nothing_of_it() {
     user.detach();
 }
 
-/// The agents' browser is shared by the clients of a session: one holds it, the others are
-/// refused, and it is handed back when the holder goes. What it sends is never logged or
-/// replayed.
+/// The agents' browser is shared by the clients of a session, but there is nothing to take over
+/// until the agent has opened a page: every client is refused, and what the clients send is never
+/// logged or replayed.
 #[cfg(feature = "browser")]
 #[test]
-fn the_browser_goes_to_one_client_and_back_when_it_disconnects_and_is_never_logged() {
+fn the_browser_cannot_be_taken_before_the_agent_opens_a_page_and_is_never_logged() {
     let (sandbox, id) = session_waiting_for_approval();
     let (mut one, _) = Bridge::attach(&sandbox, &id, "none");
     let (mut two, _) = Bridge::attach(&sandbox, &id, "none");
@@ -1334,42 +1334,22 @@ fn the_browser_goes_to_one_client_and_back_when_it_disconnects_and_is_never_logg
     let watching = one.until(|frame| frame["id"] == "w").pop().unwrap();
     assert_eq!(watching["success"], true, "{watching}");
     assert_eq!(watching["data"]["running"], false, "{watching}");
-    // Only a client that asked about the browser is told of it.
     two.send(json!({ "id": "w", "type": "browser_watch", "on": true }));
     let watching = two.until(|frame| frame["id"] == "w").pop().unwrap();
     assert_eq!(watching["success"], true, "{watching}");
 
-    one.send(json!({ "id": "t", "type": "browser_take", "on": true }));
-    let taken = one.until(|frame| frame["id"] == "t").pop().unwrap();
-    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
-    // The other client is told it is held, and that it is not its own.
-    let told = two
-        .until(|frame| frame["type"] == "browser_state" && frame["held"] == true)
-        .pop()
-        .unwrap();
-    assert_eq!(
-        (&told["held"], &told["held_by_you"]),
-        (&json!(true), &json!(false)),
-        "{told}"
-    );
-
-    two.send(json!({ "id": "t", "type": "browser_take", "on": true }));
-    let refused = two.until(|frame| frame["id"] == "t").pop().unwrap();
-    assert_eq!(refused["error"], "another device has the browser", "{refused}");
-    two.send(json!({ "id": "i", "type": "browser_input", "input": { "kind": "back" } }));
-    let refused = two.until(|frame| frame["id"] == "i").pop().unwrap();
-    assert_eq!(refused["error"], "take the browser over first", "{refused}");
-
-    // The holder goes without handing back; the other can have it.
+    for client in [&mut one, &mut two] {
+        client.send(json!({ "id": "t", "type": "browser_take", "on": true, "force": true }));
+        let refused = client.until(|frame| frame["id"] == "t").pop().unwrap();
+        assert_eq!(
+            refused["error"], "no browser is running; the agent has not opened a page yet",
+            "{refused}"
+        );
+        client.send(json!({ "id": "i", "type": "browser_input", "input": { "kind": "back" } }));
+        let refused = client.until(|frame| frame["id"] == "i").pop().unwrap();
+        assert_eq!(refused["error"], "take the browser over first", "{refused}");
+    }
     one.detach();
-    let freed = two
-        .until(|frame| frame["type"] == "browser_state" && frame["held"] == false)
-        .pop()
-        .unwrap();
-    assert_eq!(freed["held"], false, "{freed}");
-    two.send(json!({ "id": "t2", "type": "browser_take", "on": true }));
-    let taken = two.until(|frame| frame["id"] == "t2").pop().unwrap();
-    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
 
     // A client that comes late is replayed the whole log, and finds no browser frame in it.
     let (late, _) = Bridge::attach(&sandbox, &id, "all");

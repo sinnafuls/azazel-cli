@@ -837,27 +837,15 @@ fn the_browser_view_can_be_taken_and_handed_back_and_input_needs_the_hold_and_a_
     let (_, refused) = client.ask(2, click.clone());
     assert_eq!(refused["error"], "take the browser over first", "{refused}");
 
-    let (frames, taken) = client.ask(3, json!({ "type": "browser_take", "on": true }));
-    assert_eq!(taken["data"]["held"], true, "{taken}");
-    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
-    // What the client is told of the hold is a frame of its own, not an event of the session.
-    let told = frames
-        .iter()
-        .find(|frame| frame["type"] == "browser_state")
-        .unwrap_or(&taken);
-    assert!(
-        told["held_by_you"] == true || told["data"]["held_by_you"] == true,
-        "{told}"
+    // The agent has not opened a page, so there is nothing to take over.
+    let (_, nothing) = client.ask(3, json!({ "type": "browser_take", "on": true }));
+    assert_eq!(nothing["success"], false, "{nothing}");
+    assert_eq!(
+        nothing["error"], "no browser is running; the agent has not opened a page yet",
+        "{nothing}"
     );
-
     let (_, no_page) = client.ask(4, click);
-    assert!(
-        no_page["error"]
-            .as_str()
-            .unwrap()
-            .contains("no browser is running"),
-        "{no_page}"
-    );
+    assert_eq!(no_page["error"], "take the browser over first", "{no_page}");
     let (_, off_screen) = client.ask(
         5,
         json!({ "type": "browser_input", "input": { "kind": "click", "x": 2.0, "y": 0.5 } }),

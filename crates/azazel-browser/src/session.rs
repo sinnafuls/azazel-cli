@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -53,6 +53,7 @@ const RETRY_PAUSE: Duration = Duration::from_secs(4);
 /// How long a client that has taken the browser over may go without input before the agents get
 /// it back: a device that went away without closing its connection must not keep them waiting.
 pub const HOLD_LEASE: Duration = Duration::from_secs(600);
+const NO_BROWSER: &str = "no browser is running; the agent has not opened a page yet";
 const ANOTHER_HOLDS: &str = "another device has the browser";
 
 #[derive(Debug, Clone)]
@@ -1307,6 +1308,9 @@ pub struct BrowserSession {
     state_tx: watch::Sender<BrowserStateInfo>,
     /// How many clients watch: the screencast runs while there is one.
     watchers: AtomicU32,
+    /// Whether a browser runs, as of the last time the clients were brought up to date; a client
+    /// can take the browser over only while one does.
+    open: AtomicBool,
     /// The client that has taken the browser over; the agents' actions wait while there is one.
     hold: Mutex<Option<Hold>>,
     /// How long a hold lasts without input from its client.
@@ -1345,6 +1349,7 @@ impl BrowserSession {
             feed: Arc::new(Feed::new()),
             state_tx: watch::channel(BrowserStateInfo::default()).0,
             watchers: AtomicU32::new(0),
+            open: AtomicBool::new(false),
             hold: Mutex::new(None),
             lease: HOLD_LEASE,
             held: Notify::new(),
@@ -1735,8 +1740,12 @@ impl BrowserSession {
     /// [`BrowserSession::give_back`], or until `holder` has been silent for the lease. Fails while
     /// another holder has it, unless `force` takes it from them. An action that is running
     /// finishes; one that starts later sees the hold, because it reads the hold under the lock of
-    /// the browser (see [`BrowserSession::begin`]).
+    /// the browser (see [`BrowserSession::begin`]). Fails while no browser runs: there is nothing
+    /// to take until the agent has opened a page.
     pub fn take(&self, holder: &str, force: bool) -> Result<(), String> {
+        if !self.open.load(Ordering::SeqCst) {
+            return Err(NO_BROWSER.to_string());
+        }
         self.lapse_if_stale();
         let taken_from = {
             let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1880,7 +1889,7 @@ impl BrowserSession {
         let running = state
             .as_mut()
             .filter(|running| !running.cdp.is_closed())
-            .ok_or("no browser is running; the agent has not opened a page yet")?;
+            .ok_or(NO_BROWSER)?;
         let tab = running.current_tab().ok_or(NO_TAB)?.name.clone();
         let index = running.tab(Some(&tab))?;
         let session = running.tabs[index].session.clone();
@@ -1978,6 +1987,7 @@ impl BrowserSession {
     async fn settle(&self, running: Option<&Running>) {
         let watchers = self.watchers.load(Ordering::SeqCst);
         let running = running.filter(|running| !running.cdp.is_closed());
+        self.open.store(running.is_some(), Ordering::SeqCst);
         match running {
             Some(running) => {
                 if self.state_tx.receiver_count() > 0 {
@@ -2240,6 +2250,13 @@ mod tests {
         }))
     }
 
+    /// A session the clients may take over, as if the agent had opened a page.
+    fn open_session() -> Arc<BrowserSession> {
+        let session = idle_session();
+        session.open.store(true, Ordering::SeqCst);
+        session
+    }
+
     /// An action that needs no browser: it answers at once unless the hold stops it.
     fn tabs() -> Input {
         Input {
@@ -2253,8 +2270,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_action_queued_when_a_device_takes_the_browser_waits_for_the_hand_back() {
+    async fn the_browser_cannot_be_taken_before_the_agent_has_opened_a_page() {
         let session = idle_session();
+        assert_eq!(
+            session.take("a", false).unwrap_err(),
+            "no browser is running; the agent has not opened a page yet"
+        );
+        assert_eq!(
+            session.take("a", true).unwrap_err(),
+            "no browser is running; the agent has not opened a page yet"
+        );
+        assert!(!session.holds("a"));
+        assert!(!session.states().borrow().held);
+    }
+
+    #[tokio::test]
+    async fn an_action_queued_when_a_device_takes_the_browser_waits_for_the_hand_back() {
+        let session = open_session();
         // The action has passed the hold and waits for the browser's lock.
         let lock = session.state.lock().await;
         let acting = tokio::spawn({
@@ -2282,9 +2314,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cancelled_run_frees_an_agent_waiting_for_a_device_to_hand_the_browser_back() {
+        use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, UpdateSink};
+        let session = open_session();
+        session.take("a", false).unwrap();
+        let cancel = CancellationToken::new();
+        let agent = AgentInfo {
+            id: "lead".into(),
+            def: "lead".into(),
+            parent: None,
+            depth: 0,
+            session_id: "s".into(),
+        };
+        let ctx = ToolCtx {
+            agent_id: agent.id.clone(),
+            session_id: agent.session_id.clone(),
+            agent,
+            call_id: "c1".into(),
+            cwd: PathBuf::new(),
+            cancel: cancel.clone(),
+            update: UpdateSink::default(),
+            services: Arc::new(Services::default()),
+        };
+        let tool = crate::BrowserTool(session.clone());
+        let calling = tokio::spawn(async move { tool.call(json!({ "action": "tabs" }), &ctx).await });
+        pause().await;
+        assert!(
+            !calling.is_finished(),
+            "the action ran while a device held the browser"
+        );
+        cancel.cancel();
+        let output = tokio::time::timeout(Duration::from_secs(5), calling)
+            .await
+            .expect("the cancelled run stopped waiting")
+            .unwrap();
+        assert!(output.is_error);
+        assert_eq!(output.text_content(), azazel_agent::agent::ABORTED_TEXT);
+        // The device still has the browser; the next run waits again and goes on at the hand back.
+        assert!(session.holds("a"));
+        let next = tokio::spawn({
+            let session = session.clone();
+            async move { session.act(tabs(), None).await }
+        });
+        pause().await;
+        assert!(!next.is_finished());
+        session.give_back("a");
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), next)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn a_hold_without_input_is_released_with_a_note_to_the_agent() {
         let session = Arc::new(
-            Arc::into_inner(idle_session())
+            Arc::into_inner(open_session())
                 .unwrap()
                 .with_lease(Duration::from_millis(200)),
         );
@@ -2307,7 +2394,7 @@ mod tests {
     #[tokio::test]
     async fn the_lease_keeper_tells_the_clients_when_a_hold_runs_out() {
         let session = Arc::new(
-            Arc::into_inner(idle_session())
+            Arc::into_inner(open_session())
                 .unwrap()
                 .with_lease(Duration::from_millis(200)),
         );
@@ -2326,7 +2413,7 @@ mod tests {
 
     #[tokio::test]
     async fn another_device_takes_the_browser_only_by_force() {
-        let session = idle_session();
+        let session = open_session();
         session.take("a", false).unwrap();
         assert_eq!(
             session.take("b", false).unwrap_err(),
@@ -2339,7 +2426,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_tells_the_clients_the_hold_is_gone() {
-        let session = idle_session();
+        let session = open_session();
         session.take("a", false).unwrap();
         assert!(session.states().borrow().held);
         session.shutdown().await;
@@ -2348,7 +2435,7 @@ mod tests {
 
     #[tokio::test]
     async fn signing_in_is_refused_while_another_device_holds_the_browser() {
-        let session = idle_session();
+        let session = open_session();
         session.take("a", false).unwrap();
         assert_eq!(
             session.sign_in("b", None).await.unwrap_err(),

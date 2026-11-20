@@ -12,8 +12,9 @@
 //! with [`missing`].
 
 // Only the background host and the shared terminals (the `detach` feature) name the holders of
-// several clients; a build without it serves the one client of a direct session.
-#![cfg_attr(not(feature = "detach"), allow(dead_code))]
+// several clients, and only a build with the `browser` feature has a browser to serve them; a
+// build without either serves the one client of a direct session, or none.
+#![cfg_attr(not(all(feature = "detach", feature = "browser")), allow(dead_code))]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

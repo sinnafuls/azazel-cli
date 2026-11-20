@@ -207,7 +207,8 @@ pub async fn open_profile(binary: &Path, profile: &Path, url: Option<&str>) -> R
         .await
         .map_err(|why| {
             if why.contains(LEFT_AT_ONCE) {
-                "the agent's browser is running on this profile: use Sign in in the web page, or end the                  session first"
+                "the agent's browser is running on this profile: use Sign in in the web page, or end the \
+                 session first"
                     .to_string()
             } else {
                 why
