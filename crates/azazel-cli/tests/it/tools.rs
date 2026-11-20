@@ -615,3 +615,108 @@ fn a_program_that_ends_wakes_the_lead_with_its_last_screen() {
         "{listed}"
     );
 }
+
+/// The text of every message of `request`, in order.
+#[cfg(feature = "lua")]
+fn message_texts(request: &Value) -> Vec<String> {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|message| message["content"].as_array().unwrap())
+        .filter_map(|block| block["text"].as_str())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn a_background_script_returns_a_job_id_and_wakes_the_lead_with_its_result() {
+    let sandbox = Sandbox::new();
+    let script = json!({ "lead": [
+        { "reply": { "tool_calls": [{ "id": "t1", "name": "eval", "input": {
+            "language": "luau", "code": "print('from the script') return 'bg-result'", "background": true
+        } }] } },
+        // The lead is still working when the script ends.
+        { "delay_ms": 3000, "reply": { "tool_calls": [
+            { "id": "t2", "name": "job", "input": { "action": "list" } }
+        ] } },
+        { "reply": { "text": "done" } },
+    ] });
+    let output = sandbox.azazel(&script, &["--mode", "auto"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    let texts = message_texts(requests.last().unwrap());
+    let woken = texts
+        .iter()
+        .find(|text| text.starts_with("<job-exit id=\"lua-1\">"))
+        .unwrap_or_else(|| panic!("the lead was not told: {texts:#?}"));
+    assert!(
+        woken.contains("bg-result") && woken.contains("from the script"),
+        "{woken}"
+    );
+    assert!(woken.contains("[lua-1: finished]"), "{woken}");
+    let results = sandbox.results();
+    assert!(results[0].starts_with("started lua-1"), "{}", results[0]);
+    assert!(results[1].starts_with("lua-1  "), "{}", results[1]);
+    // `background` is in the schema because the build has Luau.
+    let eval = tool(&requests[0], "eval").unwrap();
+    assert!(eval["schema"].to_string().contains("background"), "{eval}");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn print_mode_waits_for_a_background_script_and_its_cap_stops_it() {
+    let sandbox = Sandbox::new();
+    std::fs::write(sandbox.project().join("a.txt"), "x\n").unwrap();
+    // The lead ends its turn at once; the script runs until the one-second cap stops it.
+    let script = json!({ "lead": [
+        { "reply": { "tool_calls": [{ "id": "t1", "name": "eval", "input": {
+            "language": "luau",
+            "code": "while true do end",
+            "background": true
+        } }] } },
+        { "reply": { "text": "started" } },
+        { "reply": { "text": "done" } },
+    ] });
+    let output = sandbox.azazel(
+        &script,
+        &["--mode", "auto", "--set", "tools.eval.background_max_secs=1"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    assert_eq!(requests.len(), 3, "the lead was woken for a third turn");
+    let texts = message_texts(requests.last().unwrap());
+    let woken = texts
+        .iter()
+        .find(|text| text.starts_with("<job-exit id=\"lua-1\">"))
+        .unwrap_or_else(|| panic!("the lead was not told: {texts:#?}"));
+    assert!(woken.contains("stopped after 1 s"), "{woken}");
+    assert!(woken.contains("[lua-1: timed out]"), "{woken}");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn job_kill_stops_a_background_script_and_the_lead_is_told() {
+    let sandbox = Sandbox::new();
+    std::fs::write(sandbox.project().join("a.txt"), "x\n").unwrap();
+    let script = json!({ "lead": [
+        { "reply": { "tool_calls": [{ "id": "t1", "name": "eval", "input": {
+            "language": "luau",
+            "code": "while true do tools.read({ path = 'a.txt' }) end",
+            "background": true
+        } }] } },
+        { "reply": { "tool_calls": [{ "id": "t2", "name": "job", "input": { "action": "kill", "id": "lua-1" } }] } },
+        { "delay_ms": 1500, "reply": { "text": "killed it" } },
+        { "reply": { "text": "done" } },
+    ] });
+    let output = sandbox.azazel(&script, &["--mode", "auto"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let texts = message_texts(sandbox.requests().last().unwrap());
+    let woken = texts
+        .iter()
+        .find(|text| text.starts_with("<job-exit id=\"lua-1\">"))
+        .unwrap_or_else(|| panic!("the lead was not told: {texts:#?}"));
+    assert!(woken.contains("[lua-1: killed]"), "{woken}");
+    assert_eq!(sandbox.results()[1], "stopping lua-1");
+}
