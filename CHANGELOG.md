@@ -8,6 +8,9 @@ GitHub are its section here.
 ### Added
 
 - `eval` runs Luau scripts that call your other tools (`language: "luau"`), with `parallel`, `agents.run`, `store`/`load` and a permission check on every call. Switch each language on or off with `[tools.eval] python`, `javascript` and `luau`, in any combination.
+- Background Luau scripts: `eval` with `language: "luau", background: true` runs the script as a job (`lua-N`). `job output` and `job kill` work on it, and the agent is woken with its result. It never asks for permission: a call that would ask is refused. It stops after `[tools.eval] background_max_secs` (default 7200 s, 0 for no limit); `azazel -p` waits for running scripts, for at most their limit and 2 hours.
+- Code-first mode, off by default: with `[tools] code_first = true` the model gets full schemas only for read, edit, write, shell, eval, ask_user, todo and task (plus patch and the goal and report tools); every other tool is a one-line signature in `eval`'s description and is called from a Luau script. It needs Luau in `eval`. `tools/code-first-compare.py` compares tokens, cache and cost of both modes on your own tasks.
+- `azazel config unset <key> [--project]` takes a setting out of the config file.
 
 ### Changed
 
@@ -16,6 +19,13 @@ GitHub are its section here.
 ### Fixed
 
 - Typing a search that matches no profile on the Profiles page of `/models` no longer crashes the UI.
+- ChatGPT image generation is no longer switched off for good by an unknown model, a proxy's 404 page, a 404 on one endpoint only, or a 400 whose message merely contains the word "plan".
+- The note the agent gets after you use its browser no longer includes the query string, fragment or credentials of a page you went to.
+- Hidden secrets now include lower-case assignments (`password=`, `api_key=`), URL query values (`?access_token=`) and JSON strings such as `"access_token": "…"`.
+- A usage-limit profile switch whose window has reset no longer blocks the next switch in a long run, and a limit that cannot switch says why.
+- Changing `profiles.on_limit` in `/settings` now takes effect for the profile editor's protection of that profile.
+- `/fork` and moving in the session tree keep the `⚠ unchecked` state of files edited before.
+- Removing a setting under a table that does not exist no longer writes empty tables into the config.
 
 ## [0.16.1] - 2026-11-20
 
