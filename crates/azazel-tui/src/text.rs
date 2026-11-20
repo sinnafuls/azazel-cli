@@ -584,7 +584,7 @@ enum Mask {
 }
 
 /// A shape of secret: what it is called in its place, how it is recognised, what is hidden.
-const SECRETS: [(&str, &str, Mask); 11] = [
+const SECRETS: [(&str, &str, Mask); 14] = [
     (
         "private-key",
         r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?s:.*?)(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
@@ -607,15 +607,35 @@ const SECRETS: [(&str, &str, Mask); 11] = [
         r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}",
         Mask::AfterLead,
     ),
+    // A secret in the query of an address, which ends at `&` or a space.
+    (
+        "query-secret",
+        r#"(?i)[?&]((?:access_token|refresh_token|id_token|token|key|api_key|apikey|secret|client_secret|password|sig|signature)=)[^&\s"'<>]+"#,
+        Mask::AfterLead,
+    ),
+    // A string value in JSON under a name that says it is a secret (`"access_token": "…"`). The
+    // name ends in the word, so `token_type` and `max_tokens` are not one.
+    (
+        "json-secret",
+        r#"(?i)("(?:[a-z0-9]+[_-])*(?:token|secret|password|passwd|(?:api|access|secret|private|auth|client|signing|encryption)[_-]?key|apikey)"\s*:\s*")(?:[^"\\\n]|\\.)+"#,
+        Mask::Assigned,
+    ),
     (
         "secret",
         r#"\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)[A-Z0-9_]*=)(?:"[^"\n]*"|'[^'\n]*'|[^\s"']+)"#,
         Mask::Assigned,
     ),
+    // The same in any case. A bare `key` is not a name here (`key=value` is prose, `monkey=1` a
+    // word), and `token` must end the name (`max_tokens=4096` is not one).
+    (
+        "secret",
+        r#"(?i)\b((?:[a-z0-9]+[_-])*(?:token|secret|password|passwd|(?:api|access|secret|private|auth|client|signing|encryption)[_-]?key|apikey)=)(?:"[^"\n]*"|'[^'\n]*'|[^\s"']+)"#,
+        Mask::Assigned,
+    ),
 ];
 
 /// Text without one of these holds no secret [`redact`] knows, so it is not searched further.
-const SECRET_HINTS: [&str; 19] = [
+const SECRET_HINTS: [&str; 27] = [
     "PRIVATE KEY",
     "sk-",
     "ghp_",
@@ -635,6 +655,14 @@ const SECRET_HINTS: [&str; 19] = [
     "TOKEN",
     "SECRET",
     "PASSW",
+    "oken",
+    "ecret",
+    "assw",
+    "ey=",
+    "ey\"",
+    "ig=",
+    "IG=",
+    "ure=",
 ];
 
 struct Secrets {
@@ -693,7 +721,10 @@ fn mask(text: &str, pattern: &Regex, kind: &str, mask: Mask) -> Option<String> {
 /// keys of Anthropic and OpenAI (`sk-ant-…`, `sk-…`), GitHub tokens (`ghp_…`, `gho_…`,
 /// `github_pat_…`), Google keys (`AIza…`), AWS access key ids (`AKIA…`), Slack tokens
 /// (`xoxb-…`), JSON web tokens, `Bearer <token>`, the value of an assignment to a name with
-/// `KEY`, `TOKEN`, `SECRET` or `PASSWORD` in it (`API_KEY=…`), and PEM private key blocks.
+/// `KEY`, `TOKEN`, `SECRET` or `PASSWORD` in it (`API_KEY=…`, in any case: `password=…`,
+/// `api_key=…`), the value of `token`, `key`, `secret`, `password`, `sig` and the like in the
+/// query of an address (`?access_token=…`), JSON strings under such a name
+/// (`"access_token": "…"`), and PEM private key blocks.
 ///
 /// This is for what is shown and exported only. Text that holds none of these comes back as it
 /// is, without a copy.
@@ -963,6 +994,63 @@ mod tests {
             redact(&both),
             "OPENAI_API_KEY=[redacted:openai-key]\nANTHROPIC_API_KEY=[redacted:anthropic-key]"
         );
+    }
+
+    #[test]
+    fn secrets_are_found_in_any_case_in_addresses_and_in_json() {
+        for (text, shown) in [
+            ("password=hunter2 next", "password=[redacted:secret] next"),
+            ("api_key=abcdef123 x", "api_key=[redacted:secret] x"),
+            ("export Github-Token=ghx", "export Github-Token=[redacted:secret]"),
+            ("db_password='two words'", "db_password=[redacted:secret]"),
+            (
+                "GET /cb?code=7&access_token=abc123&state=9 HTTP/1.1",
+                "GET /cb?code=7&access_token=[redacted:query-secret]&state=9 HTTP/1.1",
+            ),
+            (
+                "see https://x.test/p?KEY=k1&sig=zz9 now",
+                "see https://x.test/p?KEY=[redacted:query-secret]&sig=[redacted:query-secret] now",
+            ),
+            (
+                "https://x.test/magic?token=abc and then",
+                "https://x.test/magic?token=[redacted:query-secret] and then",
+            ),
+            (
+                r#"{"access_token": "abc.def", "expires_in": 3600}"#,
+                r#"{"access_token": "[redacted:json-secret]", "expires_in": 3600}"#,
+            ),
+            (
+                r#"{"client_secret":"s3\"cret","name":"n"}"#,
+                r#"{"client_secret":"[redacted:json-secret]","name":"n"}"#,
+            ),
+            (
+                r#"{"Password" : "pw"}"#,
+                r#"{"Password" : "[redacted:json-secret]"}"#,
+            ),
+        ] {
+            assert_eq!(redact(text), shown, "{text}");
+        }
+    }
+
+    #[test]
+    fn ordinary_text_with_the_same_words_is_not_hidden() {
+        for clean in [
+            "the key=value pair of a map",
+            "monkey=1 and turkey=2",
+            "max_tokens=4096 token_count=3",
+            "primary_key=id",
+            "https://x.test/search?q=1&keyword=abc&page=2&design=x",
+            "https://x.test/?sort=key",
+            r#"{"token_type": "bearer", "max_tokens": 4096, "token": 12}"#,
+            r#"{"password": ""}"#,
+            "the secret: a door; password policy; a token of thanks",
+        ] {
+            assert!(
+                matches!(redact(clean), Cow::Borrowed(same) if same == clean),
+                "{clean} became {}",
+                redact(clean)
+            );
+        }
     }
 
     #[test]
