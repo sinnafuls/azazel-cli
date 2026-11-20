@@ -1734,6 +1734,13 @@ impl BrowserSession {
         self.feed.publish(tab, data);
     }
 
+    /// Makes the session behave as if a page were open, so that it can be taken over. For the
+    /// tests of other crates, which have no browser to start.
+    #[cfg(feature = "test-support")]
+    pub fn pretend_open(&self) {
+        self.open.store(true, Ordering::SeqCst);
+    }
+
     /// What the browser is doing; changes when the tab, its address, the hold or whether a browser
     /// runs change.
     pub fn states(&self) -> watch::Receiver<BrowserStateInfo> {

@@ -164,7 +164,7 @@ pub(crate) use real::Browser;
 
 #[cfg(feature = "browser")]
 mod real {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     use azazel_browser::{BrowserSession, BrowserStateInfo, LiveButton, LiveInput};
     use azazel_protocol::{BrowserInput, MouseButton};
@@ -196,6 +196,9 @@ mod real {
         /// latest picture again, so that a new watcher gets one at once, even when the page is
         /// still.
         resend: broadcast::Sender<String>,
+        /// How many jobs of each holder are queued or being done, so that a take-over waits
+        /// behind them (an `off` sent before it must not undo it) and only then.
+        pending: Arc<Mutex<HashMap<String, usize>>>,
     }
 
     impl Browser {
@@ -205,12 +208,20 @@ mod real {
             let (jobs, queue) = mpsc::unbounded_channel();
             let watching = Arc::new(Mutex::new(HashSet::new()));
             let resend = broadcast::channel(16).0;
-            tokio::spawn(work(session.clone(), watching.clone(), resend.clone(), queue));
+            let pending = Arc::new(Mutex::new(HashMap::new()));
+            tokio::spawn(work(
+                session.clone(),
+                watching.clone(),
+                resend.clone(),
+                pending.clone(),
+                queue,
+            ));
             Some(Arc::new(Browser {
                 session,
                 jobs,
                 watching,
                 resend,
+                pending,
             }))
         }
 
@@ -227,14 +238,22 @@ mod real {
             self.session.holds(holder)
         }
 
-        /// Does `command` for `holder` and answers with `reply`. Taking is done at once, as it
-        /// waits for nothing; handing back and the rest wait their turn, so that the inputs
+        /// Does `command` for `holder` and answers with `reply`. Taking is done at once when
+        /// nothing of the holder is waiting, as it needs nothing else; behind earlier commands of
+        /// the same holder it waits its turn (an input, a hand back and a take sent in a row end
+        /// in that order). Handing back and the rest always wait their turn, so that the inputs
         /// that came before a hand back are done first.
         pub(crate) fn run(&self, holder: String, command: Command, reply: Reply) {
-            if let Command::BrowserTake { on: true, force } = command {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Command::BrowserTake { on: true, force } = command
+                && !pending.contains_key(&holder)
+            {
+                drop(pending);
                 let outcome = self.session.take(&holder, force);
                 return reply(outcome.and_then(|()| state_data(&self.session, &holder)));
             }
+            *pending.entry(holder.clone()).or_insert(0) += 1;
+            drop(pending);
             let _ = self.jobs.send(Job::Do {
                 holder,
                 command,
@@ -372,6 +391,7 @@ mod real {
         session: Arc<BrowserSession>,
         watching: Arc<Mutex<HashSet<String>>>,
         resend: broadcast::Sender<String>,
+        pending: Arc<Mutex<HashMap<String, usize>>>,
         mut queue: mpsc::UnboundedReceiver<Job>,
     ) {
         let set = |holder: &str, on: bool| {
@@ -415,6 +435,7 @@ mod real {
                             Ok(input) => session.user_input(&holder, input).await,
                             Err(why) => Err(why),
                         },
+                        Command::BrowserTake { on: true, force } => session.take(&holder, force),
                         Command::BrowserTake { .. } => {
                             session.give_back(&holder);
                             Ok(())
@@ -422,6 +443,15 @@ mod real {
                         Command::BrowserSignIn { url } => session.sign_in(&holder, url.as_deref()).await,
                         _ => Err("not a browser command".to_string()),
                     };
+                    {
+                        let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Some(n) = pending.get_mut(&holder) {
+                            *n -= 1;
+                            if *n == 0 {
+                                pending.remove(&holder);
+                            }
+                        }
+                    }
                     reply(outcome.and_then(|()| state_data(&session, &holder)));
                 }
             }
@@ -536,6 +566,64 @@ mod tests {
         }
         assert!(first.try_recv().is_err(), "a was sent a picture twice");
         assert!(second.try_recv().is_err(), "b was sent a picture twice");
+    }
+
+    /// Commands of one holder sent in a row are done in that order: a take sent after an input
+    /// and a hand back must not run before the hand back and be undone by it.
+    #[cfg(feature = "browser")]
+    #[tokio::test]
+    async fn a_take_sent_behind_a_hand_back_is_done_after_it() {
+        use azazel_browser::{BrowserSession, LiveSettings, Settings};
+
+        let session = Arc::new(BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: std::path::PathBuf::new(),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
+            live: LiveSettings::default(),
+        }));
+        session.pretend_open();
+        let services = Services::new();
+        services.insert(session.clone());
+        let browser = Browser::of(&services).expect("the session has a browser");
+        let send = |holder: &str, command: Command| {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            browser.run(
+                holder.to_string(),
+                command,
+                Box::new(move |outcome| {
+                    let _ = tx.send(outcome);
+                }),
+            );
+            rx
+        };
+        let take = |on| Command::BrowserTake { on, force: false };
+
+        // Nothing waits: taking is done at once.
+        send("a", take(true)).await.unwrap().unwrap();
+        assert!(session.holds("a"));
+
+        // off, then on, sent in a row: the holder ends with the browser.
+        let off = send("a", take(false));
+        let on = send("a", take(true));
+        off.await.unwrap().unwrap();
+        on.await.unwrap().unwrap();
+        assert!(
+            session.holds("a"),
+            "the take was undone by the hand back before it"
+        );
+
+        // Behind a queued command the take waits its turn, and answers that the browser is held.
+        let watch = send("a", Command::BrowserWatch { on: false });
+        let off = send("a", take(false));
+        let on = send("a", take(true));
+        for done in [watch, off, on] {
+            done.await.unwrap().unwrap();
+        }
+        assert!(session.holds("a"));
+        // Another holder's queue does not hold it up.
+        send("b", take(true)).await.unwrap().unwrap_err();
     }
 
     #[test]
