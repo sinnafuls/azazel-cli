@@ -491,7 +491,9 @@ impl EventHandler for Guards {
             Event::UserPrompt { .. } => *locked(&self.prompt) = Prompt::default(),
             // A new or cleared session has changed nothing. A resume (a fork, a move in the tree)
             // keeps the edits of this process, which still have to be checked.
-            Event::SessionStart { source } if matches!(source, StartSource::Startup | StartSource::Clear) => {
+            Event::SessionStart {
+                source: StartSource::Startup | StartSource::Clear,
+            } => {
                 self.verified.reset();
             }
             Event::ToolCall {
