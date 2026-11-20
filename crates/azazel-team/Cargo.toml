@@ -14,6 +14,7 @@ async-trait.workspace = true
 azazel-agent.workspace = true
 azazel-ai.workspace = true
 azazel-core.workspace = true
+azazel-tools.workspace = true
 jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,6 +25,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 azazel-ai = { workspace = true, features = ["test-support"] }
-azazel-tools.workspace = true
 tempfile.workspace = true
 toml.workspace = true
