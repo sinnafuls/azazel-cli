@@ -225,6 +225,7 @@ thinking = "low"
 | `[tools.eval]` | `python` | `true` | Let the [`eval`](tools.md#eval) tool run Python |
 | | `javascript` | `true` | Let the [`eval`](tools.md#eval) tool run JavaScript |
 | | `luau` | `true` | Let the [`eval`](tools.md#eval) tool run Luau scripts that call other tools; with all three off, `eval` is not offered |
+| | `background_max_secs` | `7200` | Longest a background Luau script (`eval` with `background: true`) may run, in seconds of wall-clock time; `0` is no limit |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |

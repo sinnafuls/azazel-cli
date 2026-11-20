@@ -383,10 +383,10 @@ preview: 3 replacements in 2 files, nothing written. To write them, run this aga
 | Tool | Input | Behaviour |
 |---|---|---|
 | `shell` | `command`, `cwd?`, `timeout_secs?`, `background?`, `interactive?`, `wake_on_exit?`, `description?` | Runs a command in the resolved shell |
-| `job` | `action` (`output`, `kill`, `list`), `id?`, `tail?` | Manages background jobs started by `shell` |
+| `job` | `action` (`output`, `kill`, `list`), `id?`, `tail?` | Manages background jobs started by `shell` and background Luau scripts started by `eval` (`lua-1`, ...) |
 | `pty` | `action` (`send`, `read`, `stop`, `list`), `id?`, `text?`, `keys?`, `submit?`, `wait?`, `wait_for?`, `timeout_secs?` | Works with a program `shell` started in a terminal; see [programs in a terminal](#programs-in-a-terminal) |
 
-`shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. Processes started for a sub-agent can never push to a git remote; the lead's can; see [permissions](permissions.md#sub-agents-never-push).
+`shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. A background Luau script (`eval` with `background: true`) is a job too: `job output` shows what it printed and its state, `job kill` stops it, and it is stopped when the agent that started it ends; see [`eval`](#eval). Processes started for a sub-agent can never push to a git remote; the lead's can; see [permissions](permissions.md#sub-agents-never-push).
 
 ### Programs in a terminal
 
@@ -445,6 +445,7 @@ return table.concat(counts, "\n")
 - The script runs in a fresh sandboxed Luau VM: no file, process or network access except through `tools`.
 - Limits: 120 seconds of the script's own running time (waiting for a tool, an agent or a model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
 - `eval` itself, `task` and the other team tools cannot be called through `tools`; a script starts agents with `agents.run`.
+- With `background: true` the script runs as a job instead; see [`eval`](#eval) for what changes.
 
 The tool's description lists the names of the callable tools only, within about 2000 characters, because the agent already has every tool's schema in its tool list; a script gets a tool's arguments with `tools.describe(name)`, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
 
@@ -493,12 +494,13 @@ return serious
 `eval` runs a program the agent writes, for work a script does better than a shell command: computing, parsing and reshaping data, trying out a snippet.
 
 - `language: "luau"` runs a script inside azazel that calls other tools; see [Code execution](#code-execution) for what it can do and its limits. It needs no program on `PATH`, `timeout_secs` does not apply to it, and it counts as `read` for the permission rules (each call inside it is judged on its own), where Python and JavaScript count as `exec`. A rule names it: `allow = ["eval(luau)"]`.
+- `language: "luau"` with `background: true` returns a job id (`lua-1`, ...) at once and runs the script as a job. `job output` shows what it printed and whether it is running, `job kill` stops it, and when it ends the agent is woken with a `<job-exit id="lua-1">` message that holds its result and `[lua-1: finished]` (or `failed`, `killed`, `timed out`), as for a program in a terminal that was started with `wake_on_exit`. `Esc` and an abort of the turn leave it running; `job kill`, the end of the agent that started it (a sub-agent finishing) and the end of the session stop it, after the usual 2 second grace. It also stops after `[tools.eval] background_max_secs` of wall-clock time (default 7200, `0` for no limit); the 120 second running-time and 50-call limits apply as before. A tool call inside a background script never asks you: when the permission engine would ask, the call is refused with a message saying it needed approval, so run such a script in the foreground or allow the call with a rule. `background` is offered only when Luau is on, and is refused for Python and JavaScript. `azazel -p` waits for running background scripts to wake the lead before it exits, for at most the script's cap, and never more than 2 hours.
 - Python runs with the first of `python`, `python3` and `py` on `PATH` (on Windows the `WindowsApps` stand-ins that open the Store are passed over). JavaScript runs with `node`, else `bun`, else `deno`; top-level `await` works. The program is looked for at each call; when none is installed the result says which to install.
 - The code is handed to the interpreter on standard input and runs in the agent's working directory with the environment of `shell` commands. Each call is a new process: nothing is kept from one call to the next, so a later call reads what an earlier one left in a file.
 - `AZAZEL_LOCAL` names the session's scratch directory, the files `local://<name>` addresses (see [URL schemes](#url-schemes-read-accepts)).
 - stdout and stderr come back together, the first 100 and last 300 lines of them, with the exit code; a code other than 0 makes the result an error. The output streams into the running card, `Esc` kills the program, and so does the timeout: `timeout_secs`, else `shell_timeout_secs` (120).
 - It can do whatever a program can, so it is approved like `shell`: `manual` and `accept-edits` ask, `auto` runs it, plan mode refuses it. A rule names the language: `allow = ["eval(python)"]`.
-- `[tools.eval]` turns each language on or off: `python = false`, `javascript = false` or `luau = false` (all are on by default; also on the Tools page of `/settings`). A language that is off is not offered to the model and is refused if asked for; with all off, `eval` is not offered at all. `luau` has an effect only in a build with the `lua` feature (the default); without it Luau is never offered. A project's config may set them only once the project is trusted.
+- `[tools.eval]` turns each language on or off: `python = false`, `javascript = false` or `luau = false` (all are on by default; also on the Tools page of `/settings`). A language that is off is not offered to the model and is refused if asked for; with all off, `eval` is not offered at all. `luau` has an effect only in a build with the `lua` feature (the default); without it Luau is never offered. A project's config may set them only once the project is trusted. `background_max_secs` is the wall-clock cap of a background Luau script, in seconds (default 7200, `0` for no limit; trusted projects only).
 
 ## Todo list, questions, plans
 
@@ -855,6 +857,7 @@ secrets = true                        # scan the project with gitleaks once per 
 python = true                         # eval may run Python
 javascript = true                     # eval may run JavaScript
 luau = true                           # eval may run Luau scripts that call other tools
+background_max_secs = 7200            # longest a background Luau script may run (0 = no limit)
 ```
 
 | Key | Default | Meaning |
@@ -884,6 +887,7 @@ luau = true                           # eval may run Luau scripts that call othe
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
 | `eval.python` | `true` | Lets [`eval`](#eval) run Python. Project config: trusted projects only |
 | `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript. Project config: trusted projects only |
+| `eval.background_max_secs` | `7200` | Longest a background Luau script (`eval` with `background: true`) may run, in seconds of wall-clock time; `0` is no limit. Project config: trusted projects only |
 | `eval.luau` | `true` | Lets [`eval`](#eval) run Luau scripts that call other tools (builds with the `lua` feature); with all three off, `eval` is not offered. Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).
