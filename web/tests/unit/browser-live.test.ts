@@ -265,6 +265,9 @@ describe('what the panel shows', () => {
 		return h;
 	};
 	const status = () => screen.getByRole('status').textContent?.trim();
+	/** What a field is asked before it is edited; false when the field refused the edit. */
+	const beforeInput = (el: Element, init: InputEventInit) =>
+		fireEvent(el, new InputEvent('beforeinput', { bubbles: true, cancelable: true, ...init }));
 
 	it('says that no browser is open, and still offers the sign-in', async () => {
 		await shown({ running: false }, true);
@@ -321,9 +324,11 @@ describe('what the panel shows', () => {
 		await vi.waitFor(() => expect(status()).toBe('You have control'));
 		expect(h.sent).toContainEqual({ type: 'browser_take', on: true });
 		expect(screen.queryByRole('button', { name: 'Take over' })).toBeNull();
+		// The keyboard is on a field inside the picture, so that a phone shows its keyboard.
 		const picture = screen.getByRole('application');
-		expect(picture.tabIndex).toBe(0);
-		await vi.waitFor(() => expect(document.activeElement).toBe(picture));
+		const keys = screen.getByRole('textbox', { name: "Type into the agent's page" });
+		expect(picture.contains(keys)).toBe(true);
+		await vi.waitFor(() => expect(document.activeElement).toBe(keys));
 		expect((screen.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).value).toBe(
 			'https://example.com/'
 		);
@@ -332,7 +337,7 @@ describe('what the panel shows', () => {
 		await vi.waitFor(() => expect(status()).toBe('Watching'));
 		expect(h.sent).toContainEqual({ type: 'browser_take', on: false });
 		expect(screen.queryByRole('application')).toBeNull();
-		expect(screen.queryByRole('textbox', { name: 'Address' })).toBeNull();
+		expect(screen.queryByRole('textbox')).toBeNull();
 	});
 
 	it('cannot take over what another device holds', async () => {
@@ -347,20 +352,94 @@ describe('what the panel shows', () => {
 		const h = await shown(OPEN, true);
 		const inputs = () => h.sent.filter((c) => c.type === 'browser_input').map((c) => c.input);
 		await fireEvent.click(screen.getByRole('button', { name: 'Take over' }));
-		const picture = await vi.waitFor(() => screen.getByRole('application'));
-		await fireEvent.keyDown(picture, { key: 'h' });
-		await fireEvent.keyDown(picture, { key: 'i' });
-		await fireEvent.keyDown(picture, { key: 'Enter' });
+		const keys = (await vi.waitFor(() =>
+			screen.getByRole('textbox', { name: "Type into the agent's page" })
+		)) as HTMLInputElement;
+		// A character goes as the text the field is given for its key, once, and stays out of the field.
+		for (const ch of 'hi') {
+			await fireEvent.keyDown(keys, { key: ch });
+			const entered = await beforeInput(keys, { inputType: 'insertText', data: ch });
+			expect(entered, 'the field refuses the character').toBe(false);
+		}
+		await fireEvent.keyDown(keys, { key: 'Enter' });
 		await vi.waitFor(() =>
 			expect(inputs()).toEqual([
 				{ kind: 'text', text: 'hi' },
 				{ kind: 'key', keys: 'Enter' }
 			])
 		);
+		expect(keys.value).toBe('');
 		// Shift+Escape leaves the picture for the button that hands back, and is not sent.
-		await fireEvent.keyDown(picture, { key: 'Escape', shiftKey: true });
+		await fireEvent.keyDown(keys, { key: 'Escape', shiftKey: true });
 		expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Hand back' }));
 		expect(inputs()).toHaveLength(2);
+	});
+
+	it('sends what a dead key, an input method and a keyboard without keys type, once each', async () => {
+		const h = await shown(OPEN, true);
+		const inputs = () => h.sent.filter((c) => c.type === 'browser_input').map((c) => c.input);
+		await fireEvent.click(screen.getByRole('button', { name: 'Take over' }));
+		const keys = (await vi.waitFor(() =>
+			screen.getByRole('textbox', { name: "Type into the agent's page" })
+		)) as HTMLInputElement;
+
+		// A dead key is no key of its own; the key after it types the letter with its accent.
+		await fireEvent.keyDown(keys, { key: 'Dead' });
+		await fireEvent.keyDown(keys, { key: 'e' });
+		await beforeInput(keys, { inputType: 'insertText', data: 'é' });
+		await vi.waitFor(() => expect(inputs()).toEqual([{ kind: 'text', text: 'é' }]));
+
+		// An input method: its keys and what it shows while composing are not sent; what it made is.
+		await fireEvent.compositionStart(keys);
+		await fireEvent.keyDown(keys, { key: 'Process', keyCode: 229, isComposing: true });
+		await beforeInput(keys, { inputType: 'insertCompositionText', data: 'にほ' });
+		keys.value = 'にほ';
+		await fireEvent.input(keys, { inputType: 'insertCompositionText', isComposing: true });
+		await fireEvent.keyDown(keys, { key: 'Enter', keyCode: 229, isComposing: true });
+		expect(inputs()).toHaveLength(1);
+		keys.value = '日本';
+		await fireEvent.compositionEnd(keys, { data: '日本' });
+		expect(keys.value).toBe('');
+		// Some browsers report the composed text once more, as an edit of the field that now has it.
+		keys.value = '日本';
+		await fireEvent.input(keys, { inputType: 'insertCompositionText', data: '日本' });
+		expect(keys.value).toBe('');
+		await vi.waitFor(() =>
+			expect(inputs()).toEqual([
+				{ kind: 'text', text: 'é' },
+				{ kind: 'text', text: '日本' }
+			])
+		);
+
+		// A phone's keyboard: no key that says what it is, only the edit it would make.
+		await fireEvent.keyDown(keys, { key: 'Unidentified', keyCode: 229 });
+		await beforeInput(keys, { inputType: 'insertText', data: 'ok' });
+		await beforeInput(keys, { inputType: 'deleteContentBackward' });
+		await beforeInput(keys, { inputType: 'insertLineBreak' });
+		// Text that got into the field past `beforeinput` goes to the page too, and out of the field.
+		keys.value = 'x';
+		await fireEvent.input(keys, { inputType: 'insertText', data: 'x' });
+		expect(keys.value).toBe('');
+		// An edit the field cannot refuse is sent once, though the field reports it twice.
+		const entered = await beforeInput(keys, {
+			inputType: 'insertText',
+			data: 'y',
+			cancelable: false
+		});
+		expect(entered, 'the field could not refuse it').toBe(true);
+		keys.value = 'y';
+		await fireEvent.input(keys, { inputType: 'insertText', data: 'y' });
+		expect(keys.value).toBe('');
+		await vi.waitFor(() =>
+			expect(inputs().slice(2)).toEqual([
+				{ kind: 'text', text: 'ok' },
+				{ kind: 'key', keys: 'Backspace' },
+				{ kind: 'key', keys: 'Enter' },
+				{ kind: 'text', text: 'xy' }
+			])
+		);
+		// Nothing of it is anywhere on this page: not in the field, not in the note for the agent.
+		expect(document.body.textContent).not.toMatch(/é|日本|ok/);
 	});
 
 	it('opens what is typed into the address field, and refuses what is no address', async () => {

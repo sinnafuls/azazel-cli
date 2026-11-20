@@ -469,6 +469,101 @@ const CLICKABLE = `<!doctype html>
 	</body>
 </html>`;
 
+/** A page that is one field: its title says what is in the field, and that Enter was pressed. */
+const TYPABLE = `<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Nothing typed</title>
+		<style>
+			html, body { height: 100%; margin: 0; }
+			input { box-sizing: border-box; width: 100%; height: 100%; border: 0; font: 32px system-ui, sans-serif; }
+		</style>
+	</head>
+	<body>
+		<input
+			aria-label="Name"
+			oninput="document.title = 'typed:' + this.value"
+			onkeydown="if (event.key === 'Enter') document.title = 'entered:' + this.value"
+		/>
+	</body>
+</html>`;
+
+test('taking over, what is typed and what an input method composes reaches the page and stays nowhere else', async ({
+	page
+}) => {
+	test.skip(!agentBrowserFound, 'no Chromium-based browser on this machine for the agent to open');
+	const site = await serve(TYPABLE);
+	const stack = new Stack();
+	try {
+		await stack.start('auto', false, [], browses(site.url, 'Opened the page.'));
+		await openSession(page, stack);
+		await expect(page.getByRole('paragraph').filter({ hasText: 'Opened the page.' })).toBeVisible();
+
+		const pane = page.getByRole('complementary', { name: 'Agents, usage and browser' });
+		await pane.getByRole('tab', { name: 'Browser' }).click();
+		const panel = pane.locator('[data-browser]');
+		const title = panel.locator('[data-browser-title]');
+		const picture = panel.locator('[data-browser-picture]');
+		await expect(title).toHaveText('Nothing typed');
+		await expect
+			.poll(() => picture.getByRole('img').evaluate((el: HTMLImageElement) => el.naturalWidth))
+			.toBeGreaterThan(0);
+
+		await panel.getByRole('button', { name: 'Take over' }).click();
+		await expect(panel.getByRole('status')).toHaveText('You have control');
+		// The keyboard is on a field in the picture, which is a field so that a phone shows its
+		// keyboard; it takes no room and nothing of it shows.
+		const keys = picture.getByRole('textbox', { name: "Type into the agent's page" });
+		await expect(keys).toBeFocused();
+		const drawn = await keys.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const s = getComputedStyle(el);
+			return { width: r.width, height: r.height, opacity: s.opacity, position: s.position };
+		});
+		expect(drawn).toEqual({ width: 1, height: 1, opacity: '0', position: 'absolute' });
+
+		// A click puts the caret in the page's field, and the keyboard stays on the picture.
+		await picture.click();
+		await expect(keys).toBeFocused();
+		// Keys of the layout, and characters that come as text without a key of their own.
+		await page.keyboard.type('héllo wörld');
+		await expect(title).toHaveText('typed:héllo wörld');
+		await expect(keys).toHaveValue('');
+		// A key that is no character is still a key.
+		await page.keyboard.press('Backspace');
+		await expect(title).toHaveText('typed:héllo wörl');
+		await page.keyboard.press('Enter');
+		await expect(title).toHaveText('entered:héllo wörl');
+
+		// An input method: nothing goes to the page while it composes, and what it made goes once.
+		const cdp = await page.context().newCDPSession(page);
+		await cdp.send('Input.imeSetComposition', { text: 'にほ', selectionStart: 2, selectionEnd: 2 });
+		await expect(keys).toHaveValue('にほ');
+		await cdp.send('Input.insertText', { text: '日本' });
+		await expect(title).toHaveText('typed:héllo wörl日本');
+		await expect(keys).toHaveValue('');
+
+		// Nothing of it went anywhere else on this page: it shows only where the agent's page itself
+		// says what its field holds, in its title.
+		await expect(page.getByRole('combobox', { name: 'Message' })).toHaveText('');
+		await panel.getByRole('button', { name: 'Hand back' }).click();
+		await expect(panel.getByRole('status')).toHaveText('Watching');
+		await expect(keys).toHaveCount(0);
+		await expect(title).toHaveText('typed:héllo wörl日本');
+		const elsewhere = await page.evaluate(() => {
+			const copy = document.body.cloneNode(true) as HTMLElement;
+			copy.querySelector('[data-browser-title]')?.remove();
+			const fields = Array.from(document.querySelectorAll('input, textarea'));
+			return [copy.textContent, ...fields.map((f) => (f as HTMLInputElement).value)].join('\n');
+		});
+		expect(elsewhere).not.toMatch(/héllo|wörl|日本|にほ/);
+	} finally {
+		await stack.stop();
+		await site.close();
+	}
+});
+
 test("the Browser tab shows the agent's browser; taking over, a click reaches its page", async ({
 	page
 }) => {

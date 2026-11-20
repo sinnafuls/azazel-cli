@@ -63,7 +63,16 @@ export interface KeyLike {
 	metaKey?: boolean;
 	shiftKey?: boolean;
 	isComposing?: boolean;
+	keyCode?: number;
 	getModifierState?: (key: string) => boolean;
+}
+
+/**
+ * Whether a key press belongs to an input method that is composing text: such a key is reported
+ * with the code 229, by some browsers still for the key that ended the composition.
+ */
+export function composingKey(e: KeyLike): boolean {
+	return !!e.isComposing || e.keyCode === 229;
 }
 
 // The keys the browser tool's `press` knows by name (`parse_keys` in azazel-browser).
@@ -87,10 +96,10 @@ const NAMED = new Set([
 /**
  * A key press as the input to send: a character is `text`, anything else is `key` in the form of
  * the browser tool's `press` (`Enter`, `Shift+Tab`, `Control+a`). Null for what is no key of its
- * own (a modifier, a dead key, a key of the keyboard's media row).
+ * own (a modifier, a dead key, a key of the keyboard's media row, a key an input method took).
  */
 export function keysFor(e: KeyLike): Extract<BrowserInput, { kind: 'key' | 'text' }> | null {
-	if (e.isComposing) return null;
+	if (composingKey(e)) return null;
 	const k = e.key;
 	// AltGr is reported as Control and Alt, and types a character.
 	const chord = (!!e.ctrlKey || !!e.altKey || !!e.metaKey) && !e.getModifierState?.('AltGraph');
@@ -111,6 +120,40 @@ export function keysFor(e: KeyLike): Extract<BrowserInput, { kind: 'key' | 'text
 		e.shiftKey && (named || chord) && 'Shift'
 	].filter(Boolean);
 	return { kind: 'key', keys: [...mods, name].join('+') };
+}
+
+/** The part of an InputEvent (`beforeinput`) that says what it would do to its field. */
+export interface EditLike {
+	inputType: string;
+	data?: string | null;
+	dataTransfer?: { getData: (type: string) => string } | null;
+	isComposing?: boolean;
+}
+
+/**
+ * Whether an edit belongs to text an input method is still composing. Such text cannot be kept
+ * out of the field: it stays there until it is done (`compositionend`), and is sent then.
+ */
+export function composes(e: EditLike): boolean {
+	return !!e.isComposing || /Composition/.test(e.inputType);
+}
+
+/**
+ * What an edit of the field that takes the keyboard is for the page: the text it would insert
+ * (what the layout, a dead key, a phone's keyboard or a dictation made of the keys), or the key
+ * that does in the page what the edit would do to the field (a phone's keyboard reports no key
+ * for Enter and Backspace, only the edit). Null for what is neither, and for text that is still
+ * being composed.
+ */
+export function editFor(e: EditLike): Extract<BrowserInput, { kind: 'key' | 'text' }> | null {
+	if (composes(e)) return null;
+	const t = e.inputType;
+	if (t === 'insertLineBreak' || t === 'insertParagraph') return { kind: 'key', keys: 'Enter' };
+	if (/^delete.*Backward$/.test(t)) return { kind: 'key', keys: 'Backspace' };
+	if (/^delete.*Forward$/.test(t)) return { kind: 'key', keys: 'Delete' };
+	if (!t.startsWith('insert')) return null;
+	const text = e.data ?? e.dataTransfer?.getData('text/plain') ?? '';
+	return text ? { kind: 'text', text } : null;
 }
 
 /**

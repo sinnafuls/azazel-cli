@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
 	address,
 	Clicks,
+	composes,
+	composingKey,
 	contained,
+	editFor,
 	fraction,
 	keysFor,
 	scaleOf,
@@ -136,6 +139,60 @@ describe('keys', () => {
 		for (const k of ['Shift', 'Control', 'Alt', 'Meta', 'Dead', 'CapsLock', 'AudioVolumeUp', 'F13'])
 			expect(key(k), k).toBeNull();
 		expect(key('a', { isComposing: true })).toBeNull();
+	});
+
+	it('leaves a key an input method took to the input method', () => {
+		// Such a key is reported with the code 229, whatever it is said to be.
+		expect(key('Process', { keyCode: 229 })).toBeNull();
+		expect(key('Enter', { keyCode: 229 })).toBeNull();
+		expect(key('Unidentified', { keyCode: 229 })).toBeNull();
+		expect(composingKey({ key: 'Escape', isComposing: true })).toBe(true);
+		expect(composingKey({ key: 'Escape', keyCode: 229 })).toBe(true);
+		expect(composingKey({ key: 'Escape', keyCode: 27 })).toBe(false);
+		expect(key('Enter', { keyCode: 13 })).toEqual({ kind: 'key', keys: 'Enter' });
+	});
+});
+
+describe('edits of the field that takes the keyboard', () => {
+	const edit = (inputType: string, data: string | null = null, more: object = {}) =>
+		editFor({ inputType, data, ...more });
+
+	it('sends what would be inserted as text', () => {
+		expect(edit('insertText', 'a')).toEqual({ kind: 'text', text: 'a' });
+		// What a dead key and the key after it make, a word a phone's keyboard suggests, dictation.
+		expect(edit('insertText', 'é')).toEqual({ kind: 'text', text: 'é' });
+		expect(edit('insertReplacementText', 'hello ')).toEqual({ kind: 'text', text: 'hello ' });
+		expect(edit('insertFromDictation', 'two words')).toEqual({ kind: 'text', text: 'two words' });
+		expect(edit('insertText', '日本語')).toEqual({ kind: 'text', text: '日本語' });
+	});
+
+	it('reads text that comes as a transfer (a drop, a paste)', () => {
+		const dataTransfer = { getData: (type: string) => (type === 'text/plain' ? 'dropped' : '') };
+		expect(edit('insertFromDrop', null, { dataTransfer })).toEqual({
+			kind: 'text',
+			text: 'dropped'
+		});
+		expect(edit('insertFromPaste', null, { dataTransfer: { getData: () => '' } })).toBeNull();
+	});
+
+	it('sends the key for an edit a phone reports without one', () => {
+		expect(edit('insertLineBreak')).toEqual({ kind: 'key', keys: 'Enter' });
+		expect(edit('insertParagraph')).toEqual({ kind: 'key', keys: 'Enter' });
+		expect(edit('deleteContentBackward')).toEqual({ kind: 'key', keys: 'Backspace' });
+		expect(edit('deleteWordBackward')).toEqual({ kind: 'key', keys: 'Backspace' });
+		expect(edit('deleteContentForward')).toEqual({ kind: 'key', keys: 'Delete' });
+	});
+
+	it('sends nothing for text that is still being composed, nor for what is no text and no key', () => {
+		expect(edit('insertCompositionText', 'に')).toBeNull();
+		expect(edit('insertFromComposition', '日本')).toBeNull();
+		expect(edit('deleteCompositionText')).toBeNull();
+		expect(edit('insertText', 'a', { isComposing: true })).toBeNull();
+		expect(composes({ inputType: 'insertCompositionText' })).toBe(true);
+		expect(composes({ inputType: 'insertText', isComposing: true })).toBe(true);
+		expect(composes({ inputType: 'insertText' })).toBe(false);
+		for (const t of ['insertText', 'historyUndo', 'formatBold', 'deleteByCut'])
+			expect(edit(t), t).toBeNull();
 	});
 });
 

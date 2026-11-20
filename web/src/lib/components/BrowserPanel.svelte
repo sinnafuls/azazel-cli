@@ -2,6 +2,9 @@
 	// The agents' browser, live: the picture of the tab it shows, scaled to fit, with what it is
 	// doing. A device that may control can take it over (the agents wait), and then its clicks, the
 	// wheel and its keys over the picture go to the page, until it hands the browser back.
+	// The keyboard is taken by a field nobody sees, in the picture: only a field brings up the
+	// keyboard of a phone and is given what an input method, a dead key or a dictation composes.
+	// What is typed there goes to the page and never stays in the field.
 	// Pictures are asked for only while `active` (the tab of this panel is the one shown) and the
 	// page itself is visible; otherwise the host makes none for this device.
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
@@ -10,6 +13,9 @@
 	import {
 		address,
 		Clicks,
+		composes,
+		composingKey,
+		editFor,
 		fraction,
 		keysFor,
 		scaleOf,
@@ -102,12 +108,31 @@
 	let box = $state<HTMLElement | null>(null);
 	let img = $state<HTMLImageElement | null>(null);
 	let handBack = $state<HTMLButtonElement | null>(null);
+	// The field that takes the keyboard, and where in the box it is: at the last click, so that a
+	// phone keeps that place above its keyboard and an input method opens its list beside it.
+	let keys = $state<HTMLInputElement | null>(null);
+	let caret = $state({ x: 0, y: 0 });
+	// Whether an input method is composing text in the field, and whether what the field is about
+	// to report as an edit was sent already: text that was composed (some browsers report it once
+	// more, right after), or an edit that could not be kept out of the field.
+	let composing = false;
+	let reported = false;
+	/** What the field reports next, in this turn of the event loop, is not sent again. */
+	function sentAlready() {
+		reported = true;
+		setTimeout(() => (reported = false));
+	}
+	$effect(() => {
+		if (!holding) composing = false;
+	});
 
 	async function take(on: boolean) {
 		if (!on) flush();
 		if ((await live.take(on)) && on) {
 			await tick();
-			box?.focus({ preventScroll: true });
+			// A touch screen would cover half the picture with its keyboard at once: there the field
+			// takes the keyboard at the first tap on the picture.
+			if (!viewport.coarse) keys?.focus({ preventScroll: true });
 		}
 	}
 	async function signIn() {
@@ -123,9 +148,25 @@
 	function at(e: { clientX: number; clientY: number }) {
 		return img && picture ? fraction(e, img.getBoundingClientRect(), picture) : null;
 	}
+	function onmousedown(e: MouseEvent) {
+		// The field keeps the keyboard through a click on the picture: a phone would otherwise put
+		// its keyboard away and bring it back at every tap.
+		if (holding) e.preventDefault();
+	}
+	/** Puts the keyboard on the field, at the place of the click. */
+	function focusKeys(e: MouseEvent) {
+		if (!keys || !box) return;
+		// Leaving the field ends text that is still being composed, which belongs before the click.
+		// A phone whose keyboard was put away brings it back only for a field it enters anew.
+		if (composing || viewport.coarse) keys.blur();
+		const r = box.getBoundingClientRect();
+		const within = (n: number, size: number) => Math.round(Math.min(Math.max(n, 0), size - 2));
+		caret = { x: within(e.clientX - r.left, r.width), y: within(e.clientY - r.top, r.height) };
+		keys.focus({ preventScroll: true });
+	}
 	function onclick(e: MouseEvent) {
 		if (!holding) return;
-		box?.focus({ preventScroll: true });
+		focusKeys(e);
 		const p = at(e);
 		if (!p) return;
 		typing.flush();
@@ -156,13 +197,52 @@
 		}
 		// Pasting sends this device's clipboard (see `onpaste`), not the one of the host.
 		if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v') return;
+		// A key the input method takes is its own: Escape there drops what is being composed, and
+		// does not stop the agent.
+		if (composingKey(e)) return e.stopPropagation();
 		const k = keysFor(e);
 		if (!k) return;
 		// The key is the page's: not a shortcut of this page, and not what stops the agent.
-		e.preventDefault();
 		e.stopPropagation();
+		// A character is not sent from here: the field is given what the key types (`onbeforeinput`),
+		// which is the character, or what a dead key before it or the layout makes of it.
+		if (k.kind === 'text') return;
+		e.preventDefault();
 		clicks.flush();
 		typing.press(k, e.repeat);
+	}
+	/** Sends text for the page, after the click that put the caret where it belongs. */
+	function type(text: string) {
+		clicks.flush();
+		typing.press({ kind: 'text', text });
+	}
+	function onbeforeinput(e: InputEvent) {
+		// Text being composed cannot be kept out of the field; it is taken out when it is done.
+		if (composes(e)) return;
+		// Nothing else gets into the field: it goes to the page, or nowhere.
+		e.preventDefault();
+		const k = holding ? editFor(e) : null;
+		if (!k) return;
+		// An edit that cannot be refused gets into the field and is reported again (`oninput`).
+		if (!e.defaultPrevented) sentAlready();
+		clicks.flush();
+		// A phone's Backspace that is held down is paced as a held key is.
+		typing.press(k, k.kind === 'key' && k.keys !== 'Enter');
+	}
+	function oncompositionend(e: CompositionEvent) {
+		composing = false;
+		const text = e.data || keys?.value || '';
+		if (keys) keys.value = '';
+		sentAlready();
+		if (holding && text) type(text);
+	}
+	function oninput(e: Event) {
+		if (!keys || composing || (e as InputEvent).isComposing) return;
+		// What got into the field without being composed (a browser without `beforeinput`, a
+		// keyboard that types past it) goes to the page as well, and out of the field.
+		const text = keys.value;
+		keys.value = '';
+		if (holding && text && !reported) type(text);
 	}
 	function onpaste(e: ClipboardEvent) {
 		const text = holding ? e.clipboardData?.getData('text/plain') : '';
@@ -342,13 +422,14 @@
 
 			<!-- The box has the shape of the picture until it would be taller than most of the screen;
 			     then the picture keeps its shape inside it, with bars beside it. -->
-			<!-- It takes the keyboard only while this device holds the browser, as an `application`. -->
-			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+			<!-- It takes the keyboard only while this device holds the browser, as an `application`:
+			     the field in it has the focus then, and the box shows that it has. -->
 			<div
 				bind:this={box}
 				class={cn(
 					'relative max-h-[70svh] w-full overflow-hidden rounded-lg border bg-muted outline-none',
-					holding && 'touch-none focus:border-ring focus:ring-3 focus:ring-ring/50'
+					holding &&
+						'touch-none focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50'
 				)}
 				style:aspect-ratio="{picture?.width ?? 16} / {picture?.height ?? 9}"
 				data-browser-picture
@@ -357,7 +438,7 @@
 				aria-label={holding
 					? "The agent's browser. Clicks and keys go to its page. Shift and Escape leave it."
 					: undefined}
-				tabindex={holding ? 0 : undefined}
+				{onmousedown}
 				{onclick}
 				{oncontextmenu}
 				{onwheel}
@@ -368,6 +449,28 @@
 				{onpointerup}
 				onpointercancel={onpointerup}
 			>
+				{#if holding}
+					<!-- One pixel, out of the flow and transparent: it moves nothing and shows nothing.
+					     Its type is 16px at every text size, or a phone zooms in when the field gets the focus. -->
+					<input
+						bind:this={keys}
+						class="pointer-events-none absolute size-px appearance-none border-0 bg-transparent p-0 text-[16px] opacity-0 outline-none"
+						style:left="{caret.x}px"
+						style:top="{caret.y}px"
+						aria-label="Type into the agent's page"
+						type="text"
+						autocomplete="off"
+						autocapitalize="off"
+						autocorrect="off"
+						spellcheck="false"
+						enterkeyhint="enter"
+						data-browser-keys
+						{onbeforeinput}
+						{oninput}
+						oncompositionstart={() => (composing = true)}
+						{oncompositionend}
+					/>
+				{/if}
 				{#if picture}
 					<img
 						bind:this={img}
@@ -385,7 +488,7 @@
 			{#if holding}
 				<p class="text-xs leading-relaxed text-muted-foreground" data-browser-hint>
 					{#if viewport.coarse}
-						Tap the picture to click in the page, drag to scroll it.
+						Tap the picture to click in the page and to type there, drag to scroll it.
 					{:else}
 						Click the picture to use the page: keys and the wheel go to it.
 						<Kbd>Shift</Kbd>

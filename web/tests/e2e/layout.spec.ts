@@ -1785,7 +1785,9 @@ function browserBoxes(): BrowserBoxes {
 				}
 			: null,
 		cut,
-		focused: !!picture && document.activeElement === picture,
+		// The keyboard is on the field inside the picture that takes it for the page.
+		focused:
+			!!picture && picture !== document.activeElement && picture.contains(document.activeElement),
 		sideways: {
 			scroller: scroller.scrollWidth - scroller.clientWidth,
 			page: document.documentElement.scrollWidth - document.documentElement.clientWidth
@@ -1975,7 +1977,11 @@ for (const view of VIEWS)
 					await panel.getByRole('button', { name: 'Take over' }).click();
 					await expect(panel).toHaveAttribute('data-status', 'you');
 					await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveValue(address);
-					await expect(panel.getByRole('application')).toBeFocused();
+					await expect(
+						panel
+							.getByRole('application')
+							.getByRole('textbox', { name: "Type into the agent's page" })
+					).toBeFocused();
 					const holding = await capture('holding');
 					expect(holding.buttons.map((b) => b.name)).toEqual(['Hand back', 'Sign in']);
 					expect(holding.focused, 'the keyboard is on the picture').toBe(true);
