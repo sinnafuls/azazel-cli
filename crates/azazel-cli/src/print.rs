@@ -2,6 +2,7 @@
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use azazel_agent::AgentEvent;
 use azazel_ai::{Block, StopReason};
@@ -48,6 +49,9 @@ pub(crate) fn with_piped_stdin(prompt: &str) -> String {
 /// Files `-f/--file` takes in one run.
 pub const MAX_FILES: usize = 100;
 /// Size above which a text file of `-f` is refused, as an `@path` mention leaves it out.
+/// The longest a `-p` run waits for background scripts that have not woken the lead.
+const PRINT_SCRIPT_WAIT_SECS: u64 = 7200;
+
 const MAX_TEXT_BYTES: u64 = 256 * 1024;
 /// Size above which an image of `-f` is refused.
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
@@ -193,9 +197,20 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
     let mut looped = crate::loops::from_env(app.config.schedule.loop_max);
     let mut interrupt = std::pin::pin!(tokio::signal::ctrl_c());
     let mut interrupted = false;
+    // When the run stops waiting for background scripts that have not woken the lead.
+    let mut scripts_deadline: Option<tokio::time::Instant> = None;
     let mut code = loop {
         let event = tokio::select! {
             event = events.recv() => event,
+            _ = async {
+                match scripts_deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                eprintln!("azazel: stopped waiting for background scripts after the print-mode limit of 2 hours");
+                break EXIT_OK;
+            }
             // Sub-agents' events go out tagged with their own ids.
             Some(event) = async { team_events.as_mut()?.recv().await.ok() } => {
                 if let (OutputFormat::Json, TeamEvent::Agent { id, event }) = (format, event) {
@@ -242,6 +257,18 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
                     .services
                     .get::<azazel_tools::Jobs>()
                     .is_some_and(|jobs| jobs.running_tasks() > 0);
+                scripts_deadline = match (scripts, scripts_deadline) {
+                    (false, _) => None,
+                    (true, Some(deadline)) => Some(deadline),
+                    (true, None) => {
+                        // The script's own cap ends it first (and wakes the lead); with no cap
+                        // the run still ends after two hours.
+                        let limit = Duration::from_secs(PRINT_SCRIPT_WAIT_SECS);
+                        let cap = Duration::from_secs(app.config.tools.eval.background_max_secs);
+                        let wait = if cap.is_zero() { limit } else { cap.min(limit) };
+                        Some(tokio::time::Instant::now() + wait + Duration::from_secs(10))
+                    }
+                };
                 if !pending && !scripts {
                     #[cfg(feature = "test-support")]
                     if let Some((text, images)) = queued.next(app.config.tui.queue_mode) {
