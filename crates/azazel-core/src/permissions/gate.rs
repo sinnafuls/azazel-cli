@@ -265,6 +265,13 @@ impl Gate for PermissionGate {
                 ),
             })
         };
+        // A background script is not there to answer: what would ask is refused, in every UI.
+        if crate::toolcall::is_unattended() {
+            return deny(format!(
+                "{} needed approval, which a background script cannot get; run it in the foreground                  (without `background`) or allow it with a rule",
+                tool.name()
+            ));
+        }
         let Some(ui) = self.services.get::<Ui>() else {
             return headless();
         };

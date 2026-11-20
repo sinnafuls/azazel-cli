@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
 use azazel_core::Post;
 use azazel_core::hooks::Wake;
-use azazel_core::toolcall::{Luau, LuauEngine};
+use azazel_core::toolcall::{Luau, LuauEngine, unattended};
 use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch,
@@ -816,7 +816,8 @@ impl LuauEngine for LuauEval {
         tokio::spawn(async move {
             let runtime = tokio::runtime::Handle::current();
             let state = run.clone();
-            let mut work = tokio::task::spawn_blocking(move || runtime.block_on(execute(state, code)));
+            let mut work =
+                tokio::task::spawn_blocking(move || runtime.block_on(unattended(execute(state, code))));
             let mut timed_out = false;
             let limit = async {
                 if max.is_zero() {
