@@ -22,7 +22,10 @@ use azazel_core::{
 use azazel_protocol::{
     Attached, Command, Decision, Frame, MessageRow, Request, Response, Snapshot, UiRequest,
 };
-use azazel_remote::{Access, Conn, Kind, Link, Options, Server, SessionInfo, Sessions};
+use azazel_remote::{
+    Access, Conn, Folders, Kind, Link, NewSession, Options, SavedSession, Server, SessionInfo, Sessions,
+    StartError,
+};
 use azazel_team::Team;
 use azazel_tui::Glyphs;
 use serde_json::{Value, json};
@@ -30,6 +33,8 @@ use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
+use super::background::BackgroundSessions;
+use super::start::{Ask, Rules};
 use super::tunnel::{self, Tunnel};
 use crate::app::App;
 use crate::print::event_json;
@@ -642,6 +647,9 @@ pub(crate) struct TerminalSessions {
     /// The agents' browser, which the browsers of the server may watch and take over. Its pictures
     /// go to the one that asked, not through the [`Feed`]: they are never kept for a later one.
     browser: Option<Arc<Browser>>,
+    /// The background sessions of this machine, which a browser may start, list and open beside
+    /// the terminal's own session, under the rules `azazel remote` has for them.
+    background: Option<Arc<BackgroundSessions>>,
 }
 
 impl TerminalSessions {
@@ -652,6 +660,7 @@ impl TerminalSessions {
         web: mpsc::UnboundedSender<Web>,
         redact: bool,
         browser: Option<Arc<Browser>>,
+        background: Option<Arc<BackgroundSessions>>,
     ) -> Arc<TerminalSessions> {
         Arc::new(TerminalSessions {
             source,
@@ -662,6 +671,7 @@ impl TerminalSessions {
             started: jiff::Timestamp::now().to_string(),
             next_conn: AtomicU64::new(1),
             browser,
+            background,
         })
     }
 
@@ -941,9 +951,10 @@ fn tell(out: &mpsc::Sender<String>, redact: bool) -> impl Fn(String, bool) + Sen
 
 #[async_trait]
 impl Sessions for TerminalSessions {
+    /// The terminal's session first, then the background sessions.
     async fn list(&self) -> Vec<SessionInfo> {
         let about = self.source.about();
-        vec![SessionInfo {
+        let mut all = vec![SessionInfo {
             id: ID.to_string(),
             name: about.name,
             kind: Kind::Terminal,
@@ -952,14 +963,21 @@ impl Sessions for TerminalSessions {
             cost_usd: about.cost_usd,
             mode: Some(about.mode),
             started: self.started.clone(),
-        }]
+        }];
+        if let Some(background) = &self.background {
+            all.extend(background.list().await);
+        }
+        all
     }
 
     async fn open(&self, id: &str) -> Result<Conn, String> {
         if id != ID {
-            return Err(format!(
-                "no session {id}: this terminal shares one session, `{ID}`"
-            ));
+            return match &self.background {
+                Some(background) => background.open(id).await,
+                None => Err(format!(
+                    "no session {id}: this terminal shares one session, `{ID}`"
+                )),
+            };
         }
         let (frames_tx, frames) = mpsc::channel::<String>(QUEUE);
         let (commands, commands_rx) = mpsc::channel::<String>(64);
@@ -978,9 +996,41 @@ impl Sessions for TerminalSessions {
             started: self.started.clone(),
             next_conn: AtomicU64::new(0),
             browser: self.browser.clone(),
+            background: None,
         });
         tokio::spawn(this.serve(conn, commands_rx, frames_tx));
         Ok(Conn { frames, commands })
+    }
+
+    fn can_start(&self) -> bool {
+        self.background.is_some()
+    }
+
+    async fn folders(&self, under: Option<&str>) -> Result<Folders, StartError> {
+        match &self.background {
+            Some(background) => background.folders(under).await,
+            None => Err(StartError::Refused(
+                "new sessions cannot be started from here".to_string(),
+            )),
+        }
+    }
+
+    async fn history(&self, query: Option<&str>) -> Result<Vec<SavedSession>, StartError> {
+        match &self.background {
+            Some(background) => background.history(query).await,
+            None => Err(StartError::Refused(
+                "earlier sessions cannot be listed from here".to_string(),
+            )),
+        }
+    }
+
+    async fn start(&self, new: NewSession) -> Result<String, StartError> {
+        match &self.background {
+            Some(background) => background.start(new).await,
+            None => Err(StartError::Refused(
+                "new sessions cannot be started from here".to_string(),
+            )),
+        }
     }
 }
 
@@ -1003,6 +1053,8 @@ pub(crate) struct Sharing {
     tui_bridge: Arc<dyn UiBridge>,
     services: Arc<Services>,
     pump: JoinHandle<()>,
+    /// Puts a browser's request for a folder nobody trusted to the person at the terminal.
+    questions: JoinHandle<()>,
 }
 
 impl Sharing {
@@ -1029,6 +1081,34 @@ impl Sharing {
             team: team.clone(),
             listed: crate::models::Listed::default(),
         });
+        // The same rules as `azazel remote`; a folder nobody trusted is asked about at this terminal.
+        let (asks, mut asked) = mpsc::channel::<Ask>(8);
+        let ask_bridge = tui_bridge.clone();
+        let questions = tokio::spawn(async move {
+            while let Some(ask) = asked.recv().await {
+                let yes = ask_bridge.confirm(ask.question.trim()).await.unwrap_or(false);
+                let _ = ask.answer.send(yes);
+            }
+        });
+        // `--trust` trusts the folder this terminal was started in, not every folder a browser names.
+        let carried = services
+            .get::<crate::detach::Carried>()
+            .map(|carried| {
+                carried
+                    .0
+                    .iter()
+                    .filter(|arg| *arg != "--trust")
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let background = BackgroundSessions::new(
+            app.paths.clone(),
+            remote.redact,
+            carried,
+            Rules::of(app.paths.home.clone(), std::env::home_dir(), remote),
+            Some(asks),
+        );
         let sessions = TerminalSessions::new(
             source,
             feed.clone(),
@@ -1036,6 +1116,7 @@ impl Sharing {
             web,
             remote.redact,
             Browser::of(&services),
+            Some(background),
         );
         let server = Server::start(options(&app.config), sessions)
             .await
@@ -1057,6 +1138,7 @@ impl Sharing {
             tui_bridge,
             services,
             pump,
+            questions,
         })
     }
 
@@ -1091,6 +1173,7 @@ impl Sharing {
     pub(crate) async fn stop(self) {
         self.services.insert(Arc::new(Ui(self.tui_bridge.clone())));
         self.pump.abort();
+        self.questions.abort();
         // Requests the browsers were still to answer are the terminal's alone from here on.
         locked(&self.waiting.approvals).clear();
         locked(&self.waiting.answers).clear();
@@ -1407,7 +1490,15 @@ mod tests {
     async fn a_prompt_from_a_browser_reaches_the_terminals_loop_and_is_echoed_to_the_others() {
         let feed = Arc::new(Feed::default());
         let (web, mut loop_rx) = mpsc::unbounded_channel();
-        let sessions = TerminalSessions::new(Arc::new(Stub), feed.clone(), Arc::default(), web, false, None);
+        let sessions = TerminalSessions::new(
+            Arc::new(Stub),
+            feed.clone(),
+            Arc::default(),
+            web,
+            false,
+            None,
+            None,
+        );
         assert_eq!(sessions.list().await[0].id, ID);
         assert!(sessions.open("nope").await.is_err());
         let mut one = sessions.open(ID).await.unwrap();
@@ -1454,8 +1545,15 @@ mod tests {
     #[tokio::test]
     async fn a_shared_terminal_answers_what_it_cannot_do_instead_of_waiting() {
         let (web, mut loop_rx) = mpsc::unbounded_channel();
-        let sessions =
-            TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false, None);
+        let sessions = TerminalSessions::new(
+            Arc::new(Stub),
+            Arc::default(),
+            Arc::default(),
+            web,
+            false,
+            None,
+            None,
+        );
         let mut conn = sessions.open(ID).await.unwrap();
         assert_eq!(frame(&mut conn).await["type"], "hello");
         let commands = [
@@ -1480,8 +1578,15 @@ mod tests {
     #[tokio::test]
     async fn a_browser_on_a_shared_terminal_can_read_the_model_list() {
         let (web, _loop_rx) = mpsc::unbounded_channel();
-        let sessions =
-            TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false, None);
+        let sessions = TerminalSessions::new(
+            Arc::new(Stub),
+            Arc::default(),
+            Arc::default(),
+            web,
+            false,
+            None,
+            None,
+        );
         let mut conn = sessions.open(ID).await.unwrap();
         assert_eq!(frame(&mut conn).await["type"], "hello");
         conn.commands

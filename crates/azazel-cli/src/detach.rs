@@ -930,6 +930,10 @@ pub struct BgExt {
     pub ephemeral: bool,
 }
 
+/// The options this run was started with that a background session it starts is to have too, as
+/// a service: `/remote` starts sessions for browsers with them, as `azazel remote` does.
+pub struct Carried(pub Vec<OsString>);
+
 struct BgCommand {
     paths: Paths,
     permissions: Arc<PermissionState>,
@@ -999,6 +1003,7 @@ impl Extension for BgExt {
     }
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
+        r.service(Arc::new(Carried(self.carried.clone())));
         r.command(SlashCommand {
             name: "bg".to_string(),
             description: "Run a prompt in the background, in a copy of this session".to_string(),
