@@ -1,13 +1,15 @@
-//! `eval`: runs Python or JavaScript the agent writes, with the interpreter found on `PATH`.
+//! `eval`: runs Python or JavaScript the agent writes, with the interpreter found on `PATH`, or a
+//! Luau script that calls the other tools, which the engine in `azazel-lua` runs (the `Luau` service).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, Services, Tool, ToolCtx, ToolOutput};
 use azazel_core::process::{AgentEnv, RunOptions, run_program};
 use azazel_core::scheme::local_dir;
+use azazel_core::toolcall::{Luau, ToolCaller};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -27,6 +29,8 @@ pub enum Language {
     Python,
     #[serde(alias = "js", alias = "node")]
     Javascript,
+    #[serde(alias = "lua")]
+    Luau,
 }
 
 impl Language {
@@ -35,6 +39,7 @@ impl Language {
         match self {
             Language::Python => "python",
             Language::Javascript => "javascript",
+            Language::Luau => "luau",
         }
     }
 
@@ -42,6 +47,7 @@ impl Language {
         match self {
             Language::Python => "Python",
             Language::Javascript => "JavaScript",
+            Language::Luau => "Luau",
         }
     }
 
@@ -61,6 +67,8 @@ impl Language {
                 ("bun", &["run", "-"]),
                 ("deno", &["run", "-A", "-"]),
             ],
+            // Luau runs inside azazel; there is no program to find.
+            Language::Luau => &[],
         }
     }
 
@@ -68,12 +76,15 @@ impl Language {
         match self {
             Language::Python => {
                 "no Python interpreter was found on PATH (tried python, python3 and py); install Python 3 \
-                 from https://www.python.org and make sure `python` is on PATH"
+                 from https://www.python.org and make sure `python` is on PATH, or set \
+                 `tools.eval.python = false` to stop offering it"
             }
             Language::Javascript => {
                 "no JavaScript runtime was found on PATH (tried node, bun and deno); install Node.js from \
-                 https://nodejs.org (or Bun or Deno)"
+                 https://nodejs.org (or Bun or Deno), or set `tools.eval.javascript = false` to stop \
+                 offering it"
             }
+            Language::Luau => "Luau needs no program on PATH",
         }
     }
 }
@@ -97,18 +108,22 @@ pub fn interpreter(language: Language) -> Option<(PathBuf, Vec<String>)> {
 pub struct EvalLanguages(pub Vec<Language>);
 
 impl EvalLanguages {
+    /// Python and JavaScript; Luau only where the application says the build has it.
     pub fn all() -> EvalLanguages {
         EvalLanguages(vec![Language::Python, Language::Javascript])
     }
 
-    /// The languages whose switch is on.
-    pub fn from_switches(python: bool, javascript: bool) -> EvalLanguages {
+    /// The languages whose switch is on. `luau` arrives already combined with "this build has Lua".
+    pub fn from_switches(python: bool, javascript: bool, luau: bool) -> EvalLanguages {
         let mut languages = Vec::new();
         if python {
             languages.push(Language::Python);
         }
         if javascript {
             languages.push(Language::Javascript);
+        }
+        if luau {
+            languages.push(Language::Luau);
         }
         EvalLanguages(languages)
     }
@@ -119,20 +134,84 @@ pub struct EvalTool {
     env: Arc<AgentEnv>,
     /// The languages `[tools.eval]` turns on; never empty (with none on, the tool is not offered).
     languages: Vec<Language>,
+    services: Arc<Services>,
+    /// The description before the Luau engine can describe itself: everything but its paragraph.
+    base: String,
+    /// The full description, built once both `ToolCaller` and the `Luau` service exist and then
+    /// kept: one that changed between requests would break the provider's prompt cache.
+    description: OnceLock<String>,
 }
+
+const OPENING: &str = "Run code and get what it printed or returned, in the `language` you pick. Use it for \
+     computing, parsing and transforming data, or trying out a snippet, where a script is easier \
+     than a shell command.";
+
+const PROGRAMS: &str = "Python runs with the `python` on PATH; JavaScript with `node`, else `bun`, else `deno` \
+     (top-level `await` works). Each Python or JavaScript call is a fresh process in the working \
+     directory: nothing is kept between calls, so keep what a later call needs in a file. The \
+     environment variable `AZAZEL_LOCAL` names the session's scratch directory, the files \
+     `local://<name>` addresses in read and write. stdout and stderr come back together with the \
+     exit code; long output keeps its first 100 and last 300 lines. A Python or JavaScript program \
+     can do anything a program can, so it is approved like a shell command.";
 
 impl EvalTool {
     pub fn new(default_timeout: Duration, env: Arc<AgentEnv>) -> Self {
-        EvalTool::with_languages(default_timeout, env, vec![Language::Python, Language::Javascript])
+        EvalTool::with_languages(
+            default_timeout,
+            env,
+            vec![Language::Python, Language::Javascript],
+            Arc::new(Services::new()),
+        )
     }
 
-    pub fn with_languages(default_timeout: Duration, env: Arc<AgentEnv>, languages: Vec<Language>) -> Self {
+    /// `services` is where the `Luau` engine and `ToolCaller` are found, once the extensions that
+    /// provide them have loaded.
+    pub fn with_languages(
+        default_timeout: Duration,
+        env: Arc<AgentEnv>,
+        languages: Vec<Language>,
+        services: Arc<Services>,
+    ) -> Self {
+        let mut base = OPENING.to_string();
+        if languages
+            .iter()
+            .any(|l| matches!(l, Language::Python | Language::Javascript))
+        {
+            base.push_str("\n\n");
+            base.push_str(PROGRAMS);
+        }
         EvalTool {
             default_timeout,
             env,
             languages,
+            services,
+            base,
+            description: OnceLock::new(),
         }
     }
+
+    fn offers(&self, language: Language) -> bool {
+        self.languages.contains(&language)
+    }
+
+    /// The description with the Luau paragraph, when Luau is on and the engine is ready.
+    fn built(&self) -> Option<String> {
+        if !self.offers(Language::Luau) {
+            return Some(self.base.clone());
+        }
+        // Before the tool caller exists the extensions are still loading.
+        self.services.get::<ToolCaller>()?;
+        let engine = self.services.get::<Luau>()?;
+        let mut text = self.base.clone();
+        text.push_str("\n\n");
+        text.push_str(&engine.0.describe(&self.services, &[]));
+        Some(text)
+    }
+}
+
+/// The language an input names, when it names one `eval` knows.
+fn language_of(input: &Value) -> Option<Language> {
+    serde_json::from_value(input.get("language")?.clone()).ok()
 }
 
 #[derive(Deserialize)]
@@ -149,15 +228,13 @@ impl Tool for EvalTool {
     }
 
     fn description(&self) -> &str {
-        "Run a Python or JavaScript program and get what it printed. Use it for computing, parsing \
-         and transforming data, or trying out a snippet, where a script is easier than a shell \
-         command. Python runs with the `python` on PATH; JavaScript with `node`, else `bun`, else \
-         `deno` (top-level `await` works). Each call is a fresh process in the working directory: \
-         nothing is kept between calls, so keep what a later call needs in a file. The environment \
-         variable `AZAZEL_LOCAL` names the session's scratch directory, the files `local://<name>` \
-         addresses in read and write. stdout and stderr come back together with the exit code; long \
-         output keeps its first 100 and last 300 lines. It can do anything a program can, so it is \
-         approved like a shell command."
+        if let Some(built) = self.description.get() {
+            return built;
+        }
+        match self.built() {
+            Some(text) => self.description.get_or_init(|| text),
+            None => &self.base,
+        }
     }
 
     fn schema(&self) -> Value {
@@ -165,27 +242,38 @@ impl Tool for EvalTool {
             "type": "object",
             "properties": {
                 "language": {"type": "string", "enum": self.languages.iter().map(|l| l.key()).collect::<Vec<_>>()},
-                "code": {"type": "string", "description": "The whole program"},
-                "timeout_secs": {"type": "integer", "minimum": 1, "description": "Seconds the program may run; the shell tool's default when left out"}
+                "code": {"type": "string", "description": "The whole program or script"},
+                "timeout_secs": {"type": "integer", "minimum": 1, "description": "Python and JavaScript only: seconds the program may run; the shell tool's default when left out"}
             },
             "required": ["language", "code"]
         })
     }
 
-    fn access(&self, _: &Value) -> Access {
-        Access::Exec
+    /// A Luau script touches nothing itself, and each tool call it makes is judged on its own; a
+    /// Python or JavaScript program can do anything, so it is approved like a shell command.
+    fn access(&self, input: &Value) -> Access {
+        match language_of(input) {
+            Some(Language::Luau) => Access::Read,
+            _ => Access::Exec,
+        }
     }
 
     /// The language, so that a rule can allow one and not the other (`eval(python)`).
     fn subjects(&self, input: &Value) -> Vec<String> {
-        let language = input.get("language").and_then(Value::as_str).map(|language| {
-            match serde_json::from_value::<Language>(json!(language)) {
-                Ok(Language::Python) => "python".to_string(),
-                Ok(Language::Javascript) => "javascript".to_string(),
-                Err(_) => language.to_string(),
-            }
-        });
-        language.into_iter().collect()
+        match language_of(input) {
+            Some(language) => vec![language.key().to_string()],
+            None => input
+                .get("language")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// A Luau script waits for its tool calls and the order of an agent's calls matters to it.
+    fn concurrency_safe(&self, _: &Value) -> bool {
+        false
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
@@ -193,7 +281,20 @@ impl Tool for EvalTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        if !self.languages.contains(&input.language) {
+        if input.language == Language::Luau {
+            let Some(engine) = ctx.services.get::<Luau>() else {
+                return ToolOutput::error(
+                    "Luau is not in this build of azazel (it was built without the `lua` feature)",
+                );
+            };
+            if !self.offers(Language::Luau) {
+                return ToolOutput::error(
+                    "Luau is turned off for eval (tools.eval.luau = false in the configuration)",
+                );
+            }
+            return engine.0.run(input.code, ctx).await;
+        }
+        if !self.offers(input.language) {
             return ToolOutput::error(format!(
                 "{} is turned off for eval (tools.eval.{} = false in the configuration)",
                 input.language.name(),
@@ -302,10 +403,7 @@ mod tests {
         let services = Arc::new(Services::new());
         services.insert(session.clone());
         let tool = EvalTool::new(Duration::from_secs(60), Arc::new(AgentEnv::default()));
-        let language = match language {
-            Language::Python => "python",
-            Language::Javascript => "javascript",
-        };
+        let language = language.key();
         let out = tool
             .call(json!({"language": language, "code": code}), &ctx(&dir, services))
             .await;
@@ -351,6 +449,7 @@ mod tests {
             Duration::from_secs(5),
             Arc::new(AgentEnv::default()),
             vec![Language::Python],
+            Arc::new(Services::new()),
         );
         assert_eq!(tool.schema()["properties"]["language"]["enum"], json!(["python"]));
         let out = tool
@@ -360,5 +459,106 @@ mod tests {
             )
             .await;
         assert!(out.is_error && out.text_content().contains("tools.eval.javascript"));
+    }
+
+    fn offering(python: bool, javascript: bool, luau: bool) -> Vec<String> {
+        let languages = EvalLanguages::from_switches(python, javascript, luau).0;
+        let tool = EvalTool::with_languages(
+            Duration::from_secs(5),
+            Arc::new(AgentEnv::default()),
+            languages,
+            Arc::new(Services::new()),
+        );
+        tool.schema()["properties"]["language"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| key.as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_language_enum_lists_exactly_the_languages_that_are_on() {
+        assert_eq!(offering(true, false, false), ["python"]);
+        assert_eq!(offering(true, false, true), ["python", "luau"]);
+        assert_eq!(offering(true, true, true), ["python", "javascript", "luau"]);
+        assert_eq!(offering(false, false, true), ["luau"]);
+    }
+
+    #[test]
+    fn a_luau_script_is_a_read_and_a_program_is_an_exec() {
+        let tool = EvalTool::new(Duration::from_secs(5), Arc::new(AgentEnv::default()));
+        let luau = json!({"language": "lua", "code": "return 1"});
+        assert!(matches!(tool.access(&luau), Access::Read));
+        assert_eq!(tool.subjects(&luau), ["luau"]);
+        for language in ["python", "py", "javascript"] {
+            let input = json!({"language": language, "code": "1"});
+            assert!(matches!(tool.access(&input), Access::Exec), "{language}");
+        }
+        assert_eq!(tool.subjects(&json!({"language": "js"})), ["javascript"]);
+    }
+
+    #[tokio::test]
+    async fn luau_without_an_engine_says_the_build_lacks_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = EvalTool::with_languages(
+            Duration::from_secs(5),
+            Arc::new(AgentEnv::default()),
+            vec![Language::Python],
+            Arc::new(Services::new()),
+        );
+        let out = tool
+            .call(
+                json!({"language": "luau", "code": "return 1"}),
+                &ctx(temp.path(), Arc::new(Services::new())),
+            )
+            .await;
+        assert!(out.is_error && out.text_content().contains("without the `lua` feature"));
+    }
+
+    struct Engine;
+
+    #[async_trait]
+    impl azazel_core::toolcall::LuauEngine for Engine {
+        fn describe(&self, _: &Services, _: &[Arc<dyn Tool>]) -> String {
+            "LUAU PARAGRAPH".to_string()
+        }
+        async fn run(&self, code: String, _: &ToolCtx) -> ToolOutput {
+            ToolOutput::text(format!("ran {code}"))
+        }
+    }
+
+    #[tokio::test]
+    async fn the_description_is_built_once_the_engine_and_caller_exist_and_then_stays() {
+        let services = Arc::new(Services::new());
+        let tool = EvalTool::with_languages(
+            Duration::from_secs(5),
+            Arc::new(AgentEnv::default()),
+            vec![Language::Python, Language::Luau],
+            services.clone(),
+        );
+        let early = tool.description().to_string();
+        assert!(!early.contains("LUAU PARAGRAPH"));
+        services.insert(Arc::new(Luau(Arc::new(Engine))));
+        assert_eq!(
+            tool.description(),
+            early,
+            "without a tool caller nothing is built yet"
+        );
+        let registry = Arc::new(azazel_core::ext::ToolRegistry::default());
+        let gate: Arc<dyn azazel_agent::Gate> = Arc::new(azazel_agent::AllowAll);
+        services.insert(Arc::new(ToolCaller::new(registry, gate)));
+        let first = tool.description().to_string();
+        assert!(first.contains("LUAU PARAGRAPH") && first.starts_with(&early));
+        assert_eq!(tool.description(), first);
+
+        let temp = tempfile::tempdir().unwrap();
+        let out = tool
+            .call(
+                json!({"language": "luau", "code": "x"}),
+                &ctx(temp.path(), services),
+            )
+            .await;
+        assert_eq!(out.text_content(), "ran x");
     }
 }

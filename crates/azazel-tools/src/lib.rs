@@ -148,8 +148,8 @@ impl Extension for CoreToolsExt {
         r.tool(Arc::new(GrepTool));
         // The interpreter is looked for when the tool is called, so that one installed while the
         // session runs is used, and a missing one is named in the result.
-        // `[tools.eval]` arrives as a service the application puts in; without it both languages
-        // are on, and with none on the tool is not offered.
+        // `[tools.eval]` arrives as a service the application puts in; without it Python and
+        // JavaScript are on, and with none on the tool is not offered.
         let languages = r
             .services()
             .get::<eval::EvalLanguages>()
@@ -159,6 +159,7 @@ impl Extension for CoreToolsExt {
                 self.shell_timeout,
                 env.clone(),
                 languages,
+                r.services().clone(),
             )));
         }
         r.tool(Arc::new(ShellTool::new(

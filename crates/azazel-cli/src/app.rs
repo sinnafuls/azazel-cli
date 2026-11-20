@@ -413,6 +413,11 @@ fn select_tools(cli: &Cli, config: &Config, registry: &Registry) -> Result<()> {
         .map_err(|e| UsageError(e).into())
 }
 
+/// Whether `eval` offers Luau: `[tools.eval] luau` and a build that has the Luau engine.
+pub(crate) fn eval_luau(eval: &azazel_core::config::EvalConfig) -> bool {
+    eval.luau && cfg!(feature = "lua")
+}
+
 /// Text given inline, or read from the file named after an `@`.
 fn text_or_file(flag: &str, value: &str, cwd: &std::path::Path) -> Result<String> {
     match value.strip_prefix('@') {
@@ -772,6 +777,7 @@ impl App {
             .insert(Arc::new(azazel_tools::eval::EvalLanguages::from_switches(
                 config.tools.eval.python,
                 config.tools.eval.javascript,
+                eval_luau(&config.tools.eval),
             )));
         registry.load(&CoreToolsExt {
             shell: shell.clone(),

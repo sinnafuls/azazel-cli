@@ -306,6 +306,29 @@ async fn matcher_and_if_decide_which_calls_a_hook_sees() {
 }
 
 #[tokio::test]
+async fn an_if_rule_on_eval_selects_the_language() {
+    let bench = Bench::new();
+    let mut luau = matching("eval", command("echo 'no scripts' >&2; exit 2"));
+    luau.when = Some("eval(luau)".to_string());
+    let registry = bench.load(vec![("pre_tool_use", luau)]);
+
+    let cases = [
+        (json!({"language": "python", "code": "print(1)"}), None),
+        (json!({"language": "javascript", "code": "1"}), None),
+        (
+            json!({"language": "luau", "code": "return 1"}),
+            Some("no scripts"),
+        ),
+        (json!({"language": "lua", "code": "return 1"}), Some("no scripts")),
+    ];
+    for (input, reason) in cases {
+        let mut event = tool_call("eval", input.clone());
+        let expected = reason.map_or(Outcome::Continue, blocked);
+        assert_eq!(registry.bus.emit(&mut event).await, expected, "{input}");
+    }
+}
+
+#[tokio::test]
 async fn a_stop_hook_keeps_the_lead_going_once_and_sub_agents_have_their_own_event() {
     let bench = Bench::new();
     let once = "input=$(cat); printf '%s\\n' \"$input\" >> stop.log; \

@@ -639,6 +639,17 @@ fn subjects(tool: &str, input: &Value, posix: bool) -> Vec<String> {
             .map(|command| analyze(command, posix).subjects())
             .unwrap_or_default(),
         "read" | "write" | "edit" => field("path").map(str::to_string).into_iter().collect(),
+        // The language, as `eval(luau)` rules see it; the tool's own `subjects` canonicalises aliases.
+        "eval" => field("language")
+            .map(|language| match language {
+                "py" => "python",
+                "js" | "node" => "javascript",
+                "lua" => "luau",
+                other => other,
+            })
+            .map(str::to_string)
+            .into_iter()
+            .collect(),
         "web_fetch" | "web_grep" | "http" => field("url")
             .and_then(|url| reqwest::Url::parse(url).ok())
             .and_then(|url| url.host_str().map(|host| format!("domain:{host}")))
