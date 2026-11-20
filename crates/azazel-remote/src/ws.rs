@@ -76,7 +76,13 @@ fn stale_frame(line: &str, queued: usize) -> bool {
 
 /// Whether `line` tells of the agents' browser: its picture or its state (address and title).
 fn is_browser_line(line: &str) -> bool {
-    line.starts_with(r#"{"type":"browser_frame""#) || line.starts_with(r#"{"type":"browser_state""#)
+    // Most lines are neither: look at the text before parsing. The type is read from the parsed
+    // line, as a line that was redacted and written again need not start with it.
+    if !line.contains("\"browser_") {
+        return false;
+    }
+    serde_json::from_str::<Value>(line)
+        .is_ok_and(|frame| matches!(frame["type"].as_str(), Some("browser_frame" | "browser_state")))
 }
 
 /// Whether this device may be told what the agents' browser does: a control link, or a view link
@@ -273,5 +279,14 @@ mod tests {
         ));
         assert!(is_browser_line(r#"{"type":"browser_frame","tab":"t"}"#));
         assert!(!is_browser_line(r#"{"type":"stream","text":"browser_state"}"#));
+        // Whatever order the fields are in, and with whitespace.
+        assert!(is_browser_line(
+            r#"{"running":true,"type":"browser_state","url":"https://a.test"}"#
+        ));
+        assert!(is_browser_line(r#"{ "type": "browser_frame", "tab": "t" }"#));
+        assert!(!is_browser_line(
+            r#"{"running":true,"type":"stream","text":"\"browser_state\""}"#
+        ));
+        assert!(!is_browser_line("not json browser_state"));
     }
 }
