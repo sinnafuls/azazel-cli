@@ -724,9 +724,9 @@ async fn a_watched_tab_sends_pictures_and_a_taken_over_browser_holds_the_agent_u
     assert_eq!(session.states().borrow().watchers, 1);
 
     // One device holds the browser at a time.
-    session.take("phone").unwrap();
+    session.take("phone", false).unwrap();
     assert_eq!(
-        session.take("laptop").unwrap_err(),
+        session.take("laptop", false).unwrap_err(),
         "another device has the browser"
     );
     assert!(session.states().borrow().held);

@@ -2078,7 +2078,7 @@ impl BrowserSession {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
 
@@ -2265,11 +2265,20 @@ mod tests {
         session.take("a", false).unwrap();
         drop(lock);
         pause().await;
-        assert!(!acting.is_finished(), "the action ran while a device held the browser");
+        assert!(
+            !acting.is_finished(),
+            "the action ran while a device held the browser"
+        );
         session.give_back("a");
-        let done = tokio::time::timeout(Duration::from_secs(5), acting).await.unwrap().unwrap();
-        assert_eq!(text(done.unwrap()), "no tabs are open
-");
+        let done = tokio::time::timeout(Duration::from_secs(5), acting)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            text(done.unwrap()),
+            "no tabs are open
+"
+        );
     }
 
     #[tokio::test]
@@ -2289,7 +2298,10 @@ mod tests {
         assert!(!session.states().borrow().held);
         let note = session.user_note().unwrap();
         assert!(note.contains("came back to you"), "{note}");
-        assert_eq!(session.user_input("a", LiveInput::Back).await.unwrap_err(), "take the browser over first");
+        assert_eq!(
+            session.user_input("a", LiveInput::Back).await.unwrap_err(),
+            "take the browser over first"
+        );
     }
 
     #[tokio::test]
@@ -2316,7 +2328,10 @@ mod tests {
     async fn another_device_takes_the_browser_only_by_force() {
         let session = idle_session();
         session.take("a", false).unwrap();
-        assert_eq!(session.take("b", false).unwrap_err(), "another device has the browser");
+        assert_eq!(
+            session.take("b", false).unwrap_err(),
+            "another device has the browser"
+        );
         assert!(session.holds("a"));
         session.take("b", true).unwrap();
         assert!(session.holds("b") && !session.holds("a"));
@@ -2335,7 +2350,10 @@ mod tests {
     async fn signing_in_is_refused_while_another_device_holds_the_browser() {
         let session = idle_session();
         session.take("a", false).unwrap();
-        assert_eq!(session.sign_in("b", None).await.unwrap_err(), "another device has the browser");
+        assert_eq!(
+            session.sign_in("b", None).await.unwrap_err(),
+            "another device has the browser"
+        );
         assert!(session.holds("a"));
     }
 

@@ -258,6 +258,7 @@ export type Request1 =
 	| {
 			type: 'browser_take';
 			on: boolean;
+			force?: boolean;
 	  }
 	| {
 			type: 'browser_input';
