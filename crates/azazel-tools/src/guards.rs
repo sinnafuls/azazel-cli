@@ -334,30 +334,54 @@ fn is_prose(path: &Path) -> bool {
 /// next change. Registered as a service for the status line and the RPC state; unlike the
 /// done-check it spans prompts, and it counts the changes and checks of every agent.
 #[derive(Default)]
-pub struct Verification(Mutex<Option<bool>>);
+pub struct Verification(Mutex<Progress>);
+
+#[derive(Default)]
+struct Progress {
+    /// `None` while nothing has been changed, else whether a check ran after the last change.
+    checked: Option<bool>,
+    /// How many changes were made, to tell a check that ran over all of them from one that
+    /// another agent's change overtook.
+    edits: u64,
+}
 
 impl Verification {
     /// `None` while nothing has been changed, else whether a check ran after the last change.
     pub fn state(&self) -> Option<bool> {
-        *locked(&self.0)
+        locked(&self.0).checked
     }
 
     /// A file was changed.
     fn edited(&self) {
-        *locked(&self.0) = Some(false);
+        let mut checks = locked(&self.0);
+        checks.checked = Some(false);
+        checks.edits += 1;
     }
 
-    /// A check ran. It says nothing about code that was never changed.
-    fn checked(&self) {
-        let mut state = locked(&self.0);
-        if state.is_some() {
-            *state = Some(true);
+    /// The number of changes so far: taken when a check starts, for [`Verification::checked`].
+    fn edits(&self) -> u64 {
+        locked(&self.0).edits
+    }
+
+    /// A check ran. It says nothing about code that was never changed, nor about a change made
+    /// after the check began (`since` is [`Verification::edits`] when it did): another agent may
+    /// have edited meanwhile, and the check did not see that. Returns whether it counted.
+    fn checked(&self, since: u64) -> bool {
+        let mut checks = locked(&self.0);
+        if checks.edits != since {
+            return false;
         }
+        if checks.checked.is_some() {
+            checks.checked = Some(true);
+        }
+        true
     }
 
     /// A session starts: nothing has been changed in it.
     fn reset(&self) {
-        *locked(&self.0) = None;
+        let mut checks = locked(&self.0);
+        checks.checked = None;
+        checks.edits += 1;
     }
 }
 
@@ -365,7 +389,8 @@ impl Verification {
 #[derive(Default)]
 struct Prompt {
     /// The `shell` commands being run, normalised: `(agent id, call id)`.
-    calls: HashMap<(String, String), String>,
+    /// With the number of changes made when the call began.
+    calls: HashMap<(String, String), (String, u64)>,
     /// The files changed since a check last ran, in the order they were first changed.
     unverified: Vec<PathBuf>,
     /// How often in a row each command of each agent has failed: `(agent id, command)`.
@@ -393,10 +418,11 @@ impl Guards {
         details: Option<&Value>,
     ) -> Option<String> {
         let mut prompt = locked(&self.prompt);
-        let command = prompt.calls.remove(&(agent.to_string(), call_id.to_string()))?;
-        if is_check(&command, &self.verify) {
+        let (command, edits) = prompt.calls.remove(&(agent.to_string(), call_id.to_string()))?;
+        // A failed check still counts: it looked at the code. One that another agent's edit
+        // overtook did not look at that edit, which stays open.
+        if is_check(&command, &self.verify) && self.verified.checked(edits) {
             prompt.unverified.clear();
-            self.verified.checked();
         }
         if self.stuck_after == 0 {
             return None;
@@ -472,9 +498,10 @@ impl EventHandler for Guards {
                 ..
             } if tool == "shell" => {
                 if let Some(command) = input.get("command").and_then(Value::as_str) {
+                    let edits = self.verified.edits();
                     locked(&self.prompt)
                         .calls
-                        .insert((agent.id.clone(), call_id.clone()), normalise(command));
+                        .insert((agent.id.clone(), call_id.clone()), (normalise(command), edits));
                 }
             }
             Event::ToolResult {
@@ -491,8 +518,10 @@ impl EventHandler for Guards {
             // A goal that was claimed done has had the project's checks and the verifier run on
             // it, whatever they said.
             Event::ToolResult { tool, .. } if tool == "goal_done" => {
-                locked(&self.prompt).unverified.clear();
-                self.verified.checked();
+                let mut prompt = locked(&self.prompt);
+                prompt.unverified.clear();
+                let edits = self.verified.edits();
+                self.verified.checked(edits);
             }
             Event::FileChanged { path, .. } if !is_prose(path) => {
                 self.verified.edited();

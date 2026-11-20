@@ -470,3 +470,48 @@ async fn the_session_knows_whether_its_changes_were_checked_whichever_guards_are
         assert_eq!(state(), None);
     }
 }
+
+#[tokio::test]
+async fn a_check_that_an_edit_by_another_agent_overtook_does_not_clear_that_edit() {
+    let bench = bench(guards());
+    let lead = agent("lead", 0);
+    let coder = agent("coder-1", 1);
+    let state = || bench.registry.services.get::<Verification>().unwrap().state();
+    bench.prompt().await;
+    bench.changed(&lead, "src/a.rs").await;
+
+    // The lead's check starts, the coder edits another file, then the check ends.
+    bench
+        .emit(Event::ToolCall {
+            agent: lead.clone(),
+            call_id: "c1".into(),
+            tool: "shell".into(),
+            input: json!({ "command": "cargo test" }),
+            skip_prompt: false,
+        })
+        .await;
+    bench.changed(&coder, "src/b.rs").await;
+    bench
+        .emit(Event::ToolResult {
+            agent: lead.clone(),
+            call_id: "c1".into(),
+            tool: "shell".into(),
+            output: ToolOutput {
+                content: vec![Block::text(
+                    "out
+exit code: 0",
+                )],
+                is_error: false,
+                details: Some(json!({ "exit_code": 0, "timed_out": false })),
+            },
+        })
+        .await;
+    // The check never ran over `b.rs`: the change is still open, and the lead is asked.
+    assert_eq!(state(), Some(false));
+    let asked = bench.lead_stops().await.expect("b.rs was never checked");
+    assert!(asked.contains("b.rs"), "{asked}");
+
+    // A check that starts after the edit counts, failing or not.
+    bench.shell(&lead, "c2", "cargo test", 1).await;
+    assert_eq!(state(), Some(true));
+}
