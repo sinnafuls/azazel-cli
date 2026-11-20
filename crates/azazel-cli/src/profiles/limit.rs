@@ -214,7 +214,15 @@ impl ProfileSwitcher {
         let lead_handle = team.as_ref().and_then(|team| team.lead());
         let session = self.services.get::<SessionStore>();
         let mut state = self.state();
-        // One switch per window.
+        // One switch per window. A window that has reset by the clock is over even when no
+        // prompt came to `at_turn_boundary` to say so (a long run), so a limit after it is new.
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| (self.clock)() >= active.until)
+        {
+            state.active = None;
+        }
         if state.active.is_some() {
             return None;
         }
@@ -831,6 +839,19 @@ mod tests {
         let book =
             crate::profiles::Book::new(Vec::new(), Vec::new(), Arc::new(|_: &str| Access::Ready), None);
         assert_eq!(book.current(&session), None);
+    }
+
+    #[test]
+    fn a_switch_whose_window_has_reset_does_not_block_the_next_limit_in_a_long_run() {
+        let bench = bench("b", ProfileReset::Ask, Some("a"), |_| true);
+        hit(&bench, &limit(60)).unwrap();
+        // The user moved back to profile a by hand; no prompt came since, so nothing cleared
+        // the switch.
+        bench.router.set_role("default", chain(&["acme/a"]));
+        bench.switcher.state().current = Some("a".to_string());
+        assert_eq!(hit(&bench, &limit(60)), None, "still inside the window");
+        bench.ahead.store(61, Ordering::SeqCst);
+        assert!(hit(&bench, &limit(7200)).is_some(), "the window is over");
     }
 
     #[test]
