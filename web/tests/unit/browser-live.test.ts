@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import BrowserPanel from '$lib/components/BrowserPanel.svelte';
-import { BrowserLive, type BrowserCommand } from '$lib/browser/live.svelte';
+import { BrowserLive, HOLD_HEARTBEAT_MS, type BrowserCommand } from '$lib/browser/live.svelte';
 import { CommandError } from '$lib/rpc/client';
 import { toasts } from '$lib/toasts.svelte';
 import type { BrowserState, FrameOf } from '$lib/protocol';
@@ -55,6 +55,31 @@ afterEach(() => {
 	cleanup();
 	toasts.items = [];
 	setVisible(true);
+});
+
+describe('holding the browser', () => {
+	it('tells the host now and then that it is still there, only while it holds', async () => {
+		vi.useFakeTimers();
+		try {
+			const { live, sent } = host();
+			live.attached();
+			await vi.advanceTimersByTimeAsync(0);
+			const takes = () => sent.filter((c) => c.type === 'browser_take').length;
+			await vi.advanceTimersByTimeAsync(HOLD_HEARTBEAT_MS * 2);
+			expect(takes()).toBe(0);
+			await live.take(true);
+			expect(takes()).toBe(1);
+			await vi.advanceTimersByTimeAsync(HOLD_HEARTBEAT_MS);
+			expect(takes()).toBe(2);
+			await vi.advanceTimersByTimeAsync(HOLD_HEARTBEAT_MS);
+			expect(takes()).toBe(3);
+			await live.take(false);
+			await vi.advanceTimersByTimeAsync(HOLD_HEARTBEAT_MS * 3);
+			expect(takes()).toBe(4);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 describe('the subscription to pictures', () => {

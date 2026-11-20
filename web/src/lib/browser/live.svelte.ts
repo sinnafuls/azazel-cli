@@ -21,6 +21,11 @@ export interface Picture {
 
 /** The server marks what it refuses a device for its access with this `code`. */
 const REFUSED = 'refused';
+/**
+ * How often a device that holds the browser tells the host it is still there. The host lets go of
+ * a hold that has been silent for ten minutes, and reading a page sends nothing.
+ */
+export const HOLD_HEARTBEAT_MS = 3 * 60 * 1000;
 const said = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export class BrowserLive {
@@ -45,6 +50,7 @@ export class BrowserLive {
 	/** What the host was told last, and took. */
 	private subscribed = false;
 	private refused = false;
+	private heartbeat: ReturnType<typeof setInterval> | null = null;
 
 	constructor(private readonly send: (c: BrowserCommand) => Promise<BrowserState | null>) {}
 
@@ -83,12 +89,30 @@ export class BrowserLive {
 		this.subscribed = this.watching = false;
 		const s = untrack(() => this.state);
 		if (s?.held_by_you) this.state = { ...s, held: false, held_by_you: false };
+		this.keepHolding(false);
+	}
+
+	/** While this device holds the browser, takes it over again now and then: that renews the hold. */
+	private keepHolding(holding: boolean) {
+		if (!holding) {
+			if (this.heartbeat !== null) clearInterval(this.heartbeat);
+			this.heartbeat = null;
+		} else if (this.heartbeat === null) {
+			this.heartbeat = setInterval(() => {
+				if (this.connected)
+					void this.send({ type: 'browser_take', on: true }).then(
+						(s) => s && this.onState(s),
+						() => {}
+					);
+			}, HOLD_HEARTBEAT_MS);
+		}
 	}
 
 	onState(s: BrowserState) {
 		// A frame carries its `type` and its place in the log; the state is the rest.
 		const { type: _type, at: _at, ...state } = s as BrowserState & { type?: string; at?: number };
 		this.state = state;
+		this.keepHolding(!!state.held_by_you);
 		if (!state.running) this.picture = null;
 		// A browser that starts is a reason to ask again for what was not given before.
 		else if (this.wanted && !this.subscribed) void this.sync();

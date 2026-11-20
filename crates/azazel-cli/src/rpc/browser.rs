@@ -399,6 +399,8 @@ mod real {
                     command,
                     reply,
                 } => {
+                    // Anything a holder asks of the browser shows it is there.
+                    session.renew(&holder);
                     let outcome = match command {
                         Command::BrowserWatch { on } => {
                             if set(&holder, on) {

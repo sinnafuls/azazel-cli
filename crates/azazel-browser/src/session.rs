@@ -1688,6 +1688,9 @@ impl BrowserSession {
     }
 
     async fn sign_in_with(&self, holder: &str, url: Option<&str>, headless: bool) -> Result<(), String> {
+        // Signing in by hand can take longer than the lease: it counts as the holder using the
+        // browser, and again when the window is up.
+        self.renew(holder);
         if let Some(url) = url
             && page::host_of(url).is_none()
             && url != "about:blank"
@@ -1700,6 +1703,7 @@ impl BrowserSession {
             return Err(ANOTHER_HOLDS.to_string());
         }
         self.show(&mut state, headless, url, None, "").await?;
+        self.renew(holder);
         // The browser may be another one now: what the agents were shown is not what is there.
         if let Some(running) = state.as_mut() {
             running.taken = None;
@@ -1808,6 +1812,12 @@ impl BrowserSession {
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .map(|hold| hold.holder.clone())
+    }
+
+    /// Keeps the hold of `holder`, if it has one, for another lease: for a client that is using
+    /// the browser without sending input (reading the page, signing in by hand).
+    pub fn renew(&self, holder: &str) {
+        self.touch(holder);
     }
 
     /// Notes that `holder` did something with the browser, which keeps its hold.
@@ -2395,6 +2405,31 @@ mod tests {
             session.user_input("a", LiveInput::Back).await.unwrap_err(),
             "take the browser over first"
         );
+    }
+
+    #[tokio::test]
+    async fn a_holder_that_signs_in_or_renews_keeps_its_hold_past_the_lease() {
+        let session = Arc::new(
+            Arc::into_inner(open_session())
+                .unwrap()
+                .with_lease(Duration::from_millis(600)),
+        );
+        session.take("a", false).unwrap();
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            // A sign-in the page refuses still shows the holder is there.
+            session.sign_in("a", Some("ftp://nowhere")).await.unwrap_err();
+            assert!(session.holds("a"));
+        }
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            session.renew("a");
+            assert!(session.holds("a"));
+        }
+        // A client that is not the holder renews nothing.
+        session.renew("b");
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(!session.holds("a"));
     }
 
     #[tokio::test]
