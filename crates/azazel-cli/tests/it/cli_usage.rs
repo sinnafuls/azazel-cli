@@ -72,6 +72,64 @@ fn config_set_writes_the_home_config_and_get_says_which_layer_sets_the_value() {
 }
 
 #[test]
+fn config_unset_takes_the_entry_out_of_the_config_where_set_with_an_empty_value_writes_one() {
+    let sandbox = Sandbox::new();
+    assert_eq!(
+        sandbox
+            .azazel(&["config", "set", "retry.max_attempts", "5"])
+            .status
+            .code(),
+        Some(0)
+    );
+    assert!(
+        sandbox.home_config().contains("max_attempts = 5"),
+        "{}",
+        sandbox.home_config()
+    );
+
+    let unset = sandbox.azazel(&["config", "unset", "retry.max_attempts"]);
+    assert_eq!(unset.status.code(), Some(0), "{}", stderr(&unset));
+    assert!(
+        !sandbox.home_config().contains("max_attempts"),
+        "{}",
+        sandbox.home_config()
+    );
+    let after = sandbox.azazel(&["config", "get", "retry.max_attempts"]);
+    assert!(stderr(&after).contains("the default"), "{}", stderr(&after));
+
+    // Nothing left to remove is a failure that says so; an unknown key is a usage error.
+    let again = sandbox.azazel(&["config", "unset", "retry.max_attempts"]);
+    assert_eq!(again.status.code(), Some(1), "{}", stderr(&again));
+    let unknown = sandbox.azazel(&["config", "unset", "nonsense.key"]);
+    assert_eq!(unknown.status.code(), Some(2), "{}", stderr(&unknown));
+
+    // `--project` takes it out of the project's config only, in a trusted project.
+    assert_eq!(
+        sandbox
+            .azazel(&["config", "set", "retry.max_attempts", "5"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let set = sandbox.azazel(&["--trust", "config", "set", "--project", "retry.max_attempts", "4"]);
+    assert_eq!(set.status.code(), Some(0), "{}", stderr(&set));
+    let refused = sandbox.azazel(&["config", "unset", "--project", "retry.max_attempts"]);
+    assert_eq!(refused.status.code(), Some(2), "{}", stderr(&refused));
+    let project = sandbox.azazel(&["--trust", "config", "unset", "--project", "retry.max_attempts"]);
+    assert_eq!(project.status.code(), Some(0), "{}", stderr(&project));
+    assert!(
+        !sandbox.project_config().contains("max_attempts"),
+        "{}",
+        sandbox.project_config()
+    );
+    assert!(
+        sandbox.home_config().contains("max_attempts = 5"),
+        "{}",
+        sandbox.home_config()
+    );
+}
+
+#[test]
 fn config_set_refuses_an_unknown_key_a_bad_value_and_an_untrusted_project() {
     let sandbox = Sandbox::new();
     for args in [

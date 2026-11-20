@@ -283,10 +283,19 @@ pub enum ConfigAction {
     Set {
         /// The setting, as `table.key`
         key: String,
-        /// The value; a list is comma-separated or written as a TOML array. Empty puts the
-        /// setting back on its default
+        /// The value; a list is comma-separated or written as a TOML array. An empty value is
+        /// not "back to the default": to take the setting out of the config, use `config unset`
         value: String,
         /// Write this project's config instead of the home config (a trusted project only)
+        #[arg(long)]
+        project: bool,
+    },
+    /// Take a setting (or one entry of a table) out of the home config, so that it falls back
+    /// to the next config file or its default: `unset retry.max_attempts`
+    Unset {
+        /// The setting, as `table.key`
+        key: String,
+        /// Take it out of this project's config instead of the home config (a trusted project only)
         #[arg(long)]
         project: bool,
     },

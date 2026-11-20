@@ -1,4 +1,4 @@
-//! `azazel config get` and `azazel config set`: one setting at a time, through the store the
+//! `azazel config get`, `set` and `unset`: one setting at a time, through the store the
 //! settings screen uses, so a value is checked and written the same way.
 
 use azazel_core::config_keys;
@@ -22,6 +22,7 @@ pub fn run(action: &ConfigAction, cli: &Cli, paths: &Paths, trusted: bool) -> u8
     match action {
         ConfigAction::Get { key } => get(&store, key),
         ConfigAction::Set { key, value, project } => set(&mut store, key, value, *project),
+        ConfigAction::Unset { key, project } => unset(&mut store, key, *project),
     }
 }
 
@@ -65,18 +66,65 @@ fn get(store: &Store, key: &str) -> u8 {
     EXIT_OK
 }
 
-fn set(store: &mut Store, key: &str, typed: &str, project: bool) -> u8 {
-    if project {
-        if !store.can_project() {
-            eprintln!(
-                "azazel: changes go to the project's config only in a trusted project: pass --trust, or trust it with /trust in the UI"
-            );
-            return EXIT_USAGE;
+/// Points the store at the project's config for `--project`; the exit status when it cannot.
+fn use_project(store: &mut Store) -> Result<(), u8> {
+    if !store.can_project() {
+        eprintln!(
+            "azazel: changes go to the project's config only in a trusted project: pass --trust, or trust it with /trust in the UI"
+        );
+        return Err(EXIT_USAGE);
+    }
+    if let Err(why) = store.toggle_scope() {
+        eprintln!("azazel: {why}");
+        return Err(EXIT_USAGE);
+    }
+    Ok(())
+}
+
+/// Takes `key` out of the config file `set` would write, so the setting falls back to the next
+/// layer or its default; `set` with an empty value writes an empty string instead.
+fn unset(store: &mut Store, key: &str, project: bool) -> u8 {
+    if project && let Err(code) = use_project(store) {
+        return code;
+    }
+    let removed = if let Some(row) = setting(key) {
+        match row.kind {
+            Kind::Role => Err(format!(
+                "{key} is a model role: use `azazel roles clear {}`",
+                crate::settings::store::role_name(row)
+            )),
+            Kind::Table => Err(format!(
+                "{key} is a table, unset one entry at a time: `azazel config unset {key}.<name>`"
+            )),
+            _ => store.reset(row),
         }
-        if let Err(why) = store.toggle_scope() {
+    } else if let Some((parent, name)) = key.rsplit_once('.')
+        && let Some(row) = setting(parent)
+        && row.kind == Kind::Table
+        && !name.is_empty()
+    {
+        store.remove_entry(row, name)
+    } else {
+        eprintln!(
+            "azazel: `{key}` is not a setting that can be unset here; the settings are written as table.key (see /settings)"
+        );
+        return EXIT_USAGE;
+    };
+    match removed {
+        Ok(line) => {
+            println!("{line}");
+            EXIT_OK
+        }
+        Err(why) => {
             eprintln!("azazel: {why}");
-            return EXIT_USAGE;
+            EXIT_FAILED
         }
+    }
+}
+
+fn set(store: &mut Store, key: &str, typed: &str, project: bool) -> u8 {
+    if project && let Err(code) = use_project(store) {
+        return code;
     }
     let written = match target(key, typed) {
         Ok(Target::Setting(row, value)) => {
