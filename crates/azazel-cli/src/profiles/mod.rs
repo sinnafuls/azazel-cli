@@ -360,8 +360,10 @@ pub struct Book {
     access: AccessCheck,
     /// The profile `--profile` named, which is the current one until a switch is recorded.
     launch: Option<String>,
-    /// `[profiles] on_limit`, which an edit must leave usable.
+    /// `[profiles] on_limit` as it was at the start, which an edit must leave usable.
     on_limit: String,
+    /// Reads `[profiles] on_limit` as the configuration has it now; `None` when it cannot be read.
+    on_limit_now: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
     /// A project's config sets `profiles.disabled`, which replaces the home list in this project.
     project_disables: bool,
 }
@@ -391,6 +393,7 @@ impl Book {
             access,
             launch,
             on_limit: String::new(),
+            on_limit_now: None,
             project_disables: false,
         }
     }
@@ -404,6 +407,22 @@ impl Book {
     pub fn with_on_limit(mut self, on_limit: &str) -> Book {
         self.on_limit = on_limit.trim().to_string();
         self
+    }
+
+    /// Makes [`Book::on_limit`] ask `now` for the setting, so that a change made in `/settings`
+    /// since the start counts.
+    pub fn with_on_limit_now(mut self, now: Arc<dyn Fn() -> Option<String> + Send + Sync>) -> Book {
+        self.on_limit_now = Some(now);
+        self
+    }
+
+    /// `[profiles] on_limit`: the profile a usage limit moves the lead to, empty for none. The
+    /// value in the configuration now, else the one the session started with.
+    pub fn on_limit(&self) -> String {
+        self.on_limit_now
+            .as_ref()
+            .and_then(|now| now())
+            .map_or_else(|| self.on_limit.clone(), |name| name.trim().to_string())
     }
 
     fn lock(&self) -> MutexGuard<'_, Held> {
@@ -521,12 +540,13 @@ impl Book {
         current: &BTreeMap<String, Vec<ModelSpec>>,
         on: Option<&str>,
     ) -> Result<Edited, String> {
+        let on_limit = self.on_limit();
         let mut held = self.lock();
         let change = edit::plan(
             &edit::Known {
                 profiles: &held.profiles,
                 disabled: &held.disabled,
-                on_limit: &self.on_limit,
+                on_limit: &on_limit,
                 current,
             },
             edit,

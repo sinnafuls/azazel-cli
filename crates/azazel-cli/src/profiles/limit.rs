@@ -60,7 +60,6 @@ struct State {
 
 /// Switches the lead to `[profiles] on_limit` on a usage limit and back after the reset.
 pub struct ProfileSwitcher {
-    on_limit: String,
     on_reset: ProfileReset,
     /// The profiles as the editor leaves them: looked up when a switch happens, so that a change
     /// made since the start counts.
@@ -135,7 +134,6 @@ const CACHE_COST: &str =
 
 impl ProfileSwitcher {
     pub fn new(
-        on_limit: &str,
         on_reset: ProfileReset,
         book: Arc<Book>,
         services: Arc<Services>,
@@ -149,7 +147,6 @@ impl ProfileSwitcher {
             })
         };
         ProfileSwitcher {
-            on_limit: on_limit.trim().to_string(),
             on_reset,
             book,
             services,
@@ -203,12 +200,22 @@ impl ProfileSwitcher {
     /// the lead was moved to the `on_limit` profile: the request goes again, to the lead's role.
     pub fn on_limit(&self, agent: &AgentInfo, chain: &[ModelSpec], error: &AiError) -> Option<Recovery> {
         // Sub-agents keep their models and fall back under their own role chains.
-        if agent.depth != 0 || self.on_limit.is_empty() {
+        let on_limit = self.book.on_limit();
+        if agent.depth != 0 || on_limit.is_empty() {
             return None;
         }
         let (until, known) = limit_window(error)?;
         let router = self.services.get::<Router>()?;
-        let target = self.profile(&self.on_limit)?;
+        let Some(target) = self.profile(&on_limit) else {
+            announce(
+                &self.services,
+                Level::Warn,
+                &format!(
+                    "usage limit reached; not switching: profiles.on_limit names `{on_limit}`, which is not a profile (it may have been deleted or disabled)"
+                ),
+            );
+            return None;
+        };
         let target = &target;
         let team = self.services.get::<Team>();
         let lead_handle = team.as_ref().and_then(|team| team.lead());
@@ -228,6 +235,15 @@ impl ProfileSwitcher {
         }
         let from = Self::current(&state, session.as_deref());
         if from.as_deref() == Some(target.name.as_str()) {
+            drop(state);
+            announce(
+                &self.services,
+                Level::Warn,
+                &format!(
+                    "usage limit reached; not switching: the session is on profile {} already, which is profiles.on_limit",
+                    target.name
+                ),
+            );
             return None;
         }
         // The target has to offer a model the failed request did not already try.
@@ -238,6 +254,15 @@ impl ProfileSwitcher {
             .iter()
             .any(|model| !tried.iter().any(|tried| tried.key() == model.key()))
         {
+            drop(state);
+            announce(
+                &self.services,
+                Level::Warn,
+                &format!(
+                    "usage limit reached; not switching to profile {}: it has no model the failed request did not try",
+                    target.name
+                ),
+            );
             return None;
         }
         let usable = self.book.usability(target);
@@ -556,14 +581,8 @@ mod tests {
             )
             .with_on_limit(on_limit),
         );
-        let switcher = ProfileSwitcher::new(
-            on_limit,
-            on_reset,
-            book.clone(),
-            services,
-            current.map(str::to_string),
-        )
-        .with_clock(Arc::new(move || now() + offset.load(Ordering::SeqCst)));
+        let switcher = ProfileSwitcher::new(on_reset, book.clone(), services, current.map(str::to_string))
+            .with_clock(Arc::new(move || now() + offset.load(Ordering::SeqCst)));
         let bench = Bench {
             switcher,
             router,
@@ -702,6 +721,53 @@ mod tests {
     fn a_profile_with_the_same_models_is_not_a_way_out() {
         let bench = bench("a", ProfileReset::Ask, None, |_| true);
         assert_eq!(hit(&bench, &limit(7200)), None);
+        let said = told(&bench);
+        assert!(said.len() == 1 && said[0].contains("not switching"), "{said:?}");
+    }
+
+    #[test]
+    fn a_limit_that_cannot_switch_says_why() {
+        // `on_limit` names a profile that does not exist (it was deleted since the start).
+        let unknown = bench("nope", ProfileReset::Ask, None, |_| true);
+        assert_eq!(hit(&unknown, &limit(7200)), None);
+        let said = told(&unknown);
+        assert!(said.len() == 1 && said[0].contains("`nope`"), "{said:?}");
+        // The session is on the `on_limit` profile already.
+        let same = bench("a", ProfileReset::Ask, Some("a"), |_| true);
+        assert_eq!(hit(&same, &limit(7200)), None);
+        assert!(told(&same)[0].contains("already"), "{:?}", told(&same));
+        // No setting, no switch, and nothing to say.
+        let off = bench("", ProfileReset::Ask, None, |_| true);
+        assert_eq!(hit(&off, &limit(7200)), None);
+        assert!(told(&off).is_empty());
+    }
+
+    #[test]
+    fn the_on_limit_a_setting_change_made_since_the_start_is_what_the_editor_protects() {
+        let home = tempfile::tempdir().unwrap();
+        let current = Arc::new(Mutex::new("b".to_string()));
+        let reader = current.clone();
+        let book = Book::new(
+            vec![profile("a", "acme/a"), profile("b", "acme/b")],
+            Vec::new(),
+            Arc::new(|_: &str| Access::Ready),
+            None,
+        )
+        .with_on_limit("b")
+        .with_on_limit_now(Arc::new(move || Some(reader.lock().unwrap().clone())));
+        let delete = |name: &str| {
+            book.edit(
+                &home.path().join("config.toml"),
+                &crate::profiles::edit::Edit::Delete(name.to_string()),
+                &BTreeMap::new(),
+                None,
+            )
+        };
+        // `/settings` moved `on_limit` from b to a: b is free to go, a is the one that stays.
+        *current.lock().unwrap() = "a".to_string();
+        assert!(delete("a").unwrap_err().contains("on_limit"));
+        // b is no longer protected (it is not a saved profile here, which is another refusal).
+        assert!(!delete("b").unwrap_err().contains("on_limit"));
     }
 
     #[test]

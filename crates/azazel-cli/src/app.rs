@@ -868,10 +868,17 @@ impl App {
                     cli.profile.clone(),
                 )
                 .with_on_limit(&config.profiles.on_limit)
+                .with_on_limit_now({
+                    let (paths, options) = (paths.clone(), options.clone());
+                    Arc::new(move || {
+                        Config::load(&paths, &options)
+                            .ok()
+                            .map(|loaded| loaded.config.profiles.on_limit)
+                    })
+                })
                 .with_project_disables(crate::profiles::project_sets_disabled(&loaded.layers)),
             ),
             home_config: paths.home_config(),
-            on_limit: config.profiles.on_limit.clone(),
             on_reset: config.profiles.on_reset,
             started_on: cli.profile.clone(),
         })?;

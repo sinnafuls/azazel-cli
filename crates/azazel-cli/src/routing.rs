@@ -342,8 +342,7 @@ pub struct RoutingExt {
     /// The profiles and which of them can be used; also a service for RPC and the terminal.
     pub book: Arc<Book>,
     pub home_config: PathBuf,
-    /// `[profiles] on_limit` and `on_reset`.
-    pub on_limit: String,
+    /// `[profiles] on_reset`; `on_limit` is the book's.
     pub on_reset: azazel_core::config::ProfileReset,
     /// `--profile`: the profile the run starts on.
     pub started_on: Option<String>,
@@ -370,7 +369,6 @@ impl Extension for RoutingExt {
             });
         }
         let switcher = Arc::new(crate::profiles::limit::ProfileSwitcher::new(
-            &self.on_limit,
             self.on_reset,
             self.book.clone(),
             r.services().clone(),
