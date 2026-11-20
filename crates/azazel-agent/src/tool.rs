@@ -71,7 +71,10 @@ impl Deferral {
 /// agent can still call one directly, and scripts reach it through `ToolCaller`. The answer must
 /// not change during a session, or the provider's prompt cache is lost with every change.
 #[derive(Clone)]
-pub struct CodeFirst(pub Arc<dyn Fn(&AgentInfo, &str) -> bool + Send + Sync>);
+pub struct CodeFirst(pub Arc<HidesTool>);
+
+/// Whether a tool, by name, is kept out of an agent's requests.
+pub type HidesTool = dyn Fn(&AgentInfo, &str) -> bool + Send + Sync;
 
 impl CodeFirst {
     /// Whether tool `name` is kept out of the requests of `agent`.
