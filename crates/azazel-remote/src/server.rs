@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 use crate::auth::Auth;
 use crate::limits::{Clock, Connections, SystemClock, Window, since_epoch};
 use crate::policy::Grants;
+use crate::ws::Keepalive;
 use crate::{Access, Link, Options, Sessions};
 
 /// How many ports from the configured one are tried when it is taken.
@@ -69,6 +70,7 @@ pub(crate) struct Shared {
     /// The sessions each device started lately.
     pub starts: Mutex<HashMap<String, Window>>,
     pub cancel: CancellationToken,
+    pub keepalive: Keepalive,
 }
 
 impl Shared {
@@ -159,13 +161,31 @@ pub struct Server {
 impl Server {
     /// Binds the port of `options` (or the next nine when it is taken) and starts serving.
     pub async fn start(options: Options, sessions: Arc<dyn Sessions>) -> io::Result<Server> {
-        Server::start_with_clock(options, sessions, Arc::new(SystemClock)).await
+        Server::start_with_clock(options, sessions, Arc::new(SystemClock), Keepalive::default()).await
+    }
+
+    /// Like [`Server::start`], with its own timing for the pings that find a vanished client:
+    /// one every `ping_every`, and the socket is closed when nothing came `answer_within` after it.
+    /// For tests, which cannot wait for the real ones.
+    #[doc(hidden)]
+    pub async fn start_with_pings(
+        options: Options,
+        sessions: Arc<dyn Sessions>,
+        ping_every: Duration,
+        answer_within: Duration,
+    ) -> io::Result<Server> {
+        let keepalive = Keepalive {
+            every: ping_every,
+            wait: answer_within,
+        };
+        Server::start_with_clock(options, sessions, Arc::new(SystemClock), keepalive).await
     }
 
     pub(crate) async fn start_with_clock(
         options: Options,
         sessions: Arc<dyn Sessions>,
         clock: Arc<dyn Clock>,
+        keepalive: Keepalive,
     ) -> io::Result<Server> {
         let public = match options.public_url.as_deref().filter(|url| !url.trim().is_empty()) {
             Some(url) => Some(parse_public(url).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?),
@@ -206,6 +226,7 @@ impl Server {
             connections: Arc::new(Mutex::new(Connections::default())),
             starts: Mutex::new(HashMap::new()),
             cancel: CancellationToken::new(),
+            keepalive,
         });
         let task = tokio::spawn(accept(listener, shared.clone()));
         Ok(Server { shared, addr, task })

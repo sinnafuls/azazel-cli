@@ -366,6 +366,7 @@ A frame carries `"at"`, the position in the session's log. A client that was cut
 | `4404` | No session has this id (it may have ended). | Goes back to the list. |
 | `4408` | The client fell behind: 4096 frames were waiting to be sent. | Reconnects at once and attaches with `since`. |
 | `4409` | Too many connections: 4 per device, 16 in all. | Waits, then retries with backoff. |
+| `4410` | The client did not answer a ping: the server pings every 25 seconds and closes a socket that shows no sign of life 20 seconds later. | Reconnects with backoff and attaches with `since`. |
 
 ### Pairing
 

@@ -25,6 +25,24 @@ pub(crate) const QUEUE: usize = 4096;
 /// How long one message may take to reach the client.
 const SEND_LIMIT: Duration = Duration::from_secs(30);
 
+/// When to ping a client and how long to wait for any sign of life after a ping. A browser answers
+/// pings by itself; a peer that vanished (a laptop that slept, a dropped tunnel) never does, and
+/// without this its socket, its slot among the connections and its session link would stay for ever.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Keepalive {
+    pub every: Duration,
+    pub wait: Duration,
+}
+
+impl Default for Keepalive {
+    fn default() -> Keepalive {
+        Keepalive {
+            every: Duration::from_secs(25),
+            wait: Duration::from_secs(20),
+        }
+    }
+}
+
 async fn close<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S>, code: u16, reason: &str) {
     let reason: String = reason.chars().take(100).collect();
     let frame = CloseFrame {
@@ -122,11 +140,32 @@ pub(crate) async fn run<S>(
     tokio::pin!(expiry);
     // The ids of `list_commands` sent and not answered yet.
     let mut listings: Vec<Value> = Vec::new();
+    let keepalive = shared.keepalive;
+    let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + keepalive.every, keepalive.every);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // When the client must have shown a sign of life by: set when a ping goes out, cleared by
+    // whatever it sends.
+    let mut answer_by: Option<tokio::time::Instant> = None;
     loop {
+        let silent = async {
+            match answer_by {
+                Some(by) => tokio::time::sleep_until(by).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             _ = device.cancel.cancelled() => return close(&mut socket, 4401, "signed out").await,
             _ = &mut expiry => return close(&mut socket, 4401, "the device has expired").await,
             _ = shared.cancel.cancelled() => return close(&mut socket, 1001, "the server stopped").await,
+            _ = silent => return close(&mut socket, 4410, "no answer to a ping").await,
+            _ = ping.tick() => {
+                match tokio::time::timeout(SEND_LIMIT, socket.send(Message::Ping(Vec::new().into()))).await {
+                    Ok(Ok(())) => {
+                        answer_by.get_or_insert(tokio::time::Instant::now() + keepalive.wait);
+                    }
+                    _ => return,
+                }
+            }
             line = conn.frames.recv() => {
                 let Some(line) = line else {
                     return close(&mut socket, 1000, "the session ended").await;
@@ -159,6 +198,7 @@ pub(crate) async fn run<S>(
                     Some(Err(_)) => return,
                     Some(Ok(message)) => message,
                 };
+                answer_by = None;
                 let text = match message {
                     Message::Text(text) => text,
                     Message::Binary(_) => return close(&mut socket, 1003, "send text").await,

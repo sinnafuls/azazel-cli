@@ -37,6 +37,16 @@ impl Fake {
         (fake, received)
     }
 
+    /// How many connections to the session the server still holds.
+    pub fn open_connections(&self) -> usize {
+        self.open
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|frames| !frames.is_closed())
+            .count()
+    }
+
     pub async fn push(&self, line: &str) {
         let open: Vec<_> = self.open.lock().unwrap().clone();
         for frames in open {

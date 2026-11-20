@@ -1,5 +1,7 @@
-use azazel_remote::Access;
-use futures::SinkExt;
+use std::time::Duration;
+
+use azazel_remote::{Access, Server};
+use futures::{SinkExt, StreamExt};
 use serde_json::json;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
@@ -214,4 +216,60 @@ async fn a_view_link_is_told_nothing_of_the_browser_unless_view_browser_is_on() 
     assert_eq!(next_json(&mut control).await["type"], "browser_state");
     assert_eq!(next_json(&mut control).await["type"], "browser_frame");
     assert_eq!(next_json(&mut view).await["type"], "idle");
+}
+
+const PING: Duration = Duration::from_millis(100);
+const ANSWER: Duration = Duration::from_millis(300);
+
+#[tokio::test]
+async fn a_client_that_stops_answering_pings_is_let_go() {
+    let (fake, _received) = Fake::new();
+    let server = Server::start_with_pings(options(), fake.clone(), PING, ANSWER)
+        .await
+        .unwrap();
+    let token = pair(&server, Access::Control).await;
+    // The socket is not read, so nothing answers the server's pings: a peer that vanished.
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    tokio::time::timeout(WAIT, async {
+        while fake.open_connections() > 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the server lets the silent client go");
+    // Answering the server's pings now is too late: a close frame may still reach the client, or
+    // the connection may already be gone.
+    while let Some(Ok(message)) = socket.next().await {
+        if let Message::Close(Some(frame)) = message {
+            assert_eq!(u16::from(frame.code), 4410);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_client_that_answers_pings_stays_connected() {
+    let (fake, _received) = Fake::new();
+    let server = Server::start_with_pings(options(), fake.clone(), PING, ANSWER)
+        .await
+        .unwrap();
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    assert_eq!(next_json(&mut socket).await["type"], "hello");
+    // Reading answers the pings; several rounds go by.
+    let mut pings = 0;
+    let outcome = tokio::time::timeout(ANSWER * 5, async {
+        loop {
+            match socket.next().await {
+                Some(Ok(Message::Ping(_))) => pings += 1,
+                other => return other,
+            }
+        }
+    })
+    .await;
+    assert!(
+        outcome.is_err(),
+        "the server closed a client that answers: {outcome:?}"
+    );
+    assert!(pings >= 3, "only {pings} pings arrived");
+    assert_eq!(fake.open_connections(), 1);
 }
