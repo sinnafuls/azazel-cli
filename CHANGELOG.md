@@ -26,6 +26,8 @@ GitHub are its section here.
 - Changing `profiles.on_limit` in `/settings` now takes effect for the profile editor's protection of that profile.
 - `/fork` and moving in the session tree keep the `⚠ unchecked` state of files edited before.
 - Removing a setting under a table that does not exist no longer writes empty tables into the config.
+- A slow double click in the live browser is two presses, not three, and a triple click three, not five.
+- `azazel remote`: while you hold the agents' browser, a phone shows its keyboard when you tap the picture, and text from an input method, a dead key, autocorrect or dictation reaches the page once; before, only plain key presses did.
 
 ## [0.16.1] - 2026-11-20
 
