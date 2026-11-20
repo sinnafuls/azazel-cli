@@ -335,6 +335,11 @@ fn tool_rules(key: &str, value: &Value, source: DefSource) -> Result<Vec<Rule>, 
         if source == DefSource::Compat {
             rule.tool = compat_tool(&rule.tool).to_string();
         }
+        if rule.tool == "run_code" {
+            tracing::warn!("{key}: `run_code` is now `eval(luau)`; change it in the agent file");
+            rule.tool = "eval".to_string();
+            rule.pattern.get_or_insert_with(|| "luau".to_string());
+        }
         if !rules.contains(&rule) {
             rules.push(rule);
         }
@@ -353,6 +358,12 @@ fn tool_names(key: &str, value: &Value, source: DefSource) -> Result<Vec<String>
         let name = match source {
             DefSource::Compat => compat_tool(&tool).to_string(),
             _ => tool,
+        };
+        let name = if name == "run_code" {
+            tracing::warn!("{key}: `run_code` is now `eval`; change it in the agent file");
+            "eval".to_string()
+        } else {
+            name
         };
         if !names.contains(&name) {
             names.push(name);
@@ -1122,6 +1133,15 @@ System prompt body.
             let def = parse(&format!("model: {written}"), DefSource::Compat).unwrap();
             assert_eq!(def.model, expected.map(|role| vec![spec(role)]), "{written}");
         }
+
+        // The tool `run_code` is now `eval` with `language: "luau"`.
+        let old = parse(
+            "tools: read, run_code\ndisallowed-tools: run_code",
+            DefSource::Project,
+        )
+        .unwrap();
+        assert_eq!(old.tools, Some(vec![rule("read"), rule("eval(luau)")]));
+        assert_eq!(old.disallowed_tools, strings(&["eval"]));
 
         // Outside compat the same words are ordinary names.
         let native = parse("tools: Read, Bash(ls:*)", DefSource::Project).unwrap();

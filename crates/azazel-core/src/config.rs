@@ -1915,6 +1915,48 @@ mod tests {
     }
 
     #[test]
+    fn settings_naming_run_code_are_rewritten_for_eval_with_a_warning_each() {
+        let f = fixture(
+            "[permissions]\nallow = [\"run_code\", \"read\"]\nask = [\"run_code\"]\ndeny = [\"run_code\", \"eval(luau)\"]\n\
+             [tools]\ndisabled = [\"run_code\", \"glob\"]\ndefer = [\"run_code\", \"browser\"]\n\
+             [[hooks.pre_tool_use]]\nmatcher = \"run_code\"\ncommand = \"a\"\n\
+             [[hooks.pre_tool_use]]\nmatcher = \"run_code\"\nif = \"eval(python)\"\ncommand = \"b\"\n\
+             [[hooks.pre_tool_use]]\nmatcher = \"read|run_code\"\ncommand = \"c\"\n",
+            "",
+            "",
+        );
+        let loaded = Config::load(&f.paths, &trusted()).unwrap();
+        let c = &loaded.config;
+        assert_eq!(c.permissions.allow, ["eval(luau)", "read"]);
+        assert_eq!(c.permissions.ask, ["eval(luau)"]);
+        assert_eq!(c.permissions.deny, ["eval(luau)"]);
+        assert_eq!(c.tools.disabled, ["glob"]);
+        assert!(!c.tools.eval.luau);
+        assert!(!c.tools.defer.iter().any(|name| name == "run_code"));
+        assert!(c.tools.defer.iter().any(|name| name == "browser"));
+        let hooks = &c.hooks["pre_tool_use"];
+        assert_eq!(hooks[0].matcher.as_deref(), Some("eval"));
+        assert_eq!(hooks[0].when.as_deref(), Some("eval(luau)"));
+        assert_eq!(hooks[1].matcher.as_deref(), Some("eval"));
+        assert_eq!(hooks[1].when.as_deref(), Some("eval(python)"));
+        assert_eq!(hooks[2].matcher.as_deref(), Some("read|eval"));
+        let warnings = loaded.warnings.join("\n");
+        for expected in [
+            "permissions.allow",
+            "permissions.ask",
+            "permissions.deny",
+            "tools.disabled",
+            "tools.defer",
+            "hooks.pre_tool_use #1",
+            "hooks.pre_tool_use #2",
+            "hooks.pre_tool_use #3",
+        ] {
+            assert!(warnings.contains(expected), "{expected} missing from {warnings}");
+        }
+        assert_eq!(loaded.warnings.len(), 8, "{warnings}");
+    }
+
+    #[test]
     fn presets_load_as_profiles_and_profiles_win_with_a_warning() {
         let f = fixture(
             "[presets.a.roles]
