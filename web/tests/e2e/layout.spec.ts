@@ -44,9 +44,9 @@
 // Screenshots and the measurements of every state go to tmp/layout, or to AZAZEL_LAYOUT_SHOTS;
 // those of the profiles (their chip, menu, settings and the notice of a usage limit) to a folder of
 // their own beside each size's, `<size>-<theme>-profiles`; those of the Browser tab (no browser,
-// watching a page, holding it) to `<size>-<theme>-browser`, with the boxes of its parts in boxes.json.
-// The last two need a browser for the agent to open: without one on the machine only the first is
-// measured, and the test says so in an annotation.
+// waiting for the first picture, watching a page, holding it) to `<size>-<theme>-browser`, with the
+// boxes of its parts in boxes.json. All but the first need a browser for the agent to open: without
+// one on the machine only the first is measured, and the test says so in an annotation.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import type { Locator } from '@playwright/test';
@@ -1662,21 +1662,28 @@ interface Box {
 interface BrowserBoxes {
 	status: string;
 	viewport: { width: number; height: number };
-	/** The inside of the box that scrolls the panel: what the panel has to fit in. */
+	/** The box that scrolls the panel, inside its border: the panel reaches its edges. */
 	room: Box;
 	panel: Box;
-	/** The parts of the panel, from the top, by the attribute that marks each. */
+	/** The parts of the panel that stand under each other, from the top, by the attribute of each. */
 	parts: Record<string, Box>;
-	buttons: (Box & { name: string })[];
+	/** The parts of the header row, from the left: the globe, the title block, the badge, the buttons. */
+	head: Record<string, Box>;
+	/** The icon buttons of the header, by their accessible names. */
+	buttons: (Box & { name: string; radius: string })[];
 	/** The field the address is typed into, while this device holds the browser. */
 	input: Box | null;
-	/** The border box of the group around that field, and the buttons inside it. */
+	/** The border box of the group around that field, and the buttons of the address row. */
 	group: Box | null;
 	controls: (Box & { name: string })[];
-	/** How far anything inside that group reaches past its border box (the padding of its addons). */
+	/** How far anything inside that group reaches past its border box. */
 	overhang: { x: number; y: number } | null;
 	/** The picture the host sent, the box it is drawn in, and how it is fitted to that box. */
 	img: (Box & { naturalWidth: number; naturalHeight: number; fit: string }) | null;
+	/** What stands in the place of the picture until the first one arrives. */
+	waiting: string | null;
+	/** What is drawn around the picture's box: nothing, it is no card. */
+	frame: { border: string; radius: string; background: string } | null;
 	/** The lines that are cut to the width of the panel: how wide their text is, and how it ends. */
 	cut: Record<string, { text: number; box: number; ends: string }>;
 	/** Whether the keyboard is on the picture. */
@@ -1709,31 +1716,27 @@ function browserBoxes(): BrowserBoxes {
 	let scroller = panel.parentElement!;
 	while (scroller.parentElement && !/auto|scroll/.test(getComputedStyle(scroller).overflowY))
 		scroller = scroller.parentElement;
-	const s = getComputedStyle(scroller);
 	const outer = scroller.getBoundingClientRect();
-	const left = outer.left + scroller.clientLeft + parseFloat(s.paddingLeft);
-	const top = outer.top + scroller.clientTop + parseFloat(s.paddingTop);
+	const left = outer.left + scroller.clientLeft;
+	const top = outer.top + scroller.clientTop;
 	const room = box({
 		left,
 		top,
-		right: outer.left + scroller.clientLeft + scroller.clientWidth - parseFloat(s.paddingRight),
-		bottom: outer.top + scroller.clientTop + scroller.clientHeight - parseFloat(s.paddingBottom)
+		right: left + scroller.clientWidth,
+		bottom: top + scroller.clientHeight
 	});
-	const parts: Record<string, Box> = {};
-	for (const name of [
-		'status',
-		'note',
-		'actions',
-		'empty',
-		'title',
-		'url',
-		'address',
-		'picture',
-		'hint'
-	]) {
-		const el = panel.querySelector(`[data-browser-${name}]`);
-		if (el) parts[name] = of(el);
-	}
+	const marked = (names: string[]) => {
+		const found: Record<string, Box> = {};
+		for (const name of names) {
+			const el = panel.querySelector(`[data-browser-${name}]`);
+			if (el && el.checkVisibility()) found[name] = of(el);
+		}
+		return found;
+	};
+	const parts = marked(['header', 'empty', 'address', 'picture', 'note']);
+	const head = marked(['heading', 'status', 'actions']);
+	const globe = panel.querySelector('[data-browser-header] > svg');
+	if (globe?.checkVisibility()) head.globe = of(globe);
 	const cut: BrowserBoxes['cut'] = {};
 	for (const name of ['title', 'url']) {
 		const el = panel.querySelector<HTMLElement>(`[data-browser-${name}]`);
@@ -1744,8 +1747,9 @@ function browserBoxes(): BrowserBoxes {
 				ends: getComputedStyle(el).textOverflow
 			};
 	}
-	const picture = panel.querySelector('[data-browser-picture]');
+	const picture = panel.querySelector<HTMLElement>('[data-browser-picture]');
 	const img = picture?.querySelector('img');
+	const frame = picture ? getComputedStyle(picture) : null;
 	const input = panel.querySelector('[data-browser-address] input');
 	const group = input?.closest('[data-slot=input-group]');
 	const overhang = { x: 0, y: 0 };
@@ -1765,8 +1769,10 @@ function browserBoxes(): BrowserBoxes {
 		room,
 		panel: of(panel),
 		parts,
+		head,
 		buttons: Array.from(panel.querySelectorAll('[data-browser-actions] button')).map((b) => ({
-			name: (b.textContent ?? '').trim(),
+			name: b.getAttribute('aria-label') ?? '',
+			radius: getComputedStyle(b).borderRadius,
 			...of(b)
 		})),
 		input: input ? of(input) : null,
@@ -1784,6 +1790,12 @@ function browserBoxes(): BrowserBoxes {
 					fit: getComputedStyle(img).objectFit
 				}
 			: null,
+		waiting: picture?.querySelector('[data-browser-waiting]')?.textContent?.trim() ?? null,
+		frame: frame && {
+			border: frame.borderWidth,
+			radius: frame.borderRadius,
+			background: frame.backgroundColor
+		},
 		cut,
 		// The keyboard is on the field inside the picture that takes it for the page.
 		focused:
@@ -1797,31 +1809,66 @@ function browserBoxes(): BrowserBoxes {
 	};
 }
 
-/** What has to hold of the Browser tab in every state, at every size. */
-function browserHolds(b: BrowserBoxes, state: string) {
+/**
+ * What has to hold of the Browser tab in every state, at every size. `fill`: the panel is in the
+ * pane beside the chat, as tall as the pane, and not in a sheet that is as tall as what is in it.
+ */
+function browserHolds(b: BrowserBoxes, state: string, fill: boolean) {
 	const said = (what: string) => `${state}: ${what}: ${JSON.stringify(b)}`;
 	const near = 0.5;
 	expect(b.sideways, said('nothing scrolls sideways')).toEqual({ scroller: 0, page: 0 });
-	expect(b.panel.left, said('the panel starts in its room')).toBeGreaterThanOrEqual(
-		b.room.left - near
+	expect(b.widerThanPanel, said('nothing is wider than the panel')).toBe(0);
+	// Edge to edge: the panel is as wide as what it is in (a pixel of rounding: the room is whole).
+	expect(Math.abs(b.panel.left - b.room.left), said('the panel starts at the edge')).toBeLessThan(
+		1
 	);
-	expect(b.panel.right, said('the panel ends in its room')).toBeLessThanOrEqual(
-		b.room.right + near
+	expect(Math.abs(b.panel.right - b.room.right), said('the panel ends at the edge')).toBeLessThan(
+		1
 	);
-	// Every part is inside the panel, and under the part before it.
+	// One header, 48px tall, then the rest: every part spans the panel, under the part before it.
+	expect(b.parts.header, said('the header is there')).toBeDefined();
+	expect(Math.abs(b.parts.header.top - b.panel.top), said('the header is first')).toBeLessThan(1.5);
+	expect(Math.abs(b.parts.header.height - 48), said('the header is one row')).toBeLessThan(near);
 	let above = b.panel.top;
 	for (const [name, part] of Object.entries(b.parts)) {
-		expect(part.left, said(`${name} starts in the panel`)).toBeGreaterThanOrEqual(
-			b.panel.left - near
+		expect(Math.abs(part.left - b.panel.left), said(`${name} starts at the edge`)).toBeLessThan(
+			near
 		);
-		expect(part.right, said(`${name} ends in the panel`)).toBeLessThanOrEqual(b.panel.right + near);
+		expect(Math.abs(part.right - b.panel.right), said(`${name} ends at the edge`)).toBeLessThan(
+			near
+		);
 		expect(part.top, said(`${name} is under what is above it`)).toBeGreaterThanOrEqual(
 			above - near
 		);
 		above = part.bottom;
 	}
-	// The buttons: one row, one height, none on another, all inside the panel.
-	let before = b.panel.left;
+	// The header row: the globe, the title block, the badge, the buttons, in that order, none on
+	// another, each inside the header and around its middle.
+	const header = b.parts.header;
+	const middle = (r: Box) => r.top + r.height / 2;
+	let before = header.left;
+	for (const name of ['globe', 'heading', 'status', 'actions']) {
+		const part = b.head[name];
+		if (!part) continue;
+		expect(part.left, said(`${name} is beside what is before it`)).toBeGreaterThanOrEqual(
+			before - near
+		);
+		expect(part.right, said(`${name} ends in the header`)).toBeLessThanOrEqual(header.right + near);
+		expect(part.top, said(`${name} is under the top of the header`)).toBeGreaterThanOrEqual(
+			header.top - near
+		);
+		expect(part.bottom, said(`${name} is over the bottom of the header`)).toBeLessThanOrEqual(
+			header.bottom + near
+		);
+		expect(
+			Math.abs(middle(part) - middle(header)),
+			said(`${name} is in the middle of the header`)
+		).toBeLessThanOrEqual(1);
+		before = part.right;
+	}
+	expect(b.head.heading.width, said('the title has room')).toBeGreaterThan(40);
+	// The buttons: one row, squares of one size and one corner, none on another.
+	before = header.left;
 	for (const button of b.buttons) {
 		expect(
 			Math.abs(button.top - b.buttons[0].top),
@@ -1831,39 +1878,56 @@ function browserHolds(b: BrowserBoxes, state: string) {
 			Math.abs(button.height - b.buttons[0].height),
 			said(`${button.name} is as tall as the others`)
 		).toBeLessThan(near);
+		expect(Math.abs(button.width - button.height), said(`${button.name} is square`)).toBeLessThan(
+			near
+		);
+		expect(button.radius, said(`${button.name} has the corners of the others`)).toBe(
+			b.buttons[0].radius
+		);
 		expect(button.left, said(`${button.name} is beside the one before`)).toBeGreaterThanOrEqual(
 			before - near
 		);
-		expect(button.right, said(`${button.name} ends in the panel`)).toBeLessThanOrEqual(
-			b.panel.right + near
+		expect(button.right, said(`${button.name} ends in the header`)).toBeLessThanOrEqual(
+			header.right + near
 		);
 		before = button.right;
 	}
 	const picture = b.parts.picture;
 	if (!picture) return;
-	// The picture's box is as wide as the panel and has the shape of the picture, until it would be
-	// taller than 70% of the window; the picture is whole inside it.
-	expect(b.img, said('a picture arrived')).not.toBeNull();
-	const img = b.img!;
-	expect(img.naturalWidth, said('the picture has a width')).toBeGreaterThan(0);
-	expect(img.fit, said('the picture keeps its shape')).toBe('contain');
-	expect(
-		Math.abs(picture.width - b.panel.width),
-		said('the picture is as wide as the panel')
-	).toBeLessThan(near);
-	const most = 0.7 * b.viewport.height;
-	const shaped = (picture.width * img.naturalHeight) / img.naturalWidth;
+	// No card: nothing is drawn around the picture's box, and nothing behind it.
+	expect(b.frame, said('the picture has no box of its own')).toEqual({
+		border: '0px',
+		radius: '0px',
+		background: 'rgba(0, 0, 0, 0)'
+	});
+	// The box has the shape of the picture (16:9 until one arrives) at the width of the panel, until
+	// it would be taller than what is left of the pane, or than 70% of the window in a sheet; the
+	// picture is whole inside it.
+	let shape = 9 / 16;
+	if (b.img) {
+		const img = b.img;
+		expect(img.naturalWidth, said('the picture has a width')).toBeGreaterThan(0);
+		expect(img.fit, said('the picture keeps its shape')).toBe('contain');
+		shape = img.naturalHeight / img.naturalWidth;
+		for (const [edge, inside] of [
+			['left', img.left >= picture.left - near],
+			['top', img.top >= picture.top - near],
+			['right', img.right <= picture.right + near],
+			['bottom', img.bottom <= picture.bottom + near]
+		] as const)
+			expect(inside, said(`the picture's ${edge} is inside its box`)).toBe(true);
+	} else
+		expect(b.waiting, said('its place says a picture is on its way')).toBe(
+			'Waiting for the first picture…'
+		);
+	const most = fill
+		? b.room.bottom - picture.top - (b.parts.note?.height ?? 0)
+		: 0.7 * b.viewport.height;
+	const shaped = picture.width * shape;
 	expect(
 		Math.abs(picture.height - Math.min(shaped, most)),
 		said(`the picture is ${Math.min(shaped, most)} tall`)
 	).toBeLessThan(1);
-	for (const [edge, inside] of [
-		['left', img.left >= picture.left - near],
-		['top', img.top >= picture.top - near],
-		['right', img.right <= picture.right + near],
-		['bottom', img.bottom <= picture.bottom + near]
-	] as const)
-		expect(inside, said(`the picture's ${edge} is inside its box`)).toBe(true);
 }
 
 // The Browser tab: before the agent has a browser, while it shows one, and while this device holds it.
@@ -1891,7 +1955,7 @@ for (const view of VIEWS)
 				expect(m.texts, `${state}: texts measured`).toBeGreaterThan(0);
 				const b = await page.evaluate(browserBoxes);
 				boxes[file] = b;
-				browserHolds(b, state);
+				browserHolds(b, state, wide);
 				return b;
 			};
 			/** The Browser tab of the pane beside the chat, or of the sheet a narrow window has for it. */
@@ -1910,6 +1974,32 @@ for (const view of VIEWS)
 				}
 				await expect(panel).toBeVisible();
 			};
+			/** Leaves the Browser tab and comes back: the host sends a picture to a device that watches anew. */
+			const comeBack = async () => {
+				if (wide) {
+					const pane = page.locator('[data-right-pane]');
+					await pane.getByRole('tab', { name: 'Agents' }).click();
+					await expect(panel).toHaveCount(0);
+					await pane.getByRole('tab', { name: 'Browser' }).click();
+				} else {
+					const sheet = page.getByRole('dialog');
+					await sheet.getByRole('radio', { name: 'Agents' }).click();
+					await expect(panel).toHaveCount(0);
+					await sheet.getByRole('radio', { name: 'Browser' }).click();
+				}
+				await expect(panel).toBeVisible();
+			};
+			// The pictures the host sends are held back while `pictures` is false: that is the panel
+			// of a browser whose first picture has not arrived.
+			let pictures = true;
+			await page.routeWebSocket(/./, (ws) => {
+				const server = ws.connectToServer();
+				ws.onMessage((m) => server.send(m));
+				server.onMessage((m) => {
+					if (pictures || typeof m !== 'string' || !m.includes('"type":"browser_frame"'))
+						ws.send(m);
+				});
+			});
 
 			const site = await serve(SITE);
 			const address = site.url + SITE_PATH;
@@ -1930,32 +2020,51 @@ for (const view of VIEWS)
 					await openTab();
 				};
 
-				// No browser: what will show here, and the one button there is something to do with.
+				// No browser: the header with the one button there is something to do with, and a plain
+				// line that says so. No badge, no picture, nothing that looks like a page.
 				await open(idle, 'Done.');
 				await expect(panel).toHaveAttribute('data-status', 'none');
-				await expect(panel.getByRole('status')).toHaveText('No browser open');
 				await expect(panel.locator('[data-browser-empty]')).toContainText(
-					'The agent has not opened a browser'
+					'The agent has no browser open'
 				);
+				await expect(panel.getByRole('status')).toHaveCount(0);
 				await expect(panel.getByRole('button', { name: 'Take over' })).toHaveCount(0);
 				const none = await capture('none');
 				expect(none.buttons.map((b) => b.name)).toEqual(['Sign in']);
 				expect(none.parts.picture, 'no picture without a browser').toBeUndefined();
+				expect(Object.keys(none.parts), 'the header and the empty state').toEqual([
+					'header',
+					'empty'
+				]);
 
 				if (!agentBrowserFound) {
 					test.info().annotations.push({
 						type: 'not measured',
 						description:
-							'watching and holding: no Chromium-based browser on this machine for the agent to open'
+							'waiting, watching and holding: no Chromium-based browser on this machine for the agent to open'
 					});
 				} else {
 					const browsing = stack.session('open the page', browses(address, 'Opened the page.'));
 					await stack.until({ [browsing]: 'idle' });
 
-					// Watching: the title and the address of the page, each on one line, over its picture.
+					// Waiting: the browser is on a page and no picture of it has come. Its place says so.
+					pictures = false;
 					await open(browsing, 'Opened the page.');
 					await expect(page.locator('[data-status="error"]')).toHaveCount(0);
 					await expect(panel).toHaveAttribute('data-status', 'watching');
+					await expect(panel.locator('[data-browser-title]')).toHaveText(SITE_TITLE);
+					await expect(panel.locator('[data-browser-waiting]')).toHaveText(
+						'Waiting for the first picture…'
+					);
+					const waiting = await capture('waiting');
+					expect(waiting.img, 'no picture yet').toBeNull();
+					pictures = true;
+					await comeBack();
+
+					// Watching: one header (the title over the address, each on one line, the badge, the
+					// buttons) over the picture, which takes the rest.
+					await expect(panel).toHaveAttribute('data-status', 'watching');
+					await expect(panel.getByRole('status')).toHaveText('Watching');
 					await expect(panel.locator('[data-browser-title]')).toHaveText(SITE_TITLE);
 					await expect(panel.locator('[data-browser-url]')).toHaveText(address);
 					const img = panel.locator('[data-browser-picture]').getByRole('img');
@@ -1963,7 +2072,16 @@ for (const view of VIEWS)
 						.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
 						.toBeGreaterThan(0);
 					const watching = await capture('watching');
+					expect(watching.waiting, 'the picture took its place').toBeNull();
 					expect(watching.buttons.map((b) => b.name)).toEqual(['Take over', 'Sign in']);
+					expect(Object.keys(watching.parts), 'the header and the picture').toEqual([
+						'header',
+						'picture'
+					]);
+					expect(
+						Math.abs(watching.parts.picture.top - watching.parts.header.bottom),
+						'the picture starts under the header'
+					).toBeLessThan(0.5);
 					for (const line of ['title', 'url'] as const) {
 						expect(watching.cut[line].text, `the ${line} is longer than its line`).toBeGreaterThan(
 							watching.cut[line].box
@@ -1972,10 +2090,11 @@ for (const view of VIEWS)
 					}
 					expect(watching.focused, 'the picture takes no keys while watching').toBe(false);
 
-					// Holding: what it means, Hand back in place of Take over, the address in a field as
-					// wide as the panel, the keyboard on the picture, and how to leave it.
+					// Holding: Hand back in place of Take over, a row for the address under the header,
+					// the keyboard on the picture, and under it what holding means and how to leave.
 					await panel.getByRole('button', { name: 'Take over' }).click();
 					await expect(panel).toHaveAttribute('data-status', 'you');
+					await expect(panel.getByRole('status')).toHaveText('Holding');
 					await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveValue(address);
 					await expect(
 						panel
@@ -1985,25 +2104,35 @@ for (const view of VIEWS)
 					const holding = await capture('holding');
 					expect(holding.buttons.map((b) => b.name)).toEqual(['Hand back', 'Sign in']);
 					expect(holding.focused, 'the keyboard is on the picture').toBe(true);
-					for (const part of ['note', 'address', 'hint'])
-						expect(holding.parts[part], `holding shows its ${part}`).toBeDefined();
-					const field = holding.parts.address;
 					expect(
-						Math.abs(field.width - holding.panel.width),
-						'the address field is as wide as the panel'
-					).toBeLessThan(0.5);
-					// The group is the field, and what is used in it (Back, Reload, the address, Go) is
+						Object.keys(holding.parts),
+						'the header, the address, the picture, the note'
+					).toEqual(['header', 'address', 'picture', 'note']);
+					// Back and Reload stand before the group, as tall as it; the address and Go are
 					// inside its border, in that order, none on another.
 					const group = holding.group!;
-					expect(
-						Math.abs(group.width - holding.panel.width),
-						'the group of the address is as wide as the panel'
-					).toBeLessThan(0.5);
 					expect(holding.controls.map((c) => c.name)).toEqual(['Back', 'Reload', 'Go']);
 					const [back, reload, go] = holding.controls;
-					const row = [back, reload, { name: 'the address', ...holding.input! }, go];
-					let end = group.left;
-					for (const c of row) {
+					let end = holding.parts.address.left;
+					for (const c of [back, reload]) {
+						expect(c.left, `${c.name} starts after what is before it`).toBeGreaterThanOrEqual(end);
+						expect(
+							Math.abs(c.height - group.height),
+							`${c.name} is as tall as the field`
+						).toBeLessThan(0.5);
+						expect(
+							Math.abs(c.top - group.top),
+							`${c.name} is on the line of the field`
+						).toBeLessThan(0.5);
+						end = c.right;
+					}
+					expect(group.left, 'the field starts after Reload').toBeGreaterThanOrEqual(end);
+					expect(group.right, 'the field ends in the panel').toBeLessThanOrEqual(
+						holding.parts.address.right
+					);
+					expect(group.width, 'the field has room for an address').toBeGreaterThan(100);
+					end = group.left;
+					for (const c of [{ name: 'the address', ...holding.input! }, go]) {
 						expect(c.left, `${c.name} starts after what is before it`).toBeGreaterThanOrEqual(end);
 						expect(c.top, `${c.name} is under the top of the group`).toBeGreaterThanOrEqual(
 							group.top
@@ -2014,20 +2143,25 @@ for (const view of VIEWS)
 						end = c.right;
 					}
 					expect(end, 'Go ends in the group').toBeLessThanOrEqual(group.right);
-					// Only the empty padding of the stock addons reaches past the border, by under 4px:
-					// less than the padding around the panel, so nothing scrolls for it (see `sideways`).
-					expect(holding.overhang!.x, 'what reaches past the group sideways').toBeLessThan(4);
-					expect(holding.overhang!.y, 'what reaches past the group vertically').toBeLessThan(4);
-					// Taking over moved nothing above the picture but what it added: the buttons are where
-					// they were, under the note.
-					expect(
-						Math.abs(holding.buttons[0].left - watching.buttons[0].left),
-						'Hand back starts where Take over did'
-					).toBeLessThan(0.5);
-					expect(
-						Math.abs(holding.buttons[0].height - watching.buttons[0].height),
-						'Hand back is as tall as Take over'
-					).toBeLessThan(0.5);
+					// Nothing reaches past the border of the group: not a pixel.
+					expect(holding.overhang, 'what reaches past the group').toEqual({ x: 0, y: 0 });
+					// Taking over moved nothing in the header: Hand back is where Take over was in it. (A
+					// sheet grows from the bottom of the window, so the header itself has moved there.)
+					const placed = (b: BrowserBoxes) => {
+						const [first] = b.buttons;
+						const header = b.parts.header;
+						return {
+							left: first.left - header.left,
+							top: first.top - header.top,
+							width: first.width,
+							height: first.height
+						};
+					};
+					for (const edge of ['left', 'top', 'width', 'height'] as const)
+						expect(
+							Math.abs(placed(holding)[edge] - placed(watching)[edge]),
+							`Hand back has the ${edge} of Take over`
+						).toBeLessThan(0.5);
 
 					// The picture, where a short window starts it below the fold.
 					if (holding.pictureHidden > 0) {

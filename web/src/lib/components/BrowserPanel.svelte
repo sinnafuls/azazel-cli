@@ -85,8 +85,8 @@
 	const LABEL: Record<BrowserStatus, string> = {
 		none: 'Not open',
 		watching: 'Watching',
-		agent: 'Agent working',
-		you: 'You have control',
+		agent: 'Working',
+		you: 'Holding',
 		other: 'Held elsewhere'
 	};
 	// The mark of each: grey for nothing, green for a live picture, the accent while the agent
@@ -346,15 +346,18 @@
 					</p>
 				{/if}
 			</div>
-			<Badge
-				variant="outline"
-				role="status"
-				class="gap-1 pl-1 @max-sm:border-transparent @max-sm:px-0"
-				data-browser-status
-			>
-				<StateDot state={DOT[status]} />
-				<span class="@max-sm:sr-only">{LABEL[status]}</span>
-			</Badge>
+			<!-- With no browser the empty state says so; a badge would say it twice. -->
+			{#if status !== 'none'}
+				<Badge
+					variant="outline"
+					role="status"
+					class="gap-1 pl-1 @max-xs:border-transparent @max-xs:px-0"
+					data-browser-status
+				>
+					<StateDot state={DOT[status]} />
+					<span class="@max-xs:sr-only">{LABEL[status]}</span>
+				</Badge>
+			{/if}
 			{#if canControl}
 				<div class="flex shrink-0 items-center gap-0.5" data-browser-actions>
 					{#if holding}

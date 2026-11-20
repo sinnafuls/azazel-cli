@@ -511,7 +511,7 @@ test('taking over, what is typed and what an input method composes reaches the p
 			.toBeGreaterThan(0);
 
 		await panel.getByRole('button', { name: 'Take over' }).click();
-		await expect(panel.getByRole('status')).toHaveText('You have control');
+		await expect(panel.getByRole('status')).toHaveText('Holding');
 		// The keyboard is on a field in the picture, which is a field so that a phone shows its
 		// keyboard; it takes no room and nothing of it shows.
 		const keys = picture.getByRole('textbox', { name: "Type into the agent's page" });
@@ -597,7 +597,7 @@ test("the Browser tab shows the agent's browser; taking over, a click reaches it
 
 		// Taken over: the address can be typed, and a click on the picture is a click in the page.
 		await panel.getByRole('button', { name: 'Take over' }).click();
-		await expect(status).toHaveText('You have control');
+		await expect(status).toHaveText('Holding');
 		await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveValue(site.url);
 		await picture.click();
 		await expect(title).toHaveText('Clicked');

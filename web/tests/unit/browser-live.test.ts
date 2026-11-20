@@ -271,7 +271,7 @@ describe('what the panel shows', () => {
 
 	it('says that no browser is open, and still offers the sign-in', async () => {
 		await shown({ running: false }, true);
-		expect(status()).toBe('Not open');
+		expect(screen.queryByRole('status')).toBeNull();
 		expect(screen.getByText('The agent has no browser open')).toBeTruthy();
 		// Nothing stands in for a picture there is none of.
 		expect(screen.queryByText('Waiting for the first picture…')).toBeNull();
@@ -281,7 +281,7 @@ describe('what the panel shows', () => {
 
 	it('shows the title, the address and the picture of the page the agent is on', async () => {
 		const h = await shown(OPEN, true, true);
-		expect(status()).toBe('Agent working');
+		expect(status()).toBe('Working');
 		expect(screen.getByRole('heading', { name: 'Example Domain' })).toBeTruthy();
 		expect(screen.getByText('https://example.com/')).toBeTruthy();
 		// Until the first picture arrives its place says so.
@@ -333,7 +333,7 @@ describe('what the panel shows', () => {
 	it('takes over and hands back, with the address field only while holding', async () => {
 		const h = await shown(OPEN, true);
 		await fireEvent.click(screen.getByRole('button', { name: 'Take over' }));
-		await vi.waitFor(() => expect(status()).toBe('You have control'));
+		await vi.waitFor(() => expect(status()).toBe('Holding'));
 		expect(h.sent).toContainEqual({ type: 'browser_take', on: true });
 		expect(screen.queryByRole('button', { name: 'Take over' })).toBeNull();
 		// The keyboard is on a field inside the picture, so that a phone shows its keyboard.
