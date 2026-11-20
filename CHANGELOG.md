@@ -5,19 +5,24 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-20
+
 ### Added
 
 - `eval` runs Luau scripts that call your other tools (`language: "luau"`), with `parallel`, `agents.run`, `store`/`load` and a permission check on every call. Switch each language on or off with `[tools.eval] python`, `javascript` and `luau`, in any combination.
 - Background Luau scripts: `eval` with `language: "luau", background: true` runs the script as a job (`lua-N`). `job output` and `job kill` work on it, and the agent is woken with its result. It never asks for permission: a call that would ask is refused. It stops after `[tools.eval] background_max_secs` (default 7200 s, 0 for no limit); `azazel -p` waits for running scripts, for at most their limit and 2 hours.
 - Code-first mode, off by default: with `[tools] code_first = true` the model gets full schemas only for read, edit, write, shell, eval, ask_user, todo and task (plus patch and the goal and report tools); every other tool is a one-line signature in `eval`'s description and is called from a Luau script. It needs Luau in `eval`. `tools/code-first-compare.py` compares tokens, cache and cost of both modes on your own tasks.
 - `azazel config unset <key> [--project]` takes a setting out of the config file.
+- A session shared with `/remote` can start, list and continue background sessions from a browser with control access, under the same folder rules as `azazel remote` (`[remote] folders`, or any folder with `[remote] full_access`).
 
 ### Changed
 
+- The Browser tab of `azazel remote` has one header row: the page's title over its address, a status badge (Watching, Working, Holding), and Take over / Hand back and Sign in as icon buttons. The live picture fills the pane edge to edge. While you hold the browser, Back, Reload and the address field stand in a row under the header. Until the first picture arrives the tab says "Waiting for the first picture…", and a tab that has gone nowhere is called "Blank page".
 - `run_code` is now `eval` with `language: "luau"`. Permission rules, `[tools] disabled`/`defer` entries, hook matchers and agent `tools:` lists that name `run_code` are rewritten when loaded, with a warning; a `run_code` call from an older session still works in this release.
 
 ### Fixed
 
+- `azazel remote`: in the Agents list an agent stands under the agent that started it, not under the last agent started: when the lead starts x and y and x starts z, z shows under x ([#7](https://github.com/sinnafuls/azazel-cli/issues/7)).
 - Typing a search that matches no profile on the Profiles page of `/models` no longer crashes the UI.
 - ChatGPT image generation is no longer switched off for good by an unknown model, a proxy's 404 page, a 404 on one endpoint only, or a 400 whose message merely contains the word "plan".
 - The note the agent gets after you use its browser no longer includes the query string, fragment or credentials of a page you went to.
@@ -28,6 +33,7 @@ GitHub are its section here.
 - Removing a setting under a table that does not exist no longer writes empty tables into the config.
 - A slow double click in the live browser is two presses, not three, and a triple click three, not five.
 - `azazel remote`: while you hold the agents' browser, a phone shows its keyboard when you tap the picture, and text from an input method, a dead key, autocorrect or dictation reaches the page once; before, only plain key presses did.
+- **Sign in** from the Browser tab before the agent had opened a page left the tab on "Watching" with an empty grey box, and taking over could not go to an address. The browser's blank page is now the tab shown, so a picture arrives and you can navigate from it.
 
 ## [0.16.1] - 2026-11-20
 

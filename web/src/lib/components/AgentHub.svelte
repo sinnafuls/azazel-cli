@@ -13,6 +13,7 @@
 	import { toasts } from '$lib/toasts.svelte';
 	import Square from '@lucide/svelte/icons/square';
 	import { onMount } from 'svelte';
+	import { treeOrder } from '$lib/session/reduce';
 
 	let {
 		session,
@@ -20,7 +21,7 @@
 		active = null
 	}: { session: Session; canControl: boolean; active?: string | null } = $props();
 
-	const members = $derived(session.model.roster);
+	const members = $derived(treeOrder(session.model.roster));
 	const subs = $derived(members.filter((m) => m.id !== 'lead').length);
 	const live = $derived(
 		members.filter(

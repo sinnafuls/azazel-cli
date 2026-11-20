@@ -732,6 +732,32 @@ export function withState(m: Model, state: State): Model {
 	};
 }
 
+/** The roster in tree order: each agent right after its parent and the parent's earlier children, so an indented
+ *  row stands under the agent that started it. Siblings keep the order they were started in; an agent whose parent
+ *  is not in the roster stands at the top level. */
+export function treeOrder(members: Member[]): Member[] {
+	const ids = new Set(members.map((m) => m.id));
+	const children = new Map<string | null, Member[]>();
+	for (const m of members) {
+		const parent = m.parent && ids.has(m.parent) && m.parent !== m.id ? m.parent : null;
+		children.set(parent, [...(children.get(parent) ?? []), m]);
+	}
+	const out: Member[] = [];
+	const seen = new Set<string>();
+	const walk = (parent: string | null) => {
+		for (const m of children.get(parent) ?? []) {
+			if (seen.has(m.id)) continue;
+			seen.add(m.id);
+			out.push(m);
+			walk(m.id);
+		}
+	};
+	walk(null);
+	// A cycle of parents has no way in from the top; keep those agents rather than lose them.
+	for (const m of members) if (!seen.has(m.id)) out.push(m);
+	return out;
+}
+
 export function itemsFor(m: Model, agent: string): Item[] {
 	return m.items.filter((i) => i.agent === agent);
 }

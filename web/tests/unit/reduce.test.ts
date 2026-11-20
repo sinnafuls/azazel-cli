@@ -10,6 +10,7 @@ import {
 	leadBusy,
 	reduce,
 	type AssistantItem,
+	treeOrder,
 	type ToolItem
 } from '$lib/session/reduce';
 
@@ -332,5 +333,42 @@ describe('the summary of a branch that was left', () => {
 			text: `why does it say "${NOTE}"?`
 		} as unknown as AnyFrame);
 		expect(m.items[0]).toMatchObject({ kind: 'user' });
+	});
+});
+
+describe('treeOrder', () => {
+	const member = (id: string, parent: string | null, depth: number) => ({
+		id,
+		def: 'scout',
+		parent,
+		depth,
+		state: 'queued',
+		elapsed_ms: 0,
+		tokens: 0
+	});
+
+	it('puts an agent under the one that started it, not under the last row', () => {
+		// The lead starts x and y; x then starts z (issue #7).
+		const roster = [
+			member('lead', null, 0),
+			member('x', 'lead', 1),
+			member('y', 'lead', 1),
+			member('z', 'x', 2)
+		];
+		expect(treeOrder(roster).map((m) => m.id)).toEqual(['lead', 'x', 'z', 'y']);
+	});
+
+	it('keeps an agent whose parent is gone, and agents in a cycle', () => {
+		const roster = [
+			member('lead', null, 0),
+			member('a', 'gone', 2),
+			member('b', 'c', 1),
+			member('c', 'b', 1)
+		];
+		expect(
+			treeOrder(roster)
+				.map((m) => m.id)
+				.sort()
+		).toEqual(['a', 'b', 'c', 'lead']);
 	});
 });
