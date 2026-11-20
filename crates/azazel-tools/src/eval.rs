@@ -509,7 +509,7 @@ mod tests {
     }
 
     fn offering(python: bool, javascript: bool, luau: bool) -> Vec<String> {
-        let languages = EvalLanguages::from_switches(python, javascript, luau).0;
+        let languages = EvalSettings::from_switches(python, javascript, luau).languages;
         let tool = EvalTool::with_languages(
             Duration::from_secs(5),
             Arc::new(AgentEnv::default()),
