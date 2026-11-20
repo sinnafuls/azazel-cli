@@ -396,6 +396,61 @@ test('the sidebar folds with its shortcut and its button, and stays folded after
 	await expect(side).toHaveAttribute('data-state', 'expanded');
 });
 
+// The sheet is a Dialog from 768px and a Drawer below; both give the focus back to what opened them.
+for (const width of [900, 600])
+	test(`focus that comes back to a button opens no tooltip, Tab and the pointer do (${width}px)`, async ({
+		page,
+		auto
+	}) => {
+		await page.setViewportSize({ width, height: 700 });
+		await openSession(page, auto);
+		const button = page.getByRole('button', { name: 'Agents, usage and browser' });
+		const tip = page.locator('[data-slot=tooltip-content]');
+		// The button before it in the header has a tooltip of its own, which Tab opens on the way.
+		const own = tip.filter({ hasText: 'Agents, usage and browser' });
+		const sheet = page.getByRole('dialog', { name: 'Agents' });
+		// The pointer rests where no tooltip opens: what opens one below is the focus alone.
+		await page.mouse.move(2, 698);
+
+		// Focus a script gave says nothing.
+		await button.focus();
+		await expect(button).toBeFocused();
+		await expect(tip).toHaveCount(0);
+
+		// The sheet, opened and closed from the keyboard: the focus is back on the button, silently.
+		await page.keyboard.press('Enter');
+		await expect(sheet).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(sheet).toHaveCount(0);
+		await expect(button).toBeFocused();
+		await expect(button).toHaveAttribute('data-state', 'closed');
+		await expect(tip).toHaveCount(0);
+
+		// Closed with its button, the same.
+		await page.keyboard.press('Enter');
+		await expect(sheet).toBeVisible();
+		await sheet.getByRole('button', { name: 'Close' }).click();
+		await expect(sheet).toHaveCount(0);
+		await page.mouse.move(2, 698);
+		await expect(button).toBeFocused();
+		await expect(tip).toHaveCount(0);
+
+		// Reached with Tab, the button is named by its tooltip, which leaves with the focus.
+		await page.keyboard.press('Shift+Tab');
+		await expect(button).not.toBeFocused();
+		await expect(own).toHaveCount(0);
+		await page.keyboard.press('Tab');
+		await expect(button).toBeFocused();
+		await expect(own).toBeVisible();
+		await page.keyboard.press('Tab');
+		await expect(button).not.toBeFocused();
+		await expect(own).toHaveCount(0);
+
+		// And so does the pointer.
+		await button.hover();
+		await expect(own).toBeVisible();
+	});
+
 test('a view link watches: no way to send, and settings stay read-only', async ({
 	browser,
 	auto
