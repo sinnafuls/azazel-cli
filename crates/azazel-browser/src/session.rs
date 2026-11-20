@@ -53,6 +53,15 @@ const RETRY_PAUSE: Duration = Duration::from_secs(4);
 /// How long a client that has taken the browser over may go without input before the agents get
 /// it back: a device that went away without closing its connection must not keep them waiting.
 pub const HOLD_LEASE: Duration = Duration::from_secs(600);
+
+/// How long to wait after a live input before the page is described: what a click, a key or an
+/// address starts (a script, a navigation) needs a moment; a scroll starts nothing.
+fn settle_pause(input: &LiveInput) -> Duration {
+    match input {
+        LiveInput::Scroll { .. } => Duration::ZERO,
+        _ => Duration::from_millis(150),
+    }
+}
 const NO_BROWSER: &str = "no browser is running; the agent has not opened a page yet";
 const ANOTHER_HOLDS: &str = "another device has the browser";
 
@@ -1964,7 +1973,8 @@ impl BrowserSession {
             .unwrap_or_else(PoisonError::into_inner)
             .record(&input);
         // Let what the input started (a script, a navigation) take hold before it is described.
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        // A wheel starts nothing: a burst of them would otherwise replay at 150 ms each.
+        tokio::time::sleep(settle_pause(&input)).await;
         self.touch(holder);
         self.settle(state.as_ref()).await;
         Ok(())
@@ -2430,6 +2440,23 @@ mod tests {
         session.renew("b");
         tokio::time::sleep(Duration::from_millis(700)).await;
         assert!(!session.holds("a"));
+    }
+
+    #[test]
+    fn a_scroll_is_not_followed_by_a_pause_but_what_can_start_a_script_is() {
+        let scroll = LiveInput::Scroll {
+            x: 0.5,
+            y: 0.5,
+            dy: 100.0,
+        };
+        assert_eq!(settle_pause(&scroll), Duration::ZERO);
+        for input in [
+            LiveInput::Reload,
+            LiveInput::Back,
+            LiveInput::Text { text: "a".into() },
+        ] {
+            assert_eq!(settle_pause(&input), Duration::from_millis(150));
+        }
     }
 
     #[tokio::test]
