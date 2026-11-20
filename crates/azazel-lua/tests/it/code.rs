@@ -1,4 +1,4 @@
-//! `run_code` scripts and `azazel.tools.call`: tool calls made for an agent pass the permission
+//! `eval` scripts in Luau and `azazel.tools.call`: tool calls made for an agent pass the permission
 //! gate, and a script stays inside its limits.
 
 use std::collections::BTreeMap;
@@ -59,7 +59,7 @@ impl Gate for Watched {
     }
 }
 
-/// A project with the core tools, `run_code` and the real permission gate in `mode`, with nobody
+/// A project with the core tools, `eval` and the real permission gate in `mode`, with nobody
 /// to ask.
 struct Bench {
     _dir: tempfile::TempDir,
@@ -93,6 +93,9 @@ impl Bench {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
+        services.insert(Arc::new(azazel_tools::eval::EvalLanguages::from_switches(
+            true, true, true,
+        )));
         let registry = Arc::new(Registry::new(ExtCtx {
             services: services.clone(),
             cwd: paths.cwd.clone(),
@@ -162,7 +165,8 @@ impl Bench {
     }
 
     async fn run(&self, code: &str) -> ToolOutput {
-        self.call("run_code", json!({ "code": code })).await
+        self.call("eval", json!({ "language": "luau", "code": code }))
+            .await
     }
 
     fn seen(&self) -> Vec<String> {
@@ -230,12 +234,12 @@ async fn printed_lines_come_before_the_returned_value_and_tables_return_as_json(
     assert!(failed.is_error);
     assert_eq!(
         failed.text_content(),
-        "step 1\nscript error: run_code:2: no such thing"
+        "step 1\nscript error: eval:2: no such thing"
     );
     let broken = bench.run("local = 3").await;
     assert!(broken.is_error);
     assert!(
-        broken.text_content().starts_with("run_code:1: "),
+        broken.text_content().starts_with("eval:1: "),
         "{}",
         broken.text_content()
     );
@@ -252,7 +256,7 @@ async fn a_command_in_ask_mode_with_nobody_to_ask_is_refused_by_the_gate() {
     assert!(refused.is_error);
     assert_eq!(
         refused.text_content(),
-        "script error: run_code:1: shell: permission required for shell: re-run with --mode auto or add an \
+        "script error: eval:1: shell: permission required for shell: re-run with --mode auto or add an \
          allow rule"
     );
     assert!(!marker.exists());
@@ -346,18 +350,18 @@ async fn the_fifty_first_tool_call_fails_and_some_tools_cannot_be_called_at_all(
     assert_eq!(bench.seen().len(), 50);
     assert_eq!(output.details, Some(json!({ "tool_calls": 50 })));
 
-    for name in ["run_code", "task", "agent_send"] {
+    for name in ["eval", "task", "agent_send"] {
         let refused = bench.run(&format!("return tools.{name}({{}})")).await;
         assert!(refused.is_error);
         assert_eq!(
             refused.text_content(),
-            format!("script error: run_code:1: `{name}` cannot be called from a script")
+            format!("script error: eval:1: `{name}` cannot be called from a script")
         );
     }
     let unknown = bench.run("return tools.nope({})").await;
     assert_eq!(
         unknown.text_content(),
-        "script error: run_code:1: nope: unknown tool `nope`"
+        "script error: eval:1: nope: unknown tool `nope`"
     );
     let unnamed = bench.run("return tools.read('a.txt')").await;
     assert!(
@@ -660,7 +664,7 @@ async fn parallel_runs_calls_at_the_same_time_and_returns_results_in_their_place
     assert!(failed.is_error);
     assert_eq!(
         failed.text_content(),
-        "script error: parallel: entry `2`: run_code:4: nap: thirteen is refused"
+        "script error: parallel: entry `2`: eval:4: nap: thirteen is refused"
     );
     let kept = bench
         .run(
@@ -988,7 +992,7 @@ async fn a_script_finds_and_describes_tools_that_are_not_listed() {
         .await;
     let names = names.text_content();
     assert!(names.starts_with("2 "), "{names}");
-    assert!(names.contains("shell") && !names.contains("run_code"), "{names}");
+    assert!(names.contains("shell") && !names.contains("eval"), "{names}");
     let nothing = bench.run(r#"return #tools.search("zzzqqq")"#).await;
     assert_eq!(nothing.text_content(), "0");
 
@@ -998,7 +1002,7 @@ async fn a_script_finds_and_describes_tools_that_are_not_listed() {
             local read = tools.describe("read")
             return read.name .. " | " .. tostring(string.find(read.signature, "read{ path: string", 1, true))
                 .. " | " .. read.parameters.properties.path.type .. " | " .. tostring(#read.description > 40)
-                .. " | " .. tostring(tools.describe("nope")) .. " | " .. tostring(tools.describe("run_code"))
+                .. " | " .. tostring(tools.describe("nope")) .. " | " .. tostring(tools.describe("eval"))
             "#,
         )
         .await;

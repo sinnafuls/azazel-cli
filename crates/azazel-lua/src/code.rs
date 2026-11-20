@@ -1,14 +1,15 @@
-//! `run_code`: a Luau script that calls the harness's tools, so an agent can do a job of several
-//! steps in one call and get back only what it asks for.
+//! The Luau engine behind `eval`'s `luau` language: a script that calls the harness's tools, so an
+//! agent can do a job of several steps in one call and get back only what it asks for.
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource};
+use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource};
+use azazel_core::toolcall::{Luau, LuauEngine};
 use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch,
@@ -23,7 +24,8 @@ use tokio_util::sync::CancellationToken;
 use crate::convert::{from_lua, to_lua, tool_input};
 use crate::script::{describe, locked};
 
-pub const NAME: &str = "run_code";
+/// The tool a script runs in; it cannot call itself.
+const EVAL: &str = "eval";
 /// The description's list of callable tool names stays within about 500 tokens.
 const LISTING_CHARS: usize = 2_000;
 /// What `print` keeps; a script that prints more is told so.
@@ -41,12 +43,13 @@ const MAX_SEARCH_LIMIT: usize = 25;
 /// How many calls `parallel` runs at once where no team says (`team.max_parallel`'s default).
 const PARALLEL: usize = 4;
 /// The kind of the session entries `store` writes.
+// The name is the one from before `run_code` became part of `eval`, so earlier sessions still load.
 const STORE_ENTRY: &str = "run_code_store";
 /// The longest key `store` takes, and the most JSON one stored value may be.
 const MAX_KEY_BYTES: usize = 200;
 const MAX_STORED_BYTES: usize = 256 * 1024;
 
-const INTRO: &str = "Run a Luau script that calls your other tools, to do a job of several steps in one call: \
+const INTRO: &str = "`language: \"luau\"` runs a script that calls your other tools, to do a job of several steps in one call: \
      read a dozen files and return only the lines that matter, search and then filter, make the same \
      edit in many places. `tools.<name>{ ... }` calls a tool with the arguments you would give it \
      yourself and returns its result as a string; a call that fails or is refused raises an error, \
@@ -61,7 +64,8 @@ const INTRO: &str = "Run a Luau script that calls your other tools, to do a job 
      `tools.search(query)` finds tools not listed below and `tools.describe(name)` returns a tool's \
      description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
      model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
-     `run_code` and the agent tools cannot be called through `tools`.";
+     `eval` and the agent tools cannot be called through `tools`. A script has no files or \
+     processes of its own; it reaches them through `tools`.";
 
 /// What bounds one script.
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +87,7 @@ impl Default for CodeLimits {
     }
 }
 
-/// Registers the `run_code` tool.
+/// Registers the Luau engine `eval` runs scripts with.
 #[derive(Default)]
 pub struct CodeExt {
     pub limits: CodeLimits,
@@ -95,18 +99,14 @@ impl Extension for CodeExt {
     }
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
-        r.tool(Arc::new(RunCodeTool {
-            limits: self.limits,
-            services: r.services().clone(),
-            description: OnceLock::new(),
-        }));
+        r.service(Arc::new(Luau(Arc::new(LuauEval { limits: self.limits }))));
         Ok(())
     }
 }
 
 /// Tools a script cannot call: itself, and those that start and steer other agents.
 fn blocked(name: &str) -> bool {
-    name == NAME || azazel_team::ORCHESTRATION_TOOLS.contains(&name)
+    name == EVAL || azazel_team::ORCHESTRATION_TOOLS.contains(&name)
 }
 
 /// The type of one argument as a script author reads it.
@@ -197,12 +197,10 @@ fn describe_tools(tools: &[Arc<dyn Tool>]) -> String {
     out
 }
 
-pub struct RunCodeTool {
+/// Runs the scripts of `eval`. `eval` keeps the description it gets from `describe`: one that
+/// changed between requests would break the provider's prompt cache.
+pub struct LuauEval {
     limits: CodeLimits,
-    services: Arc<Services>,
-    /// Built on first use, when every extension has registered its tools, and then kept: a
-    /// description that changed between requests would break the provider's prompt cache.
-    description: OnceLock<String>,
 }
 
 /// What bounds the script code running right now.
@@ -677,7 +675,7 @@ async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
     lua.set_interrupt(move |_| watched.interrupt());
     let function = lua
         .load(code)
-        .set_name("=run_code")
+        .set_name("=eval")
         .set_mode(ChunkMode::Text)
         .into_function()
         .map_err(|e| describe(&e))?;
@@ -725,7 +723,7 @@ async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
     }
 }
 
-impl RunCodeTool {
+impl LuauEval {
     /// `text` within the result limit; the whole of a longer one goes to an artifact.
     fn bounded(&self, ctx: &ToolCtx, mut text: String) -> String {
         let max = self.limits.result_bytes;
@@ -756,19 +754,8 @@ impl RunCodeTool {
 }
 
 #[async_trait]
-impl Tool for RunCodeTool {
-    fn name(&self) -> &str {
-        NAME
-    }
-
-    fn description(&self) -> &str {
-        if let Some(built) = self.description.get() {
-            return built;
-        }
-        // Before the tool caller exists the extensions are still loading; nothing is kept yet.
-        let Some(caller) = self.services.get::<ToolCaller>() else {
-            return INTRO;
-        };
+impl LuauEngine for LuauEval {
+    fn describe(&self, services: &Services, hidden: &[Arc<dyn Tool>]) -> String {
         let anyone = AgentInfo {
             id: "lead".to_string(),
             def: "lead".to_string(),
@@ -776,37 +763,15 @@ impl Tool for RunCodeTool {
             depth: 0,
             session_id: String::new(),
         };
-        self.description
-            .get_or_init(|| describe_tools(&caller.tools.tools(&anyone)))
+        let mut tools = services
+            .get::<ToolCaller>()
+            .map(|caller| caller.tools.tools(&anyone))
+            .unwrap_or_default();
+        tools.extend(hidden.iter().cloned());
+        describe_tools(&tools)
     }
 
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "The Luau script"}
-            },
-            "required": ["code"]
-        })
-    }
-
-    /// The script itself touches nothing; each tool call it makes is judged on its own.
-    fn access(&self, _: &Value) -> Access {
-        Access::Read
-    }
-
-    fn subjects(&self, _: &Value) -> Vec<String> {
-        Vec::new()
-    }
-
-    fn concurrency_safe(&self, _: &Value) -> bool {
-        false
-    }
-
-    async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
-        let Some(code) = input.get("code").and_then(Value::as_str) else {
-            return ToolOutput::error("invalid arguments: `code` must be a string");
-        };
+    async fn run(&self, code: String, ctx: &ToolCtx) -> ToolOutput {
         let Some(caller) = ctx.services.get::<ToolCaller>() else {
             return ToolOutput::error("scripts cannot call tools in this session");
         };
@@ -828,7 +793,7 @@ impl Tool for RunCodeTool {
         // On a thread of its own: a script that computes for a while must not hold up the
         // threads every other agent and the interface run on.
         let runtime = tokio::runtime::Handle::current();
-        let (state, code) = (run.clone(), code.to_string());
+        let state = run.clone();
         let finished = tokio::task::spawn_blocking(move || runtime.block_on(execute(state, code))).await;
         let calls = run.calls.load(Ordering::SeqCst).min(self.limits.tool_calls);
         let details = json!({ "tool_calls": calls });
@@ -845,6 +810,8 @@ impl Tool for RunCodeTool {
 
 #[cfg(test)]
 mod tests {
+    use azazel_agent::Access;
+
     use super::*;
 
     struct Shown(String, String, Value);
@@ -904,14 +871,11 @@ mod tests {
         let mut tools: Vec<Arc<dyn Tool>> = vec![
             shown("read", "Read a file.", &schema),
             shown("task", "Start agents.", &schema),
-            shown(NAME, "Run a script.", &schema),
+            shown(EVAL, "Run code.", &schema),
         ];
         let listed = describe_tools(&tools);
         assert!(listed.contains("\nCallable tools: read\n"), "{listed}");
-        assert!(
-            !listed.contains("task,") && !listed.contains("run_code,"),
-            "{listed}"
-        );
+        assert!(!listed.contains("task,") && !listed.contains("eval,"), "{listed}");
 
         // Many tools are named up to the budget, and the description stays short.
         let long = "x".repeat(130);

@@ -2,7 +2,7 @@
 //! VM with the global table `azazel`, through which it adds tools, event handlers, slash commands,
 //! key bindings, providers and MCP servers, and reaches the session it runs in.
 //!
-//! The same VM and sandbox run the scripts agents write for the `run_code` tool.
+//! The same VM and sandbox run the scripts agents write with the `eval` tool (`language: "luau"`).
 
 mod api;
 mod bridge;
