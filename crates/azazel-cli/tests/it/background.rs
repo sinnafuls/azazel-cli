@@ -1334,6 +1334,10 @@ fn the_browser_goes_to_one_client_and_back_when_it_disconnects_and_is_never_logg
     let watching = one.until(|frame| frame["id"] == "w").pop().unwrap();
     assert_eq!(watching["success"], true, "{watching}");
     assert_eq!(watching["data"]["running"], false, "{watching}");
+    // Only a client that asked about the browser is told of it.
+    two.send(json!({ "id": "w", "type": "browser_watch", "on": true }));
+    let watching = two.until(|frame| frame["id"] == "w").pop().unwrap();
+    assert_eq!(watching["success"], true, "{watching}");
 
     one.send(json!({ "id": "t", "type": "browser_take", "on": true }));
     let taken = one.until(|frame| frame["id"] == "t").pop().unwrap();
