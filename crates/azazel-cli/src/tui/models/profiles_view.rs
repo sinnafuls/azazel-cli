@@ -434,7 +434,10 @@ impl Models {
         let total = self.profile_items.len();
         let visible = list_rows.min(total);
         let mut top = self.top.get().min(total - visible);
-        if self.profile_cursor < top {
+        // With nothing to show (a search that matches no profile) there is no row to keep in view.
+        if visible == 0 {
+            top = 0;
+        } else if self.profile_cursor < top {
             top = self.profile_cursor;
         } else if self.profile_cursor >= top + visible {
             top = self.profile_cursor + 1 - visible;

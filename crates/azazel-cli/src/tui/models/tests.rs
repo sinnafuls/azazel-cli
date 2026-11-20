@@ -727,6 +727,21 @@ fn profile_hints_list_the_keys_that_act_on_the_selected_row() {
 }
 
 #[test]
+fn a_search_that_matches_no_profile_says_so_instead_of_crashing() {
+    let mut screen = on_profiles(vec![
+        entry("claude", ProfileSource::Builtin, true, true),
+        entry("gpt", ProfileSource::User, true, true),
+    ]);
+    press(&mut screen, KeyCode::Down);
+    typed(&mut screen, "zzzz");
+    assert!(
+        shown(&screen, 120, 20)
+            .iter()
+            .any(|line| line.contains("no profile matches the search"))
+    );
+}
+
+#[test]
 fn hiding_a_built_in_profile_says_so_and_how_to_undo_it() {
     let mut screen = on_profiles(vec![entry("claude", ProfileSource::Builtin, true, true)]);
     assert!(matches!(
