@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
+use crate::Access;
 use crate::auth::Device;
 use crate::limits::{Bucket, Connections, since_epoch};
 use crate::policy::{self, Grants};
@@ -53,6 +54,19 @@ fn failure(id: Value, why: impl Into<String>) -> Message {
 /// for this client: a slow device sees fewer pictures instead of being cut off.
 fn stale_frame(line: &str, queued: usize) -> bool {
     queued > 1 && line.starts_with(r#"{"type":"browser_frame""#)
+}
+
+/// Whether `line` tells of the agents' browser: its picture or its state (address and title).
+fn is_browser_line(line: &str) -> bool {
+    line.starts_with(r#"{"type":"browser_frame""#) || line.starts_with(r#"{"type":"browser_state""#)
+}
+
+/// Whether this device may be told what the agents' browser does: a control link, or a view link
+/// when `remote.view_browser` is on. A session sends these only to a client that asked, which the
+/// policy lets a view link do only then; this keeps the address of a page from a device that may
+/// not see it, whatever the session sends.
+fn may_watch(device: &Device, grants: Grants) -> bool {
+    device.access == Access::Control || grants.view_browser
 }
 
 /// A response to one of the `list_commands` in `listings` keeps only the commands a browser may
@@ -119,6 +133,9 @@ pub(crate) async fn run<S>(
                 };
                 if conn.frames.len() >= QUEUE {
                     return close(&mut socket, 4408, "too slow: reconnect and attach with `since`").await;
+                }
+                if is_browser_line(&line) && !may_watch(&device, shared.grants) {
+                    continue;
                 }
                 // A picture of the browser is worth nothing once a newer one waits behind it.
                 if stale_frame(&line, conn.frames.len()) {
@@ -196,7 +213,7 @@ pub(crate) async fn run<S>(
 
 #[cfg(test)]
 mod tests {
-    use super::stale_frame;
+    use super::{is_browser_line, stale_frame};
 
     #[test]
     fn a_picture_of_the_browser_is_dropped_only_when_lines_already_wait() {
@@ -207,5 +224,14 @@ mod tests {
         // Every other line is kept, however long the queue.
         assert!(!stale_frame(r#"{"type":"browser_state","running":true}"#, 50));
         assert!(!stale_frame(r#"{"type":"stream","agent":"lead"}"#, 50));
+    }
+
+    #[test]
+    fn the_picture_and_the_state_of_the_browser_are_the_lines_about_it() {
+        assert!(is_browser_line(
+            r#"{"type":"browser_state","running":true,"url":"https://a.test"}"#
+        ));
+        assert!(is_browser_line(r#"{"type":"browser_frame","tab":"t"}"#));
+        assert!(!is_browser_line(r#"{"type":"stream","text":"browser_state"}"#));
     }
 }

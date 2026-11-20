@@ -180,7 +180,7 @@ struct Host {
     /// The agents' browser, as the clients see it. Its pictures and states go to the clients
     /// only: they are not frames of the session, and are neither logged nor replayed.
     browser: Option<Arc<Browser>>,
-    /// What tells each attached client about the browser.
+    /// What tells each client that has used the browser about it.
     pumps: HashMap<u64, tokio::task::JoinHandle<()>>,
     /// The connections that are clients of the session, and the process each said it is.
     attached: BTreeMap<u64, Option<u32>>,
@@ -869,7 +869,12 @@ impl Host {
 
     /// A command about the agents' browser: it is served here, not by the session, so that what
     /// it makes the browser send does not become frames of the session.
-    fn browser_command(&self, conn: u64, id: Value, command: Command) {
+    fn browser_command(&mut self, conn: u64, id: Value, command: Command) {
+        // Only a client that asked for something of the browser is told what it does: the server
+        // lets a command of the browser through only to a device that may have it.
+        if !self.pumps.contains_key(&conn) {
+            self.watch_browser(conn);
+        }
         let lines = self.conns.get(&conn).cloned();
         browser::dispatch(
             self.browser.as_ref(),
@@ -963,8 +968,6 @@ impl Host {
             }
             self.to(conn, pending.line.clone());
         }
-        // Only after the answer and the replay, so a client reads `attach`'s answer first.
-        self.watch_browser(conn);
     }
 
     /// Whether the log holds a frame whose line starts at byte `at`.

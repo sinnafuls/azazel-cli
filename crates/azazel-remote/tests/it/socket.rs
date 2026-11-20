@@ -192,3 +192,26 @@ async fn stopping_the_server_closes_every_socket() {
     server.shutdown().await;
     assert_eq!(waiting.await.unwrap(), 1001);
 }
+
+#[tokio::test]
+async fn a_view_link_is_told_nothing_of_the_browser_unless_view_browser_is_on() {
+    let (server, fake, _received) = server().await;
+    let viewer = pair(&server, Access::View).await;
+    let controller = pair(&server, Access::Control).await;
+    let mut view = connect(server.port(), "s1", Some(&viewer)).await;
+    let mut control = connect(server.port(), "s1", Some(&controller)).await;
+    next_json(&mut view).await;
+    next_json(&mut control).await;
+    fake.push(
+        r#"{"type":"browser_state","running":true,"url":"https://bank.test/account","title":"Account"}"#,
+    )
+    .await;
+    fake.push(r#"{"type":"browser_frame","tab":"t","data":"","width":1,"height":1,"seq":1}"#)
+        .await;
+    fake.push(r#"{"type":"idle"}"#).await;
+    // The controller is told of all three; the viewer reads on to the first line that is not about
+    // the browser.
+    assert_eq!(next_json(&mut control).await["type"], "browser_state");
+    assert_eq!(next_json(&mut control).await["type"], "browser_frame");
+    assert_eq!(next_json(&mut view).await["type"], "idle");
+}

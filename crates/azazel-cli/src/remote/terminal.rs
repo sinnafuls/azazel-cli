@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -853,7 +853,7 @@ impl TerminalSessions {
                     if browser_pump.is_none()
                         && let Some(browser) = &self.browser
                     {
-                        browser_pump = Some(browser.pump_to(holder.clone(), tell(&out)));
+                        browser_pump = Some(browser.pump_to(holder.clone(), tell(&out, self.redact)));
                     }
                     let (answer, answered) = oneshot::channel();
                     live::dispatch(
@@ -903,15 +903,37 @@ impl TerminalSessions {
     }
 }
 
-/// What the pump of the agents' browser writes to the browser on `out`. A picture is dropped when
-/// a line already waits, so that a slow device sees fewer of them and is never let go for them.
-fn tell(out: &mpsc::Sender<String>) -> impl Fn(String, bool) + Send + Sync + 'static {
-    let out = out.clone();
+/// What the pump of the agents' browser writes to the browser on `out`, with the address and title
+/// of the page hidden when `redact` is on. Lines wait in order for `out`, which a slow device
+/// reads late: a picture is dropped while one still waits, so that it sees fewer of them and is
+/// never let go for them, but a state is never dropped.
+fn tell(out: &mpsc::Sender<String>, redact: bool) -> impl Fn(String, bool) + Send + Sync + 'static {
+    let (lines, mut waiting) = mpsc::unbounded_channel::<(String, bool)>();
+    let pictures = Arc::new(AtomicUsize::new(0));
+    tokio::spawn({
+        let (out, pictures) = (out.clone(), pictures.clone());
+        async move {
+            while let Some((line, picture)) = waiting.recv().await {
+                let sent = out.send(line).await;
+                if picture {
+                    pictures.store(0, Ordering::SeqCst);
+                }
+                if sent.is_err() {
+                    return;
+                }
+            }
+        }
+    });
     move |line, picture| {
-        if picture && out.max_capacity() - out.capacity() > 1 {
+        if picture && pictures.swap(1, Ordering::SeqCst) > 0 {
             return;
         }
-        let _ = out.try_send(line);
+        let line = if redact && !picture {
+            super::background::redacted(&line)
+        } else {
+            line
+        };
+        let _ = lines.send((line, picture));
     }
 }
 

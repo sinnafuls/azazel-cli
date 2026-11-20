@@ -284,13 +284,15 @@ impl Sessions for BackgroundSessions {
     }
 }
 
-/// Frames that are complete and may carry what a tool read or a model wrote.
+/// Frames that are complete and may carry what a tool read, a model wrote or a page was called.
 const COMPLETE: &[&str] = &[
     "message_end",
     "tool_start",
     "tool_end",
     "approval_request",
     "response",
+    // The address and the title of the page may carry a token. The pictures are not redacted.
+    "browser_state",
 ];
 
 /// `line` with the secrets in its strings hidden, when it is a complete frame. Deltas are left
@@ -342,5 +344,17 @@ mod tests {
         let plain = r#"{"type":"idle"}"#;
         assert_eq!(redacted(plain), plain);
         assert_eq!(redacted("not json"), "not json");
+    }
+
+    #[test]
+    fn the_address_and_title_of_the_agents_page_lose_a_token() {
+        let key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH";
+        let state = format!(
+            r#"{{"type":"browser_state","running":true,"url":"https://x.test/cb?k={key}","title":"Key {key}","held":false,"held_by_you":false,"watchers":1}}"#
+        );
+        let hidden = redacted(&state);
+        assert!(!hidden.contains(key) && hidden.contains("redacted"), "{hidden}");
+        let frame: Value = serde_json::from_str(&hidden).unwrap();
+        assert_eq!(frame["running"], true);
     }
 }

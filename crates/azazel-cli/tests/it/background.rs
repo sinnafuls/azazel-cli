@@ -1299,6 +1299,27 @@ fn options_that_cannot_apply_to_a_running_session_are_refused_when_attaching() {
     assert_eq!(sandbox.session_files().len(), 1);
 }
 
+/// A client that never used the browser is not told what it does: its address and title are not
+/// for a device that may not watch (the server lets a browser command through only to one that
+/// may).
+#[cfg(feature = "browser")]
+#[test]
+fn a_client_that_never_asked_for_the_browser_is_told_nothing_of_it() {
+    let (sandbox, id) = session_waiting_for_approval();
+    let (mut bystander, _) = Bridge::attach(&sandbox, &id, "none");
+    let (mut user, _) = Bridge::attach(&sandbox, &id, "none");
+    user.send(json!({ "id": "w", "type": "browser_watch", "on": true }));
+    user.until(|frame| frame["type"] == "browser_state");
+    bystander.send(json!({ "id": "g", "type": "get_state" }));
+    let seen = bystander.until(|frame| frame["id"] == "g");
+    assert!(
+        seen.iter().all(|frame| frame["type"] != "browser_state"),
+        "{seen:?}"
+    );
+    bystander.detach();
+    user.detach();
+}
+
 /// The agents' browser is shared by the clients of a session: one holds it, the others are
 /// refused, and it is handed back when the holder goes. What it sends is never logged or
 /// replayed.
