@@ -2,8 +2,12 @@
 	// The agents' browser, live. One header row says what it is on (the page's title over its
 	// address), what it is doing (a badge) and holds the buttons; the picture of the tab fills the
 	// panel under it from edge to edge, scaled to fit. A device that may control can take it over
-	// (the agents wait): an address row then stands under the header, and clicks, the wheel and keys
-	// over the picture go to the page, until the browser is handed back.
+	// (the agents wait): an address row then stands under the header (back, forward, reload and the
+	// address), and clicks, the wheel and keys over the picture go to the page, until the browser is
+	// handed back.
+	// Back, forward and reload are not in the header: five buttons there leave the title 9px of the
+	// 215px pane of a 1024px window, and 32px of the 331px pane of a 1440px one. In a pane as
+	// narrow as those they are a line of their own over the address, which then has the whole width.
 	// The parts answer to the width of the panel, not of the window: the pane beside the chat is
 	// about 215px wide in a 1024px window, where the globe goes and the badge is its mark alone.
 	// The keyboard is taken by a field nobody sees, in the picture: only a field brings up the
@@ -43,6 +47,7 @@
 	import StateDot from './StateDot.svelte';
 	import Tip from './Tip.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import ArrowRight from '@lucide/svelte/icons/arrow-right';
 	import Globe from '@lucide/svelte/icons/globe';
 	import LogIn from '@lucide/svelte/icons/log-in';
 	import MousePointerClick from '@lucide/svelte/icons/mouse-pointer-click';
@@ -314,7 +319,7 @@
 		flush();
 		send({ kind: 'navigate', url });
 	}
-	function nav(kind: 'back' | 'reload') {
+	function nav(kind: 'back' | 'forward' | 'reload') {
 		flush();
 		send({ kind });
 	}
@@ -401,7 +406,7 @@
 			{/if}
 		</header>
 		{#if live.error}
-			<div class="shrink-0 border-b p-3">
+			<div class="shrink-0 border-b p-3" data-browser-error>
 				<Alert.Root variant="destructive" role="alert">
 					<Alert.Description>{live.error}</Alert.Description>
 				</Alert.Root>
@@ -437,19 +442,27 @@
 			</Empty.Root>
 		{:else}
 			{#if holding}
-				<!-- As in a browser: back and reload beside the address they act on. They stand beside
-				     the group, not in it; the field is as tall as the inside of the group and the one
-				     addon gives up the padding and the margin the stock one reaches past the border
-				     with, so nothing overhangs the group. -->
+				<!-- As in a browser: back, forward and reload before the address they act on. They stand
+				     beside the group, not in it; in a narrow pane the group takes the line under them,
+				     so that an address can be read there. The field is as tall as the inside of the
+				     group and the one addon gives up the padding and the margin the stock one reaches
+				     past the border with, so nothing overhangs the group. -->
 				<form
 					class="grid shrink-0 gap-1.5 border-b px-3 py-2"
 					onsubmit={go}
 					novalidate
 					data-browser-address
 				>
-					<div class="flex items-center gap-1">
+					<div class="flex items-center gap-1 @max-sm:flex-wrap @max-sm:gap-y-1.5" data-browser-nav>
 						<Tip text="Back" side="bottom" size="icon" aria-label="Back" onclick={() => nav('back')}
 							><ArrowLeft /></Tip
+						>
+						<Tip
+							text="Forward"
+							side="bottom"
+							size="icon"
+							aria-label="Forward"
+							onclick={() => nav('forward')}><ArrowRight /></Tip
 						>
 						<Tip
 							text="Reload"
@@ -458,7 +471,7 @@
 							aria-label="Reload"
 							onclick={() => nav('reload')}><RotateCw /></Tip
 						>
-						<InputGroup.Root class="flex-1">
+						<InputGroup.Root class="flex-1 @max-sm:basis-full">
 							<InputGroup.Input
 								bind:value={typed}
 								class="h-full"
