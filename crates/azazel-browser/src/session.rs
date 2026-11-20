@@ -1712,6 +1712,21 @@ impl BrowserSession {
             return Err(ANOTHER_HOLDS.to_string());
         }
         self.show(&mut state, headless, url, None, "").await?;
+        // A browser that was started for this has the blank page it came with and no tab. That
+        // page is the tab shown from now on: a watcher gets a picture of it, and whoever takes
+        // the browser over can go somewhere with it.
+        if let Some(running) = state.as_mut()
+            && running.current_tab().is_none()
+        {
+            running.current = match running.tabs.last() {
+                Some(tab) => Some(tab.name.clone()),
+                None => {
+                    let target = running.new_target().await?;
+                    let index = running.attach(&target, None).await?;
+                    Some(running.tabs[index].name.clone())
+                }
+            };
+        }
         self.renew(holder);
         // The browser may be another one now: what the agents were shown is not what is there.
         if let Some(running) = state.as_mut() {
@@ -2606,6 +2621,61 @@ mod tests {
             [Block::Text { text }] => text.clone(),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_browser_opened_to_sign_in_before_any_page_shows_its_blank_page_to_a_watcher() {
+        if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+            eprintln!("skipped: no Chromium-based browser on this machine");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let site = serve().await;
+        let session = BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: dir.path().join("profile"),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
+            live: crate::live::LiveSettings::default(),
+        });
+        let mut frames = session.frames();
+        let states = session.states();
+        session.watch(true).await;
+        // The agent has opened nothing yet: the browser starts for the sign-in.
+        session.sign_in_with("me", None, true).await.unwrap();
+        let state = states.borrow().clone();
+        assert!(state.running, "{state:?}");
+        assert_eq!(state.tab.as_deref(), Some("tab-1"), "{state:?}");
+        assert_eq!(state.url.as_deref(), Some("about:blank"), "{state:?}");
+        // The watcher gets a picture of it, instead of waiting for one that never comes.
+        let frame = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(frame) = frames.borrow_and_update().clone() {
+                    return frame;
+                }
+                frames.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("a picture of the blank page");
+        assert_eq!(frame.tab, "tab-1");
+        assert!(frame.width > 0 && frame.height > 0);
+        // And whoever takes it over can go somewhere with it.
+        session.take("me", false).unwrap();
+        session
+            .user_input(
+                "me",
+                LiveInput::Navigate {
+                    url: format!("{site}/start"),
+                },
+            )
+            .await
+            .unwrap();
+        let state = states.borrow().clone();
+        assert_eq!(state.title.as_deref(), Some("fixture"), "{state:?}");
+        assert_eq!(state.url, Some(format!("{site}/start")), "{state:?}");
+        session.shutdown().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
