@@ -1232,7 +1232,7 @@ impl Cli {
         if !escaped && let Some(word) = cli.mistyped_subcommand(&command) {
             let close = closest_subcommand(&command, &word).unwrap_or_default();
             eprintln!(
-                "azazel: unknown command `{word}`; did you mean `{close}`? To send `{word}` as a prompt,                  run `azazel -- {word}`."
+                "azazel: unknown command `{word}`; did you mean `{close}`? To send `{word}` as a prompt, run `azazel -- {word}`."
             );
             std::process::exit(i32::from(crate::print::EXIT_USAGE));
         }
