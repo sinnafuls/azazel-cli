@@ -6,8 +6,10 @@
 //! the OpenAI Images API's, as the Codex client sends it. So the backend checks what it is told:
 //! a reply that says the endpoint or the plan is not there switches it off for that account for
 //! the rest of the session, with a message that says so, and no later call of that account makes
-//! a request. A refusal that may be passing (a 403 that is not the backend's own, such as a
-//! proxy's page, or one that does not name the plan) is reported and switches nothing off.
+//! a request. A missing endpoint is off for that endpoint only (`images/edits` may be missing
+//! where `images/generations` is not). A refusal that may be passing (a 403 that is not the
+//! backend's own, such as a proxy's page, or one that does not name the plan; a 404 that names
+//! the model, or comes as a page of markup) is reported and switches nothing off.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -36,27 +38,31 @@ const NOT_OFFERED: &str =
 const NOT_ON_PLAN: &str =
     "image generation is not available to this ChatGPT plan (it needs a paid plan; Free has none)";
 
-/// Why the backend is off, by ChatGPT account id. Shared by the backends made for one provider,
-/// because the service builds a new one for each call (a login's token is renewed in between);
-/// keyed by account, so that signing in to another account gives the backend a new chance.
+/// The scope of an off switch that holds for every endpoint of an account (the plan).
+const ALL_ENDPOINTS: &str = "*";
+
+/// Why the backend is off, by ChatGPT account id and endpoint. Shared by the backends made for
+/// one provider, because the service builds a new one for each call (a login's token is renewed
+/// in between); keyed by account, so that signing in to another account gives the backend a new
+/// chance, and by endpoint, so that one missing endpoint leaves the other in use.
 #[derive(Clone, Default)]
-pub struct CodexOff(Arc<Mutex<HashMap<String, String>>>);
+pub struct CodexOff(Arc<Mutex<HashMap<(String, String), String>>>);
 
 impl CodexOff {
-    fn get(&self, account: &str) -> Option<String> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(account)
-            .cloned()
+    fn get(&self, account: &str, endpoint: &str) -> Option<String> {
+        let map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        [endpoint, ALL_ENDPOINTS]
+            .into_iter()
+            .find_map(|scope| map.get(&(account.to_string(), scope.to_string())).cloned())
     }
 
-    /// Records `why` for `account` unless an answer got there first; returns what is recorded.
-    fn set(&self, account: &str, why: &str) -> String {
+    /// Records `why` for `account` and `scope` unless an answer got there first; returns what
+    /// is recorded.
+    fn set(&self, account: &str, scope: &str, why: &str) -> String {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .entry(account.to_string())
+            .entry((account.to_string(), scope.to_string()))
             .or_insert_with(|| why.to_string())
             .clone()
     }
@@ -98,15 +104,20 @@ impl CodexImages {
             .map_or("", |(_, value)| value.as_str())
     }
 
-    fn refuse_when_disabled(&self) -> Result<(), MediaError> {
-        match self.disabled.get(self.account()) {
+    fn refuse_when_disabled(&self, endpoint: &str) -> Result<(), MediaError> {
+        match self.disabled.get(self.account(), endpoint) {
             Some(message) => Err(MediaError::Unsupported(message)),
             None => Ok(()),
         }
     }
 
     async fn run(&self, req: &MediaRequest) -> Result<Vec<MediaFile>, MediaError> {
-        self.refuse_when_disabled()?;
+        let endpoint = if req.inputs.is_empty() {
+            "images/generations"
+        } else {
+            "images/edits"
+        };
+        self.refuse_when_disabled(endpoint)?;
         if req.inputs.len() > MAX_INPUTS {
             return Err(MediaError::Input(format!(
                 "an edit takes at most {MAX_INPUTS} input images, not {}",
@@ -129,12 +140,9 @@ impl CodexImages {
             let url = data_url(path).await?;
             images.push(json!({"image_url": url}));
         }
-        let endpoint = if images.is_empty() {
-            "images/generations"
-        } else {
+        if !images.is_empty() {
             body.insert("images".to_string(), Value::Array(images));
-            "images/edits"
-        };
+        }
 
         let mut request = self
             .client
@@ -148,7 +156,7 @@ impl CodexImages {
             request = request.header(name, value);
         }
         let (status, body) = send(ID, request).await?;
-        if let Some(why) = self.switch_off(status, &body) {
+        if let Some(why) = self.switch_off(endpoint, &req.model, status, &body) {
             return Err(MediaError::Unsupported(why));
         }
         if status == 403 && !is_json(&body) {
@@ -183,39 +191,54 @@ impl CodexImages {
     }
 
     /// Switches the backend off for this account when `status` and `body` say it is not
-    /// offered, and returns the message to give. A 429 is a usage limit, and a 403 that is not
-    /// JSON or does not name the plan may pass, so none of them switches anything off.
-    fn switch_off(&self, status: u16, body: &str) -> Option<String> {
-        let why = match status {
-            400 | 403 if names_plan(body) => NOT_ON_PLAN,
-            404 | 405 | 501 => NOT_OFFERED,
+    /// offered, and returns the message to give. A 429 is a usage limit, a 403 that is not JSON
+    /// or does not name the plan may pass, a 400 is the request's own fault unless its error
+    /// code names the plan, and a 404 that names `model` is an unknown model, not a missing
+    /// endpoint, as is a page of markup a proxy's: none of them switches anything off.
+    fn switch_off(&self, endpoint: &str, model: &str, status: u16, body: &str) -> Option<String> {
+        let (scope, why) = match status {
+            400 if names_plan(body, false) => (ALL_ENDPOINTS, NOT_ON_PLAN),
+            403 if names_plan(body, true) => (ALL_ENDPOINTS, NOT_ON_PLAN),
+            404 | 405 | 501 if !names_model(body, model) && !is_markup(body) => (endpoint, NOT_OFFERED),
             _ => return None,
         };
         tracing::warn!(status, body = %clip(body, 200), "the ChatGPT backend refused image generation; switching it off");
         // The first answer wins when two calls race.
-        Some(self.disabled.set(self.account(), why))
+        Some(self.disabled.set(self.account(), scope, why))
     }
+}
+
+/// Whether the body names `model`: the backend knows the endpoint and is refusing the model.
+fn names_model(body: &str, model: &str) -> bool {
+    !model.is_empty() && body.to_ascii_lowercase().contains(&model.to_ascii_lowercase())
+}
+
+/// Whether the body is a page of markup, which a proxy sends and the backend does not.
+fn is_markup(body: &str) -> bool {
+    body.trim_start().starts_with('<')
 }
 
 fn is_json(body: &str) -> bool {
     serde_json::from_str::<Value>(body).is_ok_and(|value| value.is_object())
 }
 
-/// Whether an error body in JSON says the plan has no image generation: the error's code, type
-/// or message has a word of that meaning. Whole words only, so `explanation` and `planet` do
-/// not count; a body that is not JSON (a proxy's page) says nothing about the plan.
-fn names_plan(body: &str) -> bool {
+/// Whether an error body in JSON says the plan has no image generation: the error's code or type
+/// (and with `message` its message) has a word of that meaning. Whole words only, so
+/// `explanation` and `planet` do not count; a body that is not JSON (a proxy's page) says
+/// nothing about the plan.
+fn names_plan(body: &str, message: bool) -> bool {
     let Ok(Value::Object(root)) = serde_json::from_str::<Value>(body) else {
         return false;
     };
     let error = root.get("error").unwrap_or(&Value::Null);
-    let fields = [
-        &error["code"],
-        &error["type"],
-        &error["message"],
-        root.get("detail").unwrap_or(&Value::Null),
-        root.get("message").unwrap_or(&Value::Null),
-    ];
+    let mut fields = vec![&error["code"], &error["type"]];
+    if message {
+        fields.extend([
+            &error["message"],
+            root.get("detail").unwrap_or(&Value::Null),
+            root.get("message").unwrap_or(&Value::Null),
+        ]);
+    }
     fields.into_iter().filter_map(Value::as_str).any(|text| {
         let words: Vec<String> = text
             .split(|c: char| !c.is_ascii_alphanumeric())
@@ -544,6 +567,98 @@ mod tests {
             let error = run(&backend(&server), &request(Vec::new())).await.unwrap_err();
             assert_eq!(error, MediaError::Unsupported(NOT_ON_PLAN.to_string()), "{body}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_400_is_a_plan_refusal_by_its_code_not_by_a_word_of_its_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": { "code": "invalid_prompt", "message": "Your plan for the scene is too long." }
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": { "code": "plan_not_supported", "message": "Not available." }
+            })))
+            .mount(&server)
+            .await;
+        let backend = backend(&server);
+        let first = run(&backend, &request(Vec::new())).await.unwrap_err();
+        assert!(matches!(first, MediaError::Api { status: 400, .. }), "{first}");
+        let second = run(&backend, &request(Vec::new())).await.unwrap_err();
+        assert_eq!(second, MediaError::Unsupported(NOT_ON_PLAN.to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_404_that_names_the_model_is_an_unknown_model_and_switches_nothing_off() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "error": { "message": "The model `gpt-image-2` does not exist." }
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(image_reply())
+            .mount(&server)
+            .await;
+        let backend = backend(&server);
+        let first = run(&backend, &request(Vec::new())).await.unwrap_err();
+        assert!(matches!(first, MediaError::Api { status: 404, .. }), "{first}");
+        assert_eq!(run(&backend, &request(Vec::new())).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_404_page_from_a_proxy_switches_nothing_off() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string("<html><body>404 Not Found</body></html>"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(image_reply())
+            .mount(&server)
+            .await;
+        let backend = backend(&server);
+        let first = run(&backend, &request(Vec::new())).await.unwrap_err();
+        assert!(matches!(first, MediaError::Api { status: 404, .. }), "{first}");
+        assert_eq!(run(&backend, &request(Vec::new())).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_missing_edits_endpoint_leaves_generations_on() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/images/edits"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/images/generations"))
+            .respond_with(image_reply())
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("in.png");
+        std::fs::write(&input, png()).unwrap();
+        let backend = backend(&server);
+
+        let edit = request(vec![input]);
+        let error = run(&backend, &edit).await.unwrap_err();
+        assert_eq!(error, MediaError::Unsupported(NOT_OFFERED.to_string()));
+        // The edit stays off without a request; a generation is still made.
+        assert_eq!(run(&backend, &edit).await.unwrap_err(), error);
+        assert_eq!(run(&backend, &request(Vec::new())).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
