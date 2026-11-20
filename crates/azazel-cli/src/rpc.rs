@@ -13,7 +13,7 @@ pub(crate) mod session;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
@@ -381,7 +381,7 @@ struct Session {
     browser_pump: Option<tokio::task::JoinHandle<()>>,
     /// How many pictures of the browser wait to be written to the client: it is sent no more
     /// until the writer has caught up.
-    pictures: Arc<AtomicUsize>,
+    pictures: Arc<browser::Pictures>,
 }
 
 impl Session {
@@ -1108,7 +1108,7 @@ pub async fn serve(
     mut writer: impl AsyncWrite + Unpin + Send + 'static,
 ) -> u8 {
     let (lines, mut queued) = mpsc::unbounded_channel::<Option<String>>();
-    let pictures = Arc::new(AtomicUsize::new(0));
+    let pictures = Arc::new(browser::Pictures::default());
     let writing = tokio::spawn({
         let pictures = pictures.clone();
         async move {
@@ -1151,7 +1151,7 @@ pub(crate) async fn serve_lines(
     input: impl futures::Stream<Item = String>,
     lines: mpsc::UnboundedSender<Option<String>>,
     waiting: Arc<Waiting>,
-    pictures: Arc<AtomicUsize>,
+    pictures: Arc<browser::Pictures>,
 ) {
     let out = Out(lines);
     // Requests from agents go through the loop below rather than straight out, so they are written

@@ -16,8 +16,7 @@
 // build without either serves the one client of a direct session, or none.
 #![cfg_attr(not(all(feature = "detach", feature = "browser")), allow(dead_code))]
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use azazel_agent::Services;
 use azazel_protocol::{BrowserState, Command, Frame};
@@ -53,29 +52,88 @@ pub(crate) fn missing() -> &'static str {
 /// The start of a `browser_frame` line, as the protocol writes it.
 pub(crate) const PICTURE: &str = r#"{"type":"browser_frame""#;
 
-/// Lets one picture wait to be written to a client at a time: a client that reads slowly is sent
-/// no more until the last one is out, instead of the pictures piling up in an unbounded queue.
-/// `pictures` counts those waiting; the writer calls [`written`] for every line it has written.
-pub(crate) fn one_picture_in_flight(
-    pictures: Arc<AtomicUsize>,
-    send: impl Fn(String) + Send + Sync + 'static,
-) -> impl Fn(String, bool) + Send + Sync + 'static {
-    move |line, picture| {
-        if picture {
-            if pictures.load(Ordering::SeqCst) > 0 {
-                return;
-            }
-            pictures.fetch_add(1, Ordering::SeqCst);
+/// The pictures of the browser on their way to one client, at most one at a time: a client
+/// that reads slowly is sent no more until the last one is out, instead of the pictures piling
+/// up in an unbounded queue. A picture that arrives meanwhile is kept, the newest of them only,
+/// and goes out when the writer is done, so that a client does not stay on an old picture of a
+/// page that has stopped changing.
+#[derive(Default)]
+pub(crate) struct Pictures {
+    state: Mutex<Waiting>,
+    /// Where a kept picture goes; weak, so that a client that went is not kept alive by it.
+    send: Mutex<Option<Weak<dyn Fn(String) + Send + Sync>>>,
+}
+
+#[derive(Default)]
+struct Waiting {
+    /// A picture is written or queued for writing.
+    in_flight: bool,
+    /// The newest picture that arrived meanwhile.
+    latest: Option<String>,
+}
+
+impl Pictures {
+    /// A new picture: handed back when it may be sent now, kept when one is still in flight.
+    pub(crate) fn offer(&self, line: String) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.in_flight {
+            state.latest = Some(line);
+            None
+        } else {
+            state.in_flight = true;
+            Some(line)
         }
-        send(line);
+    }
+
+    /// The picture in flight is written: the kept one, to be sent next, if any.
+    pub(crate) fn finished(&self) -> Option<String> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = state.latest.take();
+        state.in_flight = next.is_some();
+        next
     }
 }
 
-/// Tells the count of [`one_picture_in_flight`] that a line has been written; `picture` is
-/// whether it was a `browser_frame`.
-pub(crate) fn written(pictures: &AtomicUsize, picture: bool) {
-    if picture {
-        pictures.fetch_sub(1, Ordering::SeqCst);
+/// Lets one picture wait to be written to a client at a time; see [`Pictures`]. The writer calls
+/// [`written`] for every line it has written.
+pub(crate) fn one_picture_in_flight(
+    pictures: Arc<Pictures>,
+    send: impl Fn(String) + Send + Sync + 'static,
+) -> impl Fn(String, bool) + Send + Sync + 'static {
+    let send: Arc<dyn Fn(String) + Send + Sync> = Arc::new(send);
+    *pictures.send.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::downgrade(&send));
+    move |line, picture| {
+        if picture {
+            if let Some(line) = pictures.offer(line) {
+                send(line);
+            }
+        } else {
+            send(line);
+        }
+    }
+}
+
+/// Tells [`Pictures`] that a line has been written; `picture` is whether it was a
+/// `browser_frame`. The picture that was kept meanwhile is sent now.
+pub(crate) fn written(pictures: &Pictures, picture: bool) {
+    if !picture {
+        return;
+    }
+    let Some(line) = pictures.finished() else {
+        return;
+    };
+    let send = pictures
+        .send
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(Weak::upgrade);
+    match send {
+        Some(send) => send(line),
+        // Its client went: the next one starts afresh.
+        None => {
+            let _ = pictures.finished();
+        }
     }
 }
 
@@ -107,7 +165,6 @@ pub(crate) use real::Browser;
 #[cfg(feature = "browser")]
 mod real {
     use std::collections::HashSet;
-    use std::sync::{Mutex, PoisonError};
 
     use azazel_browser::{BrowserSession, BrowserStateInfo, LiveButton, LiveInput};
     use azazel_protocol::{BrowserInput, MouseButton};
@@ -482,7 +539,7 @@ mod tests {
     #[test]
     fn a_client_is_sent_one_picture_at_a_time_and_every_other_line() {
         let sent = Arc::new(Mutex::new(Vec::<String>::new()));
-        let pictures = Arc::new(AtomicUsize::new(0));
+        let pictures = Arc::new(Pictures::default());
         let send = {
             let sent = sent.clone();
             one_picture_in_flight(pictures.clone(), move |line| sent.lock().unwrap().push(line))
@@ -497,12 +554,37 @@ mod tests {
             2,
             "the pictures behind the first were kept"
         );
-        // The writer wrote the first one: the next may go.
+        // The writer wrote the first one: the newest picture kept meanwhile goes out, not the
+        // ones before it.
         written(&pictures, picture(1).starts_with(PICTURE));
+        assert_eq!(sent.lock().unwrap().len(), 3);
+        assert!(sent.lock().unwrap()[2].contains(r#""seq":3"#));
+        // Lines that are not pictures free nothing.
         written(&pictures, false);
         send(picture(4), true);
+        assert_eq!(sent.lock().unwrap().len(), 3);
+        // That one is written; the picture that came after it follows, and then it is quiet.
+        written(&pictures, true);
         let sent = sent.lock().unwrap();
-        assert_eq!(sent.len(), 3);
-        assert!(sent[2].contains(r#""seq":4"#), "{sent:?}");
+        assert_eq!(sent.len(), 4);
+        assert!(sent[3].contains(r#""seq":4"#), "{sent:?}");
+    }
+
+    #[test]
+    fn a_skipped_picture_is_sent_when_the_writer_is_done_even_if_none_follows() {
+        let sent = Arc::new(Mutex::new(Vec::<String>::new()));
+        let pictures = Arc::new(Pictures::default());
+        let send = {
+            let sent = sent.clone();
+            one_picture_in_flight(pictures.clone(), move |line| sent.lock().unwrap().push(line))
+        };
+        send("first".to_string(), true);
+        send("last".to_string(), true);
+        written(&pictures, true);
+        assert_eq!(*sent.lock().unwrap(), ["first", "last"]);
+        written(&pictures, true);
+        // Nothing more was kept: a later picture goes straight out.
+        send("later".to_string(), true);
+        assert_eq!(sent.lock().unwrap().len(), 3);
     }
 }

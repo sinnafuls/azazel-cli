@@ -23,7 +23,6 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::time::{Duration, Instant};
 
 use azazel_core::{Event, Level};
@@ -176,7 +175,7 @@ struct Host {
     conns: HashMap<u64, mpsc::UnboundedSender<String>>,
     /// How many pictures of the agents' browser wait to be written to each connection: one that
     /// is behind is sent no more until it has caught up.
-    pictures: HashMap<u64, Arc<AtomicUsize>>,
+    pictures: HashMap<u64, Arc<browser::Pictures>>,
     /// The agents' browser, as the clients see it. Its pictures and states go to the clients
     /// only: they are not frames of the session, and are neither logged nor replayed.
     browser: Option<Arc<Browser>>,
@@ -754,7 +753,7 @@ impl Host {
             let _ = lines.send(hello);
         }
         self.conns.insert(conn, lines);
-        let pictures = Arc::new(AtomicUsize::new(0));
+        let pictures = Arc::new(browser::Pictures::default());
         self.pictures.insert(conn, pictures.clone());
         tokio::spawn(async move {
             while let Some(mut line) = queued.recv().await {

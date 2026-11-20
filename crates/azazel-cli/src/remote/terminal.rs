@@ -8,7 +8,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -905,35 +905,37 @@ impl TerminalSessions {
 
 /// What the pump of the agents' browser writes to the browser on `out`, with the address and title
 /// of the page hidden when `redact` is on. Lines wait in order for `out`, which a slow device
-/// reads late: a picture is dropped while one still waits, so that it sees fewer of them and is
-/// never let go for them, but a state is never dropped.
+/// reads late: a picture is skipped while one still waits, so that it sees fewer of them and is
+/// never let go for them (the newest skipped one is sent when the waiting one is out), but a
+/// state is never dropped.
 fn tell(out: &mpsc::Sender<String>, redact: bool) -> impl Fn(String, bool) + Send + Sync + 'static {
-    let (lines, mut waiting) = mpsc::unbounded_channel::<(String, bool)>();
-    let pictures = Arc::new(AtomicUsize::new(0));
+    let (lines, mut waiting) = mpsc::unbounded_channel::<String>();
+    let pictures = Arc::new(live::Pictures::default());
     tokio::spawn({
         let (out, pictures) = (out.clone(), pictures.clone());
         async move {
-            while let Some((line, picture)) = waiting.recv().await {
+            while let Some(line) = waiting.recv().await {
+                let picture = line.starts_with(live::PICTURE);
                 let sent = out.send(line).await;
-                if picture {
-                    pictures.store(0, Ordering::SeqCst);
-                }
+                // Sends the newest picture that was skipped meanwhile, so that a page that has
+                // stopped changing is not left on an old one.
+                live::written(&pictures, picture);
                 if sent.is_err() {
                     return;
                 }
             }
         }
     });
+    let send = live::one_picture_in_flight(pictures, move |line| {
+        let _ = lines.send(line);
+    });
     move |line, picture| {
-        if picture && pictures.swap(1, Ordering::SeqCst) > 0 {
-            return;
-        }
         let line = if redact && !picture {
             super::background::redacted(&line)
         } else {
             line
         };
-        let _ = lines.send((line, picture));
+        send(line, picture);
     }
 }
 
@@ -1149,8 +1151,6 @@ pub(crate) fn qr_rows(url: &str, glyphs: Glyphs) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-
-    use std::sync::atomic::AtomicUsize;
 
     use azazel_agent::{Access as ToolAccess, AgentInfo};
 
@@ -1449,7 +1449,6 @@ mod tests {
         let refused = frame(&mut one).await;
         assert_eq!(refused["id"], 3);
         assert_eq!(refused["success"], false);
-        let _ = AtomicUsize::new(0);
     }
 
     #[tokio::test]
