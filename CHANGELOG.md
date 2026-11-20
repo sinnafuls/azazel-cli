@@ -5,7 +5,7 @@ GitHub are its section here.
 
 ## [Unreleased]
 
-## [0.16.0] - 2026-11-19
+## [0.16.0] - 2026-11-20
 
 ### Added
 
