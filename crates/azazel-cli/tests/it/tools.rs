@@ -165,6 +165,94 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     assert!(tool(&sandbox.requests()[0], "eval").is_some());
 }
 
+/// What code-first mode keeps in the tool list besides the core: tools an agent must have to end.
+const NEVER_HIDDEN: [&str; 5] = ["patch", "plan_submit", "report", "goal_done", "goal_blocked"];
+
+#[cfg(feature = "lua")]
+#[test]
+fn code_first_keeps_a_fixed_core_in_the_tool_list_and_a_script_reaches_the_rest() {
+    let sandbox = Sandbox::new();
+    std::fs::write(
+        sandbox.project().join("a.txt"),
+        "one
+",
+    )
+    .unwrap();
+    let script = calls(&[(
+        "eval",
+        json!({ "language": "luau", "code": "return tools.glob{ pattern = '*.txt' }" }),
+    )]);
+    let output = sandbox.azazel(&script, &["--set", "tools.code_first=true"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    // The hidden tool ran from the script.
+    assert!(sandbox.results()[0].contains("a.txt"), "{:?}", sandbox.results());
+
+    let requests = sandbox.requests();
+    assert_eq!(requests.len(), 2);
+    // The list is the provider's cache key: byte for byte the same in every request.
+    assert_eq!(
+        serde_json::to_string(&requests[0]["tools"]).unwrap(),
+        serde_json::to_string(&requests[1]["tools"]).unwrap()
+    );
+    let names = crate::common::tool_names(&requests[0]);
+    for core in ["read", "write", "shell", "eval", "ask_user", "todo", "task"] {
+        assert!(names.contains(&core.to_string()), "{core} missing from {names:?}");
+    }
+    for hidden in ["glob", "grep"] {
+        assert!(!names.contains(&hidden.to_string()), "{hidden} in {names:?}");
+    }
+    for name in &names {
+        let core = azazel_core::config::CODE_FIRST_CORE.contains(&name.as_str());
+        assert!(
+            core || NEVER_HIDDEN.contains(&name.as_str()),
+            "{name} is offered in {names:?}"
+        );
+    }
+
+    // Hidden tools are described as signatures, in the one description that is built once.
+    let description = tool(&requests[0], "eval").unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(
+        description.contains("- glob{ ") && description.contains("pattern: string"),
+        "{description}"
+    );
+    assert_eq!(tool(&requests[1], "eval").unwrap()["description"], description);
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn without_code_first_every_tool_is_in_the_list_and_none_has_a_signature() {
+    let sandbox = Sandbox::new();
+    let script = calls(&[("eval", json!({ "language": "luau", "code": "return 1" }))]);
+    let output = sandbox.azazel(&script, &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    assert!(tool(&requests[0], "glob").is_some());
+    let description = tool(&requests[0], "eval").unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(!description.contains("- glob{ "), "{description}");
+    assert!(!description.contains("only from a script"), "{description}");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn code_first_is_ignored_when_luau_is_off() {
+    let sandbox = Sandbox::new();
+    let script = calls(&[("read", json!({ "path": "a.txt" }))]);
+    let output = sandbox.azazel(
+        &script,
+        &["--set", "tools.code_first=true", "--set", "tools.eval.luau=false"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    assert!(
+        tool(&requests[0], "glob").is_some(),
+        "hidden tools would be unreachable"
+    );
+}
+
 #[cfg(not(feature = "lua"))]
 #[test]
 fn a_build_without_lua_does_not_offer_luau_in_eval() {

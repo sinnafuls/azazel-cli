@@ -363,3 +363,77 @@ fn a_coordinator_delegates_to_typed_scouts_and_reports_what_they_found() {
     let scout = &requests.iter().find(|(model, _)| model == "s1").unwrap().1;
     assert!(tool_names(scout).contains(&"report".to_string()));
 }
+
+#[cfg(feature = "lua")]
+#[test]
+fn code_first_leaves_a_sub_agent_with_a_tools_list_its_full_schemas() {
+    let sandbox = Sandbox::new();
+    let agents = sandbox.project().join(".azazel/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("lister.md"),
+        "---
+name: lister
+description: lists files
+tools: read, glob, grep
+---
+List files.
+",
+    )
+    .unwrap();
+    std::fs::write(
+        agents.join("free.md"),
+        "---
+name: free
+description: no tools list
+---
+Do things.
+",
+    )
+    .unwrap();
+    let script = json!({
+        "lead": [
+            call(
+                "t1",
+                "task",
+                json!({ "agents": [
+                    { "agent": "lister", "prompt": "list", "model": "mock/s1" },
+                    { "agent": "free", "prompt": "work", "model": "mock/s2" },
+                ] }),
+            ),
+            text("done"),
+        ],
+        "s1": [text("listed")],
+        "s2": [text("worked")],
+    });
+    let output = sandbox.print(&script, &["--set", "tools.code_first=true", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    let find = |model: &str| &requests.iter().find(|(m, _)| m == model).unwrap().1;
+
+    // The author's list is kept in full, `glob` and `grep` included.
+    let listed = tool_names(find("s1"));
+    for name in ["read", "glob", "grep"] {
+        assert!(
+            listed.contains(&name.to_string()),
+            "{name} missing from {listed:?}"
+        );
+    }
+    // A definition with no list is code-first like the lead.
+    let free = tool_names(find("s2"));
+    assert!(free.contains(&"read".to_string()), "{free:?}");
+    assert!(!free.contains(&"glob".to_string()), "{free:?}");
+    // The coordinator is never code-first: its fixed list keeps `glob`.
+    let coordinator = sandbox.print(
+        &script,
+        &["--set", "tools.code_first=true", "--coordinator", "go"],
+    );
+    assert!(coordinator.status.success(), "{}", stderr(&coordinator));
+    let requests = sandbox.requests();
+    let lead = &requests.iter().find(|(m, _)| m == "lead").unwrap().1;
+    assert!(
+        tool_names(lead).contains(&"glob".to_string()),
+        "{:?}",
+        tool_names(lead)
+    );
+}

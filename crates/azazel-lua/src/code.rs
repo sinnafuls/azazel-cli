@@ -1065,4 +1065,50 @@ mod tests {
         assert!(listed.contains("read, mcp__server__tool_0, "), "{listed}");
         assert!(!listed.contains("xxx"), "{listed}");
     }
+
+    #[test]
+    fn hidden_tools_are_listed_as_signatures_within_the_budget_and_the_rest_by_name() {
+        let schema =
+            json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]});
+        let tools: Vec<Arc<dyn Tool>> = vec![shown("read", "Read a file.", &schema)];
+        let few: Vec<Arc<dyn Tool>> = vec![shown("glob", "Find files by pattern.", &schema)];
+        let listed = describe_tools(&[tools[0].clone(), few[0].clone()], &few);
+        assert!(
+            listed.contains(
+                "
+Callable tools: read
+"
+            ),
+            "{listed}"
+        );
+        assert!(
+            listed.contains(
+                "- glob{ path: string }: Find files by pattern
+"
+            ),
+            "{listed}"
+        );
+
+        let long = "y".repeat(130);
+        let many: Vec<Arc<dyn Tool>> = (0..200)
+            .map(|i| shown(&format!("mcp__s__tool_{i:03}"), &long, &schema))
+            .collect();
+        let listed = describe_tools(&many, &many);
+        let block = listed
+            .split(
+                "(they are not in your tool list):
+",
+            )
+            .nth(1)
+            .unwrap();
+        let (signatures, rest) = block.split_once("More, by name: ").unwrap();
+        assert!(
+            signatures.len() <= CODE_FIRST_LISTING_CHARS,
+            "{}",
+            signatures.len()
+        );
+        assert!(signatures.contains("- mcp__s__tool_000{"), "{signatures}");
+        assert!(rest.contains("mcp__s__tool_199") || rest.contains('…'), "{rest}");
+        assert!(!rest.contains("mcp__s__tool_000"), "{rest}");
+    }
 }
