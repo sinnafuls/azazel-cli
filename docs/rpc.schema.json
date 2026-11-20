@@ -1432,6 +1432,19 @@
           "properties": {
             "kind": {
               "type": "string",
+              "const": "forward"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "description": "One page forward in the history, after going back."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
               "const": "reload"
             }
           },

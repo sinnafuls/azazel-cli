@@ -143,6 +143,7 @@ pub enum LiveInput {
         url: String,
     },
     Back,
+    Forward,
     Reload,
 }
 
@@ -245,6 +246,10 @@ impl UserActions {
             }
             LiveInput::Back => {
                 moved("went back".to_string());
+                self.typing = false;
+            }
+            LiveInput::Forward => {
+                moved("went forward".to_string());
                 self.typing = false;
             }
             LiveInput::Reload => {
@@ -549,6 +554,19 @@ mod tests {
         assert_eq!(played(0, true), [1]);
         assert_eq!(played(9, false), [1, 2, 3]);
         assert_eq!(played(9, true), [3]);
+    }
+
+    #[test]
+    fn the_note_tells_a_step_back_and_a_step_forward_apart() {
+        let mut actions = UserActions::default();
+        actions.record(&LiveInput::Back);
+        actions.record(&LiveInput::Forward);
+        actions.record(&LiveInput::Reload);
+        let note = actions.note().unwrap();
+        assert!(
+            note.contains("went back, went forward, reloaded the page"),
+            "{note}"
+        );
     }
 
     #[test]

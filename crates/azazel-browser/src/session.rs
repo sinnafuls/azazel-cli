@@ -701,6 +701,30 @@ impl Running {
         Ok(line)
     }
 
+    /// Goes one page back in the tab's history, or `forward`; returns the page line.
+    async fn step_history(&self, session: &str, forward: bool) -> Result<String, String> {
+        let history = self.call(session, "Page.getNavigationHistory", json!({})).await?;
+        let current = history.get("currentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let next = if forward {
+            current.checked_add(1)
+        } else {
+            current.checked_sub(1)
+        };
+        let entry = next
+            .and_then(|index| history.get("entries")?.get(index)?.get("id")?.as_i64())
+            .ok_or(if forward {
+                "there is no later page in this tab's history"
+            } else {
+                "there is no earlier page in this tab's history"
+            })?;
+        self.go(
+            session,
+            "Page.navigateToHistoryEntry",
+            json!({ "entryId": entry }),
+        )
+        .await
+    }
+
     async fn snapshot(&mut self, index: usize) -> Result<String, String> {
         let reply = self
             .call(
@@ -1122,25 +1146,7 @@ impl Running {
                         text(self.go(&session, "Page.navigate", json!({ "url": url })).await?)
                     }
                     "reload" => text(self.go(&session, "Page.reload", json!({})).await?),
-                    "back" => {
-                        let history = self
-                            .call(&session, "Page.getNavigationHistory", json!({}))
-                            .await?;
-                        let current =
-                            history.get("currentIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
-                        let previous = current
-                            .checked_sub(1)
-                            .and_then(|index| history.get("entries")?.get(index)?.get("id")?.as_i64())
-                            .ok_or("there is no earlier page in this tab's history")?;
-                        text(
-                            self.go(
-                                &session,
-                                "Page.navigateToHistoryEntry",
-                                json!({ "entryId": previous }),
-                            )
-                            .await?,
-                        )
-                    }
+                    "back" => text(self.step_history(&session, false).await?),
                     "snapshot" => text(self.snapshot_taken(index, String::new()).await?),
                     "click" | "hover" => {
                         let target = self
@@ -1990,6 +1996,10 @@ impl BrowserSession {
             LiveInput::Back => {
                 running.act(&action_input("back", None, Some(&tab)), None).await?;
             }
+            // The agents' tool has no `forward`: it is the history of the tab, one page on.
+            LiveInput::Forward => {
+                running.step_history(&session, true).await?;
+            }
             LiveInput::Reload => {
                 running
                     .act(&action_input("reload", None, Some(&tab)), None)
@@ -2502,6 +2512,7 @@ mod tests {
         for input in [
             LiveInput::Reload,
             LiveInput::Back,
+            LiveInput::Forward,
             LiveInput::Text { text: "a".into() },
         ] {
             assert_eq!(settle_pause(&input), Duration::from_millis(150));

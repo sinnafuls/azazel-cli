@@ -393,6 +393,7 @@ mod real {
             BrowserInput::Text { text } => LiveInput::Text { text },
             BrowserInput::Navigate { url } => LiveInput::Navigate { url },
             BrowserInput::Back => LiveInput::Back,
+            BrowserInput::Forward => LiveInput::Forward,
             BrowserInput::Reload => LiveInput::Reload,
         })
     }

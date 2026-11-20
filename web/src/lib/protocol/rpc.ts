@@ -336,6 +336,9 @@ export type BrowserInput =
 			kind: 'back';
 	  }
 	| {
+			kind: 'forward';
+	  }
+	| {
 			kind: 'reload';
 	  };
 /**

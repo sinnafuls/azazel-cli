@@ -1649,6 +1649,8 @@ pub enum BrowserInput {
     Navigate { url: String },
     /// One page back in the history.
     Back,
+    /// One page forward in the history, after going back.
+    Forward,
     /// Loads the page again.
     Reload,
 }
