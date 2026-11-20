@@ -20,6 +20,24 @@ const MOVES: usize = 5;
 /// The longest address the note quotes.
 const ADDRESS: usize = 200;
 
+/// The scheme, host and path of `url`, which is all the note says of a page the user went to:
+/// the query, the fragment and any credentials in it can hold a magic link or a token, and the
+/// note goes to the model.
+fn plain_address(url: &str) -> String {
+    let url = url.trim();
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (format!("{scheme}://"), rest),
+        None => (String::new(), url),
+    };
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (authority, path) = match rest.find('/') {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    format!("{scheme}{host}{path}").chars().take(ADDRESS).collect()
+}
+
 /// `[browser] live_fps`, `live_quality` and `live_max_width`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveSettings {
@@ -211,8 +229,7 @@ impl UserActions {
                 self.typing = true;
             }
             LiveInput::Navigate { url } => {
-                let url: String = url.chars().take(ADDRESS).collect();
-                moved(format!("went to {url}"));
+                moved(format!("went to {}", plain_address(url)));
                 self.typing = false;
             }
             LiveInput::Back => {
@@ -481,6 +498,28 @@ mod tests {
         actions.record(&click);
         actions.record(&LiveInput::Text { text: "x".into() });
         assert!(actions.note().unwrap().contains("typed in 2 fields"));
+    }
+
+    #[test]
+    fn the_note_leaves_out_the_query_the_fragment_and_the_credentials_of_an_address() {
+        let mut actions = UserActions::default();
+        for url in [
+            "https://example.com/login/confirm?token=s3cret&next=%2F",
+            "https://user:pw@example.com:8443/a/b#access_token=abc",
+            "https://example.com?magic=s3cret",
+        ] {
+            actions.record(&LiveInput::Navigate { url: url.into() });
+        }
+        let note = actions.note().unwrap();
+        assert!(
+            note.contains(
+                "went to https://example.com/login/confirm, went to https://example.com:8443/a/b, went to https://example.com."
+            ),
+            "{note}"
+        );
+        for secret in ["s3cret", "token", "pw", "abc", "next"] {
+            assert!(!note.contains(secret), "{secret} in {note}");
+        }
     }
 
     #[test]
