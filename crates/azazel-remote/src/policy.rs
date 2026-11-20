@@ -72,6 +72,7 @@ const CONTROL: &[&str] = &[
     "browser_take",
     "browser_input",
     "browser_sign_in",
+    "browser_open",
 ];
 
 /// The commands a control device may send only with what they carry checked, or not at all
@@ -709,8 +710,9 @@ mod tests {
         assert!(check(Access::View, &watch, bypass(false)).is_err());
         assert!(check(Access::View, &watch, open).is_ok());
         assert!(check(Access::Control, &watch, bypass(false)).is_ok());
-        // Taking over, typing and signing in are never a view link's, whatever it may watch.
-        for kind in ["browser_take", "browser_input", "browser_sign_in"] {
+        // Taking over, typing, signing in and starting it are never a view link's, whatever it
+        // may watch.
+        for kind in ["browser_take", "browser_input", "browser_sign_in", "browser_open"] {
             let command = json!({ "type": kind });
             assert!(check(Access::View, &command, open).is_err(), "{kind}");
             assert!(check(Access::View, &command, full()).is_err(), "{kind}");

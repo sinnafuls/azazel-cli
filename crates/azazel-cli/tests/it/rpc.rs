@@ -868,6 +868,7 @@ fn without_the_browser_feature_the_view_commands_say_so() {
         json!({ "type": "browser_watch", "on": true }),
         json!({ "type": "browser_take", "on": true }),
         json!({ "type": "browser_sign_in" }),
+        json!({ "type": "browser_open" }),
     ]
     .into_iter()
     .enumerate()

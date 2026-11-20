@@ -269,6 +269,10 @@ export type Request1 =
 			url?: string | null;
 	  }
 	| {
+			type: 'browser_open';
+			url?: string | null;
+	  }
+	| {
 			type: 'attach';
 			pid?: number | null;
 			/**

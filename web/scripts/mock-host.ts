@@ -13,8 +13,8 @@
 // answered, and a prompt of `/limit` or `/reset` plays the switch a usage limit makes and the way back.
 // The agents' browser (0.16): the sessions `showcase` and `team` have one open, and a prompt of
 // `/browser` opens or closes it in any session. `browser_watch` sends a picture (fixtures/
-// browser-frames.json), `browser_take` and `browser_input` change what it shows, and a view link is
-// refused unless `MOCK_VIEW_BROWSER=1`.
+// browser-frames.json), `browser_take` and `browser_input` change what it shows, `browser_open`
+// starts it on a blank page, and a view link is refused unless `MOCK_VIEW_BROWSER=1`.
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 
@@ -383,6 +383,16 @@ class MockBrowser {
 	signIn() {
 		this.running = true;
 		this.visible = true;
+		this.tell();
+		this.frame();
+	}
+	/** Starts it on a blank page when it does not run; one that runs is left as it is. */
+	open() {
+		if (!this.running) {
+			this.running = true;
+			this.url = 'about:blank';
+			this.title = '';
+		}
 		this.tell();
 		this.frame();
 	}
@@ -1385,6 +1395,9 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boo
 		}
 		case 'browser_sign_in':
 			s.browser.signIn();
+			return respond(c, id, s.browser.state(c));
+		case 'browser_open':
+			s.browser.open();
 			return respond(c, id, s.browser.state(c));
 		case 'get_theme':
 			return respond(c, id, theme);

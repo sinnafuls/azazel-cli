@@ -1172,6 +1172,7 @@ async fn a_view_link_is_refused_the_browser_unless_it_may_watch_and_never_takes_
         json!({ "type": "browser_take", "on": true }),
         json!({ "type": "browser_input", "input": { "kind": "back" } }),
         json!({ "type": "browser_sign_in" }),
+        json!({ "type": "browser_open" }),
     ]
     .into_iter()
     .enumerate()
@@ -1189,4 +1190,79 @@ async fn a_view_link_is_refused_the_browser_unless_it_may_watch_and_never_takes_
             "{answer}"
         );
     }
+}
+
+/// Before the agent has opened a page there is no browser to watch. A control link starts one: it
+/// comes up on a blank page in a tab, a picture of it arrives, and it can be taken over.
+#[cfg(feature = "browser")]
+#[tokio::test]
+async fn a_control_link_opens_the_browser_on_a_blank_page_and_is_sent_a_picture_of_it() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.bg("manual");
+    sandbox.wait_for_state(&id, "waiting for you");
+    let mut remote = sandbox.remote(&[], &[]);
+    let control = remote.pair_with(&remote.secret()).await;
+    let mut driver = connect(remote.port(), &id, Some(&control), &remote.base()).await;
+    next(&mut driver).await;
+    assert_eq!(attach(&mut driver, "none").await["success"], true);
+
+    send(
+        &mut driver,
+        json!({ "id": "w", "type": "browser_watch", "on": true }),
+    )
+    .await;
+    let watching = until(&mut driver, |frame| frame["id"] == "w")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(watching["success"], true, "{watching}");
+    assert_eq!(watching["data"]["running"], false, "{watching}");
+
+    send(&mut driver, json!({ "id": "o", "type": "browser_open" })).await;
+    let mut seen = until(&mut driver, |frame| frame["id"] == "o").await;
+    let opened = seen.pop().unwrap();
+    if opened["error"] == "no Chromium-based browser found; set [browser] path" {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    assert_eq!(opened["success"], true, "{opened}");
+    assert_eq!(opened["data"]["running"], true, "{opened}");
+    assert_eq!(opened["data"]["tab"], "tab-1", "{opened}");
+    assert_eq!(opened["data"]["url"], "about:blank", "{opened}");
+    assert_eq!(opened["data"]["held"], false, "{opened}");
+
+    // The picture of the blank page: before the answer, or after it.
+    let picture = match seen.into_iter().find(|frame| frame["type"] == "browser_frame") {
+        Some(picture) => picture,
+        None => until(&mut driver, |frame| frame["type"] == "browser_frame")
+            .await
+            .pop()
+            .unwrap(),
+    };
+    assert_eq!(picture["tab"], "tab-1", "{}", picture["seq"]);
+    assert!(
+        picture["width"].as_u64().unwrap() > 0 && picture["height"].as_u64().unwrap() > 0,
+        "{} x {}",
+        picture["width"],
+        picture["height"]
+    );
+    assert!(picture["data"].as_str().unwrap().starts_with("/9j/"));
+
+    // Opening it again starts nothing new, and now there is something to take over.
+    send(&mut driver, json!({ "id": "o2", "type": "browser_open" })).await;
+    let again = until(&mut driver, |frame| frame["id"] == "o2")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(again["data"]["tab"], "tab-1", "{again}");
+    send(
+        &mut driver,
+        json!({ "id": "t", "type": "browser_take", "on": true }),
+    )
+    .await;
+    let taken = until(&mut driver, |frame| frame["id"] == "t")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
 }

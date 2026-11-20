@@ -787,7 +787,8 @@ impl Session {
             command @ (Command::BrowserWatch { .. }
             | Command::BrowserTake { .. }
             | Command::BrowserInput { .. }
-            | Command::BrowserSignIn { .. }) => {
+            | Command::BrowserSignIn { .. }
+            | Command::BrowserOpen { .. }) => {
                 self.browser_command(id.clone(), command);
                 Ok(None)
             }

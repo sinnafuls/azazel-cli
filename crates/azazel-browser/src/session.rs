@@ -1661,8 +1661,23 @@ impl BrowserSession {
         tab: Option<&str>,
         agent: &str,
     ) -> Result<(), String> {
+        self.bring_up(state, headless, true, url, tab, agent).await
+    }
+
+    /// Makes sure a browser runs on the profile and opens `url` in it when given. With `window`
+    /// a browser that has none is closed and started again with one, keeping its tabs; without,
+    /// a browser that runs is left as it is. A browser that has to be started is `headless` or not.
+    async fn bring_up(
+        &self,
+        state: &mut Option<Running>,
+        headless: bool,
+        window: bool,
+        url: Option<&str>,
+        tab: Option<&str>,
+        agent: &str,
+    ) -> Result<(), String> {
         let running = match state.take().filter(|running| !running.cdp.is_closed()) {
-            Some(hidden) if hidden.headless => {
+            Some(hidden) if window && hidden.headless => {
                 let (pages, current) = (hidden.pages().await, hidden.current.clone());
                 let mut left = hidden.close(LEAVE).await;
                 // The next browser needs the profile: the whole process tree has to be gone.
@@ -1699,10 +1714,26 @@ impl BrowserSession {
     /// the window stays until the session ends. Refused while a client other than `holder` has the
     /// browser: it may be started again, and the holder's page would go with it.
     pub async fn sign_in(&self, holder: &str, url: Option<&str>) -> Result<(), String> {
-        self.sign_in_with(holder, url, false).await
+        self.open_with(holder, url, false, true).await
     }
 
-    async fn sign_in_with(&self, holder: &str, url: Option<&str>, headless: bool) -> Result<(), String> {
+    /// Starts the agents' browser when none runs, as the settings say (with or without a window),
+    /// on its blank page or on `url`, so that a client has something to watch and take over before
+    /// an agent has opened a page. A browser that runs is left as it is, and `url` is opened in it
+    /// when given. Refused while a client other than `holder` has the browser.
+    pub async fn open(&self, holder: &str, url: Option<&str>) -> Result<(), String> {
+        self.open_with(holder, url, self.settings.headless, false).await
+    }
+
+    /// [`BrowserSession::sign_in`] (`window`) or [`BrowserSession::open`], with a browser that is
+    /// started `headless` or not: a test has no screen to show a window on.
+    async fn open_with(
+        &self,
+        holder: &str,
+        url: Option<&str>,
+        headless: bool,
+        window: bool,
+    ) -> Result<(), String> {
         // Signing in by hand can take longer than the lease: it counts as the holder using the
         // browser, and again when the window is up.
         self.renew(holder);
@@ -1717,7 +1748,8 @@ impl BrowserSession {
         if self.held_by().is_some_and(|other| other != holder) {
             return Err(ANOTHER_HOLDS.to_string());
         }
-        self.show(&mut state, headless, url, None, "").await?;
+        let ran = state.as_ref().is_some_and(|running| !running.cdp.is_closed());
+        self.bring_up(&mut state, headless, window, url, None, "").await?;
         // A browser that was started for this has the blank page it came with and no tab. That
         // page is the tab shown from now on: a watcher gets a picture of it, and whoever takes
         // the browser over can go somewhere with it.
@@ -1735,10 +1767,12 @@ impl BrowserSession {
         }
         self.renew(holder);
         // The browser may be another one now: what the agents were shown is not what is there.
-        if let Some(running) = state.as_mut() {
-            running.taken = None;
+        if window || !ran {
+            if let Some(running) = state.as_mut() {
+                running.taken = None;
+            }
+            self.baselines.forget_all();
         }
-        self.baselines.forget_all();
         self.settle(state.as_ref()).await;
         Ok(())
     }
@@ -2654,7 +2688,7 @@ mod tests {
         let states = session.states();
         session.watch(true).await;
         // The agent has opened nothing yet: the browser starts for the sign-in.
-        session.sign_in_with("me", None, true).await.unwrap();
+        session.open_with("me", None, true, true).await.unwrap();
         let state = states.borrow().clone();
         assert!(state.running, "{state:?}");
         assert_eq!(state.tab.as_deref(), Some("tab-1"), "{state:?}");

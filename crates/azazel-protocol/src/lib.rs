@@ -393,6 +393,14 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         url: Option<String>,
     },
+    /// Starts the agents' browser when none runs, on its blank page or on `url` (http or https),
+    /// so that there is a page to watch and take over before an agent has opened one. A browser
+    /// that runs is left as it is, and `url` is opened in it when given. Answers with
+    /// [`BrowserState`].
+    BrowserOpen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
     /// Background sessions only, and the first command on a connection to one: makes the
     /// connection a client of the session, beside any that are attached already. The frames
     /// `replay` asks for follow the response, then the requests that still wait for an answer,

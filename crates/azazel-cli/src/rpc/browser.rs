@@ -1,5 +1,5 @@
 //! The live view of the agents' browser, for the clients of a session: `browser_watch`,
-//! `browser_take`, `browser_input` and `browser_sign_in`, and the `browser_frame` and
+//! `browser_take`, `browser_input`, `browser_sign_in` and `browser_open`, and the `browser_frame` and
 //! `browser_state` frames.
 //!
 //! Three places serve clients and share this: a direct RPC session (one client, [`HOLDER`]), a
@@ -29,7 +29,7 @@ pub(crate) type Reply = Box<dyn FnOnce(Result<Value, String>) + Send>;
 /// The holder of a direct RPC client, which is the only one.
 pub(crate) const HOLDER: &str = "rpc";
 
-/// Whether `command` is one of the four that are served here.
+/// Whether `command` is one of the five that are served here.
 pub(crate) fn is_browser(command: &Command) -> bool {
     matches!(
         command,
@@ -37,6 +37,7 @@ pub(crate) fn is_browser(command: &Command) -> bool {
             | Command::BrowserTake { .. }
             | Command::BrowserInput { .. }
             | Command::BrowserSignIn { .. }
+            | Command::BrowserOpen { .. }
     )
 }
 
@@ -452,6 +453,7 @@ mod real {
                             Ok(())
                         }
                         Command::BrowserSignIn { url } => session.sign_in(&holder, url.as_deref()).await,
+                        Command::BrowserOpen { url } => session.open(&holder, url.as_deref()).await,
                         _ => Err("not a browser command".to_string()),
                     };
                     {

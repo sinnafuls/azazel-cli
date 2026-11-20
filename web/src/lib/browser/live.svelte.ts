@@ -7,7 +7,9 @@ import type { BrowserInput, BrowserState, Command, FrameOf } from '$lib/protocol
 
 export type BrowserCommand = Extract<
 	Command,
-	{ type: 'browser_watch' | 'browser_take' | 'browser_input' | 'browser_sign_in' }
+	{
+		type: 'browser_watch' | 'browser_take' | 'browser_input' | 'browser_sign_in' | 'browser_open';
+	}
 >;
 
 export interface Picture {
@@ -37,7 +39,7 @@ export class BrowserLive {
 	/** This device may not watch (a view link, unless the host allows it). */
 	denied = $state(false);
 	error = $state<string | null>(null);
-	/** A take-over, a hand-back or a sign-in is on its way. */
+	/** A take-over, a hand-back, a sign-in or the start of the browser is on its way. */
 	working = $state(false);
 
 	// What decides is kept in plain fields, and the state above only shows it: `watch` is called
@@ -178,6 +180,15 @@ export class BrowserLive {
 	}
 	input(input: BrowserInput): Promise<boolean> {
 		return this.run({ type: 'browser_input', input });
+	}
+	/** Starts the agents' browser on a blank page when none runs, so there is a page to watch. */
+	async open(): Promise<boolean> {
+		this.working = true;
+		try {
+			return await this.run({ type: 'browser_open' });
+		} finally {
+			this.working = false;
+		}
 	}
 	/** Shows the agents' browser profile in a window on the host. */
 	async signIn(url?: string): Promise<boolean> {

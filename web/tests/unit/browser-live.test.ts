@@ -31,6 +31,8 @@ function host(initial: BrowserState = OPEN, refuse?: (c: BrowserCommand) => Erro
 		const no = refuse?.(c);
 		if (no) throw no;
 		if (c.type === 'browser_take') state = { ...state, held: c.on, held_by_you: c.on };
+		if (c.type === 'browser_open' && !state.running)
+			state = { running: true, tab: 'tab-1', url: 'about:blank', title: '' };
 		return state;
 	});
 	const live = new BrowserLive(send);
@@ -269,8 +271,39 @@ describe('what the panel shows', () => {
 	const beforeInput = (el: Element, init: InputEventInit) =>
 		fireEvent(el, new InputEvent('beforeinput', { bubbles: true, cancelable: true, ...init }));
 
+	it('opens the browser on a blank page from the empty state', async () => {
+		const h = await shown({ running: false }, true);
+		await fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+		await vi.waitFor(() =>
+			expect(screen.getByRole('heading', { name: 'Blank page' })).toBeTruthy()
+		);
+		expect(h.sent).toContainEqual({ type: 'browser_open' });
+		expect(status()).toBe('Watching');
+		expect(screen.queryByRole('button', { name: 'Open' })).toBeNull();
+		expect(screen.getByRole('button', { name: 'Take over' })).toBeTruthy();
+	});
+
+	it('says why the browser did not open, beside the button', async () => {
+		const h = host({ running: false }, (c) =>
+			c.type === 'browser_open'
+				? new CommandError('no Chromium-based browser found; set [browser] path')
+				: undefined
+		);
+		h.live.attached();
+		render(BrowserPanel, { session: session(h.live), canControl: true });
+		await vi.waitFor(() => expect(h.live.state).not.toBeNull());
+		await fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+		await vi.waitFor(() =>
+			expect(screen.getByRole('alert').textContent).toContain('no Chromium-based browser found')
+		);
+		expect((screen.getByRole('button', { name: 'Open' }) as HTMLButtonElement).disabled).toBe(
+			false
+		);
+	});
+
 	it('says that no browser is open, and still offers the sign-in', async () => {
 		await shown({ running: false }, true);
+		expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
 		expect(screen.queryByRole('status')).toBeNull();
 		expect(screen.getByText('The agent has no browser open')).toBeTruthy();
 		// Nothing stands in for a picture there is none of.

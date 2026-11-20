@@ -1123,6 +1123,25 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "browser_open"
+            },
+            "url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Starts the agents' browser when none runs, on its blank page or on `url` (http or https),\nso that there is a page to watch and take over before an agent has opened one. A browser\nthat runs is left as it is, and `url` is opened in it when given. Answers with\n[`BrowserState`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "attach"
             },
             "pid": {

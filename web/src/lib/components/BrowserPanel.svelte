@@ -35,6 +35,7 @@
 	import { cn } from '$lib/utils';
 	import * as Alert from '$lib/components/ui/alert';
 	import { Badge } from '$lib/components/ui/badge';
+	import { Button } from '$lib/components/ui/button';
 	import * as Empty from '$lib/components/ui/empty';
 	import * as InputGroup from '$lib/components/ui/input-group';
 	import { Kbd } from '$lib/components/ui/kbd';
@@ -152,6 +153,16 @@
 			// A touch screen would cover half the picture with its keyboard at once: there the field
 			// takes the keyboard at the first tap on the picture.
 			if (!viewport.coarse) keys?.focus({ preventScroll: true });
+		}
+	}
+	// Which of the buttons is waiting for the host: Open shows it, and keeps its width.
+	let opening = $state(false);
+	async function open() {
+		opening = true;
+		try {
+			await live.open();
+		} finally {
+			opening = false;
 		}
 	}
 	async function signIn() {
@@ -401,8 +412,28 @@
 			<Empty.Root class="rounded-none" data-browser-empty>
 				<Empty.Header>
 					<Empty.Title>The agent has no browser open</Empty.Title>
-					<Empty.Description>When it opens a page, the page shows here, live.</Empty.Description>
+					<Empty.Description>
+						When it opens a page, the page shows here, live.
+						{#if canControl}
+							You can open it yourself, on a blank page, and take it over.
+						{/if}
+					</Empty.Description>
 				</Empty.Header>
+				{#if canControl}
+					<Empty.Content>
+						<Button
+							variant="outline"
+							class="min-w-24"
+							disabled={live.working}
+							aria-busy={opening || undefined}
+							onclick={open}
+							data-browser-open
+						>
+							{#if opening}<Spinner role="presentation" aria-hidden="true" />{/if}
+							Open
+						</Button>
+					</Empty.Content>
+				{/if}
 			</Empty.Root>
 		{:else}
 			{#if holding}
