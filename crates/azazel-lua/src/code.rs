@@ -1085,7 +1085,7 @@ enum PassEnd {
     /// A call needs the user's approval: the pass stopped there.
     Paused {
         site: Site,
-        request: ApprovalRequest,
+        request: Box<ApprovalRequest>,
         printed: String,
     },
     /// The script did not repeat its earlier calls.
@@ -1169,7 +1169,7 @@ async fn run_pass(run: Arc<Run>, code: String) -> PassEnd {
     if let Some((site, request)) = locked(&run.pass.pending).take() {
         return PassEnd::Paused {
             site,
-            request,
+            request: Box::new(request),
             printed: out,
         };
     }
@@ -1326,7 +1326,7 @@ impl LuauEngine for LuauEval {
                         site,
                         request,
                         printed,
-                    }) => (site, request, printed),
+                    }) => (site, *request, printed),
                 };
                 if timed_out || token.is_cancelled() {
                     break (printed, TaskEnd::Killed);

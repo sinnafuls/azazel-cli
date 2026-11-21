@@ -73,7 +73,11 @@
 	open={true}
 	docked
 	attention
-	title="{f.job ? `Script ${f.job} asks to use` : f.agent === 'lead' ? 'Allow' : `${f.agent} asks to use`} {f.tool}?"
+	title="{f.job
+		? `Script ${f.job} asks to use`
+		: f.agent === 'lead'
+			? 'Allow'
+			: `${f.agent} asks to use`} {f.tool}?"
 	subtitle={ACCESS[f.access] ?? f.access}
 	dismissible={false}
 >

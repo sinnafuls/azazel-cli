@@ -925,7 +925,7 @@ background_pause_secs = 0             # longest a paused script waits for an ans
 | `eval.python` | `true` | Lets [`eval`](#eval) run Python. Project config: trusted projects only |
 | `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript. Project config: trusted projects only |
 | `eval.background_max_secs` | `7200` | Longest a background Luau script (`eval` with `background: true`) may run, in seconds of wall-clock time; `0` is no limit. Project config: trusted projects only |
-| `eval.background_approval` | `pause` | What a background Luau script does at a tool call that needs your approval: `pause` asks you and runs the script again once you answer; `deny` refuses the call. Project config: trusted projects only |
+| `eval.background_approval` | `"pause"` | What a background Luau script does at a tool call that needs your approval: `pause` asks you and runs the script again once you answer; `deny` refuses the call. Project config: trusted projects only |
 | `eval.background_pause_secs` | `0` | Longest a paused background script waits for your answer, in seconds; `0` waits until the session ends. Project config: trusted projects only |
 | `eval.luau` | `true` | Lets [`eval`](#eval) run Luau scripts that call other tools (builds with the `lua` feature); with all three off, `eval` is not offered. Project config: trusted projects only |
 
