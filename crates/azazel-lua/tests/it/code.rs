@@ -1228,3 +1228,91 @@ async fn background_is_refused_for_other_languages() {
         refused.text_content()
     );
 }
+
+/// Saves `source` as the user's script `name` and makes the scripts available to `bench`.
+fn saved(bench: &Bench, name: &str, description: &str, source: &str) {
+    let scripts = Arc::new(azazel_core::scripts::Scripts::new(bench.paths.clone(), true));
+    scripts.save(name, description, source).unwrap();
+    bench.services.insert(scripts);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_runs_a_saved_script_with_input_and_its_tool_calls_pass_the_gate() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    bench.write("a.txt", "alpha\n");
+    saved(
+        &bench,
+        "first-line",
+        "Read the first line of a file",
+        "-- input: { path: string }\nlocal text = tools.read({ path = input.path })\nreturn { found = text:find(\"alpha\", 1, true) ~= nil }",
+    );
+    let out = bench
+        .run(
+            r#"
+            local result, err = tools.run("first-line", { path = "a.txt" })
+            local missing, why = tools.run("nope", {})
+            return json.encode(result) .. " | " .. tostring(err) .. " | " .. tostring(missing) .. " | " .. why
+            "#,
+        )
+        .await;
+    assert_eq!(
+        out.text_content(),
+        "{\"found\":true} | nil | nil | tools.run: there is no saved script `nope`"
+    );
+    // The nested read went through the gate under a call id of the running script.
+    assert!(
+        bench.seen().iter().any(|call| call.starts_with("read c1.")),
+        "{:?}",
+        bench.seen()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saved_scripts_may_nest_three_levels_deep_and_a_script_that_fails_gives_nil_and_a_message() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    saved(
+        &bench,
+        "again",
+        "Runs itself",
+        "local v, e = tools.run(\"again\", input + 1)\nreturn v or e",
+    );
+    saved(&bench, "boom", "Fails", "error(\"bad input\")");
+    let out = bench.run(r#"return tools.run("again", 0)"#).await;
+    // Levels 1, 2 and 3 run; the fourth is refused, and the message comes back up each level.
+    assert_eq!(
+        out.text_content(),
+        "tools.run: scripts may run others only 3 levels deep"
+    );
+    let out = bench
+        .run(r#"local v, e = tools.run("boom", nil) return tostring(v) .. " | " .. e"#)
+        .await;
+    let text = out.text_content();
+    assert!(
+        text.starts_with("nil | tools.run: `boom`: ") && text.contains("bad input"),
+        "{text}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn search_and_describe_find_saved_scripts_as_kind_script() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    saved(
+        &bench,
+        "summarize-todos",
+        "Count the TODO comments in a folder",
+        "-- input: { dir: string }\nreturn 1",
+    );
+    let out = bench
+        .run(
+            r#"
+            local hits = tools.search("count todo comments", 3)
+            local d = tools.describe("summarize-todos")
+            return hits[1].name .. " " .. hits[1].kind .. " | " .. d.kind .. " | " .. d.input .. " | " .. d.signature
+            "#,
+        )
+        .await;
+    assert_eq!(
+        out.text_content(),
+        "summarize-todos script | script | { dir: string } | tools.run(\"summarize-todos\", input)"
+    );
+}
