@@ -304,6 +304,8 @@ class MockBrowser {
 	watchers = new Set<Client>();
 	seq = 0;
 	private history: string[] = [];
+	/** The pages `back` left, the last one first to come back with `forward`. */
+	private ahead: string[] = [];
 
 	constructor(
 		private readonly clients: Set<Client>,
@@ -364,16 +366,25 @@ class MockBrowser {
 			if (!/^https?:\/\//.test(input.url) && input.url !== 'about:blank')
 				return `\`${input.url}\` is not an http or https URL`;
 			this.history.push(this.url);
+			this.ahead = [];
 			this.show(input.url === 'about:blank' ? 'https://example.com/' : input.url);
 		} else if (input.kind === 'back') {
 			const last = this.history.pop();
-			if (last) this.show(last);
+			if (!last) return "there is no earlier page in this tab's history";
+			this.ahead.push(this.url);
+			this.show(last);
+		} else if (input.kind === 'forward') {
+			const next = this.ahead.pop();
+			if (!next) return "there is no later page in this tab's history";
+			this.history.push(this.url);
+			this.show(next);
 		} else if (input.kind === 'click') {
 			if (![input.x, input.y].every((n) => typeof n === 'number' && n >= 0 && n <= 1))
 				return 'a click is at fractions of the frame, 0 to 1';
 			// The "Sign in" link at the top right of the page leads to the form.
 			if (this.shot === 'page' && input.x > 0.9 && input.y < 0.08) {
 				this.history.push(this.url);
+				this.ahead = [];
 				this.show(new URL('/login', this.url).href);
 			}
 		}

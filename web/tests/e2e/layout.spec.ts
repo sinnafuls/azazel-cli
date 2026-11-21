@@ -49,7 +49,7 @@
 // one on the machine only the first is measured, and the test says so in an annotation.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
-import type { Locator } from '@playwright/test';
+import type { BrowserContext, Locator } from '@playwright/test';
 import { test, expect, Stack, agentBrowserFound, browses, serve, type Page } from './stack';
 
 const SHOTS =
@@ -1675,7 +1675,9 @@ interface BrowserBoxes {
 	input: Box | null;
 	/** The border box of the group around that field, and the buttons of the address row. */
 	group: Box | null;
-	controls: (Box & { name: string })[];
+	controls: (Box & { name: string; radius: string })[];
+	/** The button of the empty state that opens the browser, on a device that may control. */
+	open: Box | null;
 	/** How far anything inside that group reaches past its border box. */
 	overhang: { x: number; y: number } | null;
 	/** The picture the host sent, the box it is drawn in, and how it is fitted to that box. */
@@ -1733,7 +1735,8 @@ function browserBoxes(): BrowserBoxes {
 		}
 		return found;
 	};
-	const parts = marked(['header', 'empty', 'address', 'picture', 'note']);
+	const parts = marked(['header', 'error', 'empty', 'address', 'picture', 'note']);
+	const opener = panel.querySelector('[data-browser-open]');
 	const head = marked(['heading', 'status', 'actions']);
 	const globe = panel.querySelector('[data-browser-header] > svg');
 	if (globe?.checkVisibility()) head.globe = of(globe);
@@ -1780,8 +1783,10 @@ function browserBoxes(): BrowserBoxes {
 		overhang: group ? overhang : null,
 		controls: Array.from(panel.querySelectorAll('[data-browser-address] button')).map((b) => ({
 			name: b.getAttribute('aria-label') ?? (b.textContent ?? '').trim(),
+			radius: getComputedStyle(b).borderRadius,
 			...of(b)
 		})),
+		open: opener ? of(opener) : null,
 		img: img
 			? {
 					...of(img),
@@ -1891,6 +1896,24 @@ function browserHolds(b: BrowserBoxes, state: string, fill: boolean) {
 			header.right + near
 		);
 		before = button.right;
+	}
+	// The button that opens the browser: in the empty state, in the middle of it, as tall as any
+	// button with a word on it (32px).
+	if (b.open) {
+		const empty = b.parts.empty;
+		expect(
+			b.open.left >= empty.left &&
+				b.open.right <= empty.right &&
+				b.open.top >= empty.top &&
+				b.open.bottom <= empty.bottom,
+			said('Open is inside the empty state')
+		).toBe(true);
+		expect(
+			Math.abs(b.open.left + b.open.width / 2 - (empty.left + empty.width / 2)),
+			said('Open is in the middle')
+		).toBeLessThanOrEqual(1);
+		expect(Math.abs(b.open.height - 32), said('Open is 32px tall')).toBeLessThan(near);
+		expect(b.open.width, said('Open is at least 6rem wide')).toBeGreaterThanOrEqual(96 - near);
 	}
 	const picture = b.parts.picture;
 	if (!picture) return;
@@ -2108,43 +2131,9 @@ for (const view of VIEWS)
 						Object.keys(holding.parts),
 						'the header, the address, the picture, the note'
 					).toEqual(['header', 'address', 'picture', 'note']);
-					// Back and Reload stand before the group, as tall as it; the address and Go are
-					// inside its border, in that order, none on another.
-					const group = holding.group!;
-					expect(holding.controls.map((c) => c.name)).toEqual(['Back', 'Reload', 'Go']);
-					const [back, reload, go] = holding.controls;
-					let end = holding.parts.address.left;
-					for (const c of [back, reload]) {
-						expect(c.left, `${c.name} starts after what is before it`).toBeGreaterThanOrEqual(end);
-						expect(
-							Math.abs(c.height - group.height),
-							`${c.name} is as tall as the field`
-						).toBeLessThan(0.5);
-						expect(
-							Math.abs(c.top - group.top),
-							`${c.name} is on the line of the field`
-						).toBeLessThan(0.5);
-						end = c.right;
-					}
-					expect(group.left, 'the field starts after Reload').toBeGreaterThanOrEqual(end);
-					expect(group.right, 'the field ends in the panel').toBeLessThanOrEqual(
-						holding.parts.address.right
-					);
-					expect(group.width, 'the field has room for an address').toBeGreaterThan(100);
-					end = group.left;
-					for (const c of [{ name: 'the address', ...holding.input! }, go]) {
-						expect(c.left, `${c.name} starts after what is before it`).toBeGreaterThanOrEqual(end);
-						expect(c.top, `${c.name} is under the top of the group`).toBeGreaterThanOrEqual(
-							group.top
-						);
-						expect(c.bottom, `${c.name} is over the bottom of the group`).toBeLessThanOrEqual(
-							group.bottom
-						);
-						end = c.right;
-					}
-					expect(end, 'Go ends in the group').toBeLessThanOrEqual(group.right);
-					// Nothing reaches past the border of the group: not a pixel.
-					expect(holding.overhang, 'what reaches past the group').toEqual({ x: 0, y: 0 });
+					// Back, Forward and Reload stand before the group (over it in a narrow panel), as
+					// tall as it; the address and Go are inside its border, in that order.
+					addressHolds(holding, 'holding');
 					// Taking over moved nothing in the header: Hand back is where Take over was in it. (A
 					// sheet grows from the bottom of the window, so the header itself has moved there.)
 					const placed = (b: BrowserBoxes) => {
@@ -2179,3 +2168,505 @@ for (const view of VIEWS)
 			const report = [...where].map(([f, states]) => `${f}  [${states.join(', ')}]`).sort();
 			expect(report.join('\n'), `${basename(dir)}: ${report.length} findings`).toBe('');
 		});
+
+/** What has to hold of the address row, which is there while this device holds the browser. */
+function addressHolds(b: BrowserBoxes, state: string) {
+	const said = (what: string) => `${state}: ${what}: ${JSON.stringify(b)}`;
+	const near = 0.5;
+	const row = b.parts.address;
+	const group = b.group!;
+	expect(
+		b.controls.map((c) => c.name),
+		said('the buttons of the row')
+	).toEqual(['Back', 'Forward', 'Reload', 'Go']);
+	const [back, forward, reload, go] = b.controls;
+	// Back, Forward and Reload: one line, squares as tall as the field, with one corner, none on
+	// another.
+	let end = row.left;
+	for (const c of [back, forward, reload]) {
+		expect(c.left, said(`${c.name} starts after what is before it`)).toBeGreaterThanOrEqual(end);
+		expect(Math.abs(c.top - back.top), said(`${c.name} is on the line of Back`)).toBeLessThan(near);
+		expect(
+			Math.abs(c.height - group.height),
+			said(`${c.name} is as tall as the field`)
+		).toBeLessThan(near);
+		expect(Math.abs(c.width - c.height), said(`${c.name} is square`)).toBeLessThan(near);
+		expect(c.radius, said(`${c.name} has the corners of Back`)).toBe(back.radius);
+		end = c.right;
+	}
+	expect(back.top, said('the buttons are under the top of the row')).toBeGreaterThanOrEqual(
+		row.top
+	);
+	// A panel narrower than 24rem gives the field the line under them, as wide as the row inside
+	// its padding, so that an address can be read there; a wider one has it beside them.
+	const under = b.panel.width < 384;
+	if (under) {
+		expect(group.top, said('the field is under the buttons')).toBeGreaterThanOrEqual(back.bottom);
+		expect(
+			Math.abs(group.left - back.left),
+			said('the field starts where Back starts')
+		).toBeLessThan(near);
+		expect(
+			Math.abs(row.right - group.right - (group.left - row.left)),
+			said('the field is as far from one edge as from the other')
+		).toBeLessThan(near);
+	} else {
+		expect(
+			Math.abs(group.top - back.top),
+			said('the field is on the line of the buttons')
+		).toBeLessThan(near);
+		expect(group.left, said('the field starts after Reload')).toBeGreaterThanOrEqual(end);
+	}
+	expect(group.right, said('the field ends in the panel')).toBeLessThanOrEqual(row.right);
+	expect(group.bottom, said('the field is over the bottom of the row')).toBeLessThanOrEqual(
+		row.bottom
+	);
+	expect(group.width, said('the field has room for an address')).toBeGreaterThan(under ? 180 : 100);
+	// The address and Go are inside the border of the group, in that order, none on another.
+	end = group.left;
+	for (const c of [{ name: 'the address', ...b.input! }, go]) {
+		expect(c.left, said(`${c.name} starts after what is before it`)).toBeGreaterThanOrEqual(end);
+		expect(c.top, said(`${c.name} is under the top of the group`)).toBeGreaterThanOrEqual(
+			group.top
+		);
+		expect(c.bottom, said(`${c.name} is over the bottom of the group`)).toBeLessThanOrEqual(
+			group.bottom
+		);
+		end = c.right;
+	}
+	expect(end, said('Go ends in the group')).toBeLessThanOrEqual(group.right);
+	// Nothing reaches past the border of the group: not a pixel.
+	expect(b.overhang, said('what reaches past the group')).toEqual({ x: 0, y: 0 });
+}
+
+/** Opens the Browser tab of the pane beside the chat, or of the sheet a narrow window has for it. */
+async function showBrowserTab(page: Page, wide: boolean) {
+	if (wide) {
+		const pane = page.locator('[data-right-pane]');
+		await expect(pane).toHaveAttribute('data-right-pane', 'open');
+		await pane.getByRole('tab', { name: 'Browser' }).click();
+	} else {
+		await page.getByRole('button', { name: 'Agents, usage and browser' }).click();
+		await page
+			.getByRole('dialog', { name: 'Agents' })
+			.getByRole('radio', { name: 'Browser' })
+			.click();
+		await expect(page.getByRole('dialog', { name: 'Browser' })).toBeVisible();
+	}
+	await expect(page.locator('[data-browser]:visible')).toBeVisible();
+}
+
+/** A tooltip as it is laid out, and the window it has to be inside. */
+interface TipBox extends Box {
+	text: string;
+	window: { width: number; height: number };
+	/** How much wider than its box what is in it is. */
+	wider: number;
+}
+/** Runs in the page: the tooltip that is open. */
+function tooltipBox(): TipBox | null {
+	const tip = Array.from(document.querySelectorAll<HTMLElement>('[data-slot=tooltip-content]'))
+		.filter((el) => el.checkVisibility())
+		.pop();
+	if (!tip) return null;
+	const r = tip.getBoundingClientRect();
+	const round = (n: number) => Math.round(n * 100) / 100;
+	return {
+		text: (tip.textContent ?? '').trim(),
+		left: round(r.left),
+		top: round(r.top),
+		right: round(r.right),
+		bottom: round(r.bottom),
+		width: round(r.width),
+		height: round(r.height),
+		window: { width: window.innerWidth, height: window.innerHeight },
+		wider: tip.scrollWidth - tip.clientWidth
+	};
+}
+
+/** The ring of the element that has the focus. */
+interface Ring {
+	name: string;
+	/** Whether the focus is one a keyboard brought: only that one is drawn. */
+	keyboard: boolean;
+	shadow: string;
+	/** The box that hides a part of the ring, when one does. */
+	cutBy: string | null;
+}
+/** Runs in the page: the ring around what Tab reached, 3px wide, and whether all of it shows. */
+function focusRing(): Ring | null {
+	const el = document.activeElement as HTMLElement | null;
+	if (!el || el === document.body) return null;
+	const wide = 3;
+	const r = el.getBoundingClientRect();
+	let cutBy: string | null = null;
+	for (let p = el.parentElement; p && !cutBy; p = p.parentElement) {
+		const s = getComputedStyle(p);
+		if (s.overflowX === 'visible' && s.overflowY === 'visible') continue;
+		const box = p.getBoundingClientRect();
+		if (box.width === 0 && box.height === 0) continue;
+		if (
+			r.left - wide < box.left ||
+			r.right + wide > box.right ||
+			r.top - wide < box.top ||
+			r.bottom + wide > box.bottom
+		)
+			cutBy = `${p.tagName.toLowerCase()}.${String(p.className).split(' ')[0]}`;
+	}
+	return {
+		name: el.getAttribute('aria-label') ?? (el.textContent ?? '').trim(),
+		keyboard: el.matches(':focus-visible'),
+		shadow: getComputedStyle(el).boxShadow,
+		cutBy
+	};
+}
+
+/** The Browser tab of a device that may not watch. */
+interface DeniedBoxes {
+	panel: Box;
+	denied: Box;
+	title: Box;
+	text: Box;
+	/** The controls in the panel: none, there is nothing such a device can do there. */
+	controls: number;
+	sideways: { page: number; panel: number };
+}
+/** Runs in the page: measures the Browser tab of a device that was refused the pictures. */
+function deniedBoxes(): DeniedBoxes {
+	const round = (n: number) => Math.round(n * 100) / 100;
+	const of = (el: Element): Box => {
+		const r = el.getBoundingClientRect();
+		return {
+			left: round(r.left),
+			top: round(r.top),
+			right: round(r.right),
+			bottom: round(r.bottom),
+			width: round(r.width),
+			height: round(r.height)
+		};
+	};
+	const panel = Array.from(document.querySelectorAll<HTMLElement>('[data-browser]')).find((el) =>
+		el.checkVisibility()
+	)!;
+	const denied = panel.querySelector('[data-browser-denied]')!;
+	return {
+		panel: of(panel),
+		denied: of(denied),
+		title: of(denied.querySelector('[data-slot=empty-title]')!),
+		text: of(denied.querySelector('[data-slot=empty-description]')!),
+		controls: panel.querySelectorAll('button, input, a').length,
+		sideways: {
+			page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+			panel: panel.scrollWidth - panel.clientWidth
+		}
+	};
+}
+
+/** What the tooltip of each button of the Browser tab begins with. */
+const TIPS: Record<string, string> = {
+	'Take over': 'Take over: the agent waits while you click and type',
+	'Hand back': 'Hand back to the agent',
+	'Sign in': "Sign in: opens the agent's browser in a window",
+	Back: 'Back',
+	Forward: 'Forward',
+	Reload: 'Reload'
+};
+
+// The states of the Browser tab a scripted agent never brings about: a browser opened from the page,
+// on its blank page; a tooltip under the pointer; the ring of a button Tab reached; an address that
+// is typed, a step back and one forward; what the host refuses; another device that holds the
+// browser; and a view link, which may not watch.
+for (const view of VIEWS)
+	for (const theme of THEMES)
+		at(
+			view,
+			`the Browser tab's other states hold at ${view.name}, ${theme}`,
+			async ({ page, browser }) => {
+				test.setTimeout(180_000);
+				const { width, height } = view;
+				const wide = width >= 1024;
+				const dir = join(SHOTS, `${view.name}-${theme}-browser-states`);
+				mkdirSync(dir, { recursive: true });
+				const measured: Record<string, Measured> = {};
+				const boxes: Record<string, unknown> = {};
+				const where = new Map<string, string[]>();
+				let shot = 0;
+				const panelOf = (on: Page) => on.locator('[data-browser]:visible');
+				const panel = panelOf(page);
+				const title = panel.locator('[data-browser-title]');
+				const button = (name: string, on = panel) => on.getByRole('button', { name, exact: true });
+				const slug = (name: string) => name.toLowerCase().replace(/\s+/g, '-');
+				const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+				const tip = (name: string) =>
+					page
+						.locator('[data-slot=tooltip-content]')
+						.filter({ hasText: new RegExp(`^${escaped(TIPS[name])}`) });
+				/** Screenshots `on` and looks for what does not hold; `rest` first takes the pointer away. */
+				const audited = async (state: string, on = page, rest = true) => {
+					if (rest) await on.mouse.move(width - 2, 2);
+					await settle(on);
+					const m = await on.evaluate(audit, 'body');
+					const file = `${String(++shot).padStart(2, '0')}-${state}`;
+					await on.screenshot({ path: join(dir, `${file}.png`) });
+					measured[file] = m;
+					for (const f of m.findings) where.set(f, [...(where.get(f) ?? []), state]);
+					expect(m.texts, `${state}: texts measured`).toBeGreaterThan(0);
+					return file;
+				};
+				const capture = async (state: string) => {
+					const file = await audited(state);
+					const b = await page.evaluate(browserBoxes);
+					boxes[file] = b;
+					browserHolds(b, state, wide);
+					return b;
+				};
+				/** The tab that chooses this panel: Tab goes on from it into the panel. */
+				const chooser = wide
+					? page.locator('[data-right-pane]').getByRole('tab', { name: 'Browser' })
+					: page.getByRole('dialog').getByRole('radio', { name: 'Browser' });
+				/** Presses Tab until `name` has the focus, and measures the ring it has then. */
+				const tabTo = async (name: string) => {
+					const target = button(name);
+					for (let presses = 0; presses < 16; presses++) {
+						if (await target.evaluate((el) => el === document.activeElement)) break;
+						await page.keyboard.press('Tab');
+					}
+					await expect(target).toBeFocused();
+					// Tab opens the tooltip too: it names the icon for someone who has no pointer.
+					await expect(tip(name)).toBeVisible();
+					const file = await audited(`focus-${slug(name)}`, page, false);
+					const ring = await page.evaluate(focusRing);
+					boxes[file] = ring;
+					expect(ring, `${name}: the ring Tab brought`).toMatchObject({
+						name,
+						keyboard: true,
+						cutBy: null
+					});
+					expect(ring!.shadow, `${name}: a ring is drawn`).not.toBe('none');
+				};
+
+				const site = await serve(SITE);
+				const address = site.url + SITE_PATH;
+				const stack = new Stack();
+				const others: BrowserContext[] = [];
+				try {
+					await stack.start('auto', false, [], DONE);
+					const id = stack.sessionId;
+					await page.setViewportSize({ width, height });
+					await page.addInitScript((t) => localStorage.setItem('azazel-theme', t), theme);
+					await page.goto(stack.pair);
+					await expect(page.locator('[data-session-list]:visible a').first()).toBeVisible();
+					const origin = new URL(page.url()).origin;
+					/** Opens the session on a device, and the Browser tab there. */
+					const open = async (on: Page, big: boolean) => {
+						await on.goto(`${origin}/s/${id}`);
+						await expect(on.getByRole('paragraph').filter({ hasText: 'Done.' })).toBeVisible();
+						await showBrowserTab(on, big);
+					};
+					await open(page, wide);
+					await expect(page.locator('html')).toHaveClass(new RegExp(`\\b${theme}\\b`));
+
+					// No browser: a device that may control has a button that opens one.
+					await expect(panel).toHaveAttribute('data-status', 'none');
+					await expect(button('Open')).toBeVisible();
+					const none = await capture('none');
+					expect(none.open, 'a control device can open the browser').not.toBeNull();
+					expect(Object.keys(none.parts), 'the header and the empty state').toEqual([
+						'header',
+						'empty'
+					]);
+
+					if (!agentBrowserFound) {
+						test.info().annotations.push({
+							type: 'not measured',
+							description:
+								'the blank page, tooltips, focus rings, the address row, the alert and a browser held elsewhere: no Chromium-based browser on this machine for the host to open'
+						});
+					} else {
+						// Open: the host starts the browser, and its blank page is watched like any other.
+						await button('Open').click();
+						await expect(panel).toHaveAttribute('data-status', 'watching');
+						await expect(title).toHaveText('Blank page');
+						await expect(panel.locator('[data-browser-url]')).toHaveText('about:blank');
+						const img = panel.locator('[data-browser-picture]').getByRole('img');
+						await expect
+							.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
+							.toBeGreaterThan(0);
+						await expect(button('Open')).toHaveCount(0);
+						const blank = await capture('blank');
+						expect(blank.open, 'nothing is left to open').toBeNull();
+						expect(blank.buttons.map((b) => b.name)).toEqual(['Take over', 'Sign in']);
+						expect(Object.keys(blank.parts), 'the header and the picture').toEqual([
+							'header',
+							'picture'
+						]);
+
+						// A tooltip under the pointer: all of it in the window, and not on the button it names.
+						for (const name of ['Take over', 'Sign in']) {
+							await button(name).hover();
+							await expect(tip(name)).toBeVisible();
+							const file = await audited(`tooltip-${slug(name)}`, page, false);
+							const t = (await page.evaluate(tooltipBox))!;
+							const named = (await button(name).boundingBox())!;
+							boxes[file] = { tip: t, button: named };
+							const said = `${name}: ${JSON.stringify({ tip: t, button: named })}`;
+							expect(t.text.startsWith(TIPS[name]), said).toBe(true);
+							// A pixel at the edge, as for everything else on the page (see `audit`): a tooltip
+							// is as wide as its text, which is no whole number of pixels (302.06), and it is
+							// placed from a whole one.
+							expect(
+								t.left >= -1 &&
+									t.top >= -1 &&
+									t.right <= t.window.width + 1 &&
+									t.bottom <= t.window.height + 1,
+								`the tooltip is inside the window: ${said}`
+							).toBe(true);
+							expect(t.width, `the tooltip is no wider than 20rem: ${said}`).toBeLessThanOrEqual(
+								320.5
+							);
+							expect(t.wider, `nothing is wider than the tooltip: ${said}`).toBeLessThanOrEqual(0);
+							expect(
+								t.top >= named.y + named.height - 1 || t.bottom <= named.y + 1,
+								`the tooltip is beside its button, not on it: ${said}`
+							).toBe(true);
+						}
+						await page.mouse.move(width - 2, 2);
+						await expect(page.locator('[data-slot=tooltip-content]')).toHaveCount(0);
+
+						// The ring of each button of the header, as Tab reaches it.
+						await chooser.focus();
+						for (const name of ['Take over', 'Sign in']) await tabTo(name);
+
+						// Taking over the blank page: the address row, with the address of a blank page.
+						await button('Take over').click();
+						await expect(panel).toHaveAttribute('data-status', 'you');
+						const field = panel.getByRole('textbox', { name: 'Address' });
+						await expect(field).toHaveValue('about:blank');
+						addressHolds(await capture('holding-blank'), 'holding-blank');
+
+						// An address is typed and opened; a step back is the blank page, a step forward the
+						// page that was left.
+						await field.fill(address);
+						await field.press('Enter');
+						await expect(title).toHaveText(SITE_TITLE);
+						await expect(field).toHaveValue(address);
+						await button('Back').click();
+						await expect(title).toHaveText('Blank page');
+						await expect(field).toHaveValue('about:blank');
+						await button('Forward').click();
+						await expect(title).toHaveText(SITE_TITLE);
+						await expect(field).toHaveValue(address);
+						const holding = await capture('holding');
+						addressHolds(holding, 'holding');
+						expect(holding.buttons.map((b) => b.name)).toEqual(['Hand back', 'Sign in']);
+						expect(
+							Object.keys(holding.parts),
+							'the header, the address, the picture, the note'
+						).toEqual(['header', 'address', 'picture', 'note']);
+
+						// The rings while holding: Hand back in the header, and the buttons of the address row.
+						await chooser.focus();
+						for (const name of ['Hand back', 'Back', 'Forward', 'Reload']) await tabTo(name);
+
+						// What the host refuses is said under the header: there is no page to go forward to.
+						await button('Forward').click();
+						const alert = panel.locator('[data-browser-error]').getByRole('alert');
+						await expect(alert).toContainText("there is no later page in this tab's history");
+						const failed = await capture('holding-error');
+						addressHolds(failed, 'holding-error');
+						expect(
+							Object.keys(failed.parts),
+							'the header, the alert, the address, the picture, the note'
+						).toEqual(['header', 'error', 'address', 'picture', 'note']);
+						// The next command that works takes the alert away.
+						await button('Reload').click();
+						await expect(alert).toHaveCount(0);
+						await button('Hand back').click();
+						await expect(panel).toHaveAttribute('data-status', 'watching');
+
+						// Another device takes the browser over: this one says so, and cannot take it.
+						// The other device is a wide window whatever this one is: a context takes the
+						// viewport of the test unless it is given one, and the zoomed one has no pane.
+						const second = await browser.newContext({
+							viewport: { width: 1440, height: 900 },
+							deviceScaleFactor: 1
+						});
+						others.push(second);
+						const holder = await second.newPage();
+						await holder.goto(await stack.newLink());
+						await expect(holder.locator('[data-session-list]:visible a').first()).toBeVisible();
+						await open(holder, true);
+						const theirs = panelOf(holder);
+						await button('Take over', theirs).click();
+						await expect(theirs).toHaveAttribute('data-status', 'you');
+						await expect(panel).toHaveAttribute('data-status', 'other');
+						await expect(panel.getByRole('status')).toHaveText('Held elsewhere');
+						await expect(button('Take over')).toBeDisabled();
+						await expect(panel.locator('[data-browser-note]')).toContainText(
+							'Another device has taken the browser over'
+						);
+						const elsewhere = await capture('held-elsewhere');
+						expect(elsewhere.buttons.map((b) => b.name)).toEqual(['Take over', 'Sign in']);
+						expect(Object.keys(elsewhere.parts), 'the header, the picture, the note').toEqual([
+							'header',
+							'picture',
+							'note'
+						]);
+						// The sign-in is refused while the other device holds it, and that is said here.
+						await button('Sign in').click();
+						await expect(alert).toContainText('another device has the browser');
+						const refused = await capture('held-elsewhere-error');
+						expect(
+							Object.keys(refused.parts),
+							'the header, the alert, the picture, the note'
+						).toEqual(['header', 'error', 'picture', 'note']);
+						await button('Hand back', theirs).click();
+						await expect(panel).toHaveAttribute('data-status', 'watching');
+					}
+
+					// A view link may not watch: the panel says why, and offers nothing to press.
+					const viewing = await browser.newContext({
+						viewport: { width, height },
+						deviceScaleFactor: view.scale
+					});
+					others.push(viewing);
+					await viewing.addInitScript((t) => localStorage.setItem('azazel-theme', t), theme);
+					const watcher = await viewing.newPage();
+					await watcher.goto(await stack.newLink('v'));
+					await expect(watcher.locator('[data-session-list]:visible a').first()).toBeVisible();
+					await open(watcher, wide);
+					await expect(panelOf(watcher).locator('[data-browser-denied]')).toContainText(
+						'Watching needs a control link'
+					);
+					const file = await audited('view-link', watcher);
+					const d = await watcher.evaluate(deniedBoxes);
+					boxes[file] = d;
+					const said = (what: string) => `view-link: ${what}: ${JSON.stringify(d)}`;
+					expect(d.controls, said('nothing to press')).toBe(0);
+					expect(d.sideways, said('nothing scrolls sideways')).toEqual({ page: 0, panel: 0 });
+					for (const [name, part] of [
+						['what is said', d.denied],
+						['its title', d.title],
+						['its text', d.text]
+					] as const)
+						expect(
+							part.left >= d.panel.left - 0.5 &&
+								part.right <= d.panel.right + 0.5 &&
+								part.top >= d.panel.top - 0.5,
+							said(`${name} is inside the panel`)
+						).toBe(true);
+					expect(d.title.bottom, said('the text is under its title')).toBeLessThanOrEqual(
+						d.text.top + 0.5
+					);
+				} finally {
+					writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
+					writeFileSync(join(dir, 'boxes.json'), JSON.stringify(boxes, null, '\t'));
+					for (const context of others) await context.close();
+					await stack.stop();
+					await site.close();
+				}
+
+				const report = [...where].map(([f, states]) => `${f}  [${states.join(', ')}]`).sort();
+				expect(report.join('\n'), `${basename(dir)}: ${report.length} findings`).toBe('');
+			}
+		);
