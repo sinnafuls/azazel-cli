@@ -769,7 +769,11 @@ struct SecurityCheck(Arc<SkillRegistry>);
 #[async_trait]
 impl crate::ext::CommandHandler for SecurityCheck {
     async fn run(&self, args: &str, ctx: &crate::ext::ExtCtx) -> crate::ext::CommandOutcome {
-        match self.0.get(SECURITY_CHECK_SKILL).filter(|skill| skill.user_invocable) {
+        match self
+            .0
+            .get(SECURITY_CHECK_SKILL)
+            .filter(|skill| skill.user_invocable)
+        {
             Some(skill) => {
                 self.0.mark_used(&skill);
                 allow_for_prompt(&ctx.services, &skill);

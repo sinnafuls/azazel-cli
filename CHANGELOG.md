@@ -5,6 +5,19 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-21
+
+### Added
+
+- `/security-check [path or focus]` checks the project's lockfiles, runtimes, base images and CI pins for known vulnerabilities and end-of-life versions, with osv-scanner or trivy when installed (else the OSV API), the CISA KEV catalogue and endoflife.date, and reports what to upgrade now, soon or not at all, with the exact version and command. It changes nothing. The same instructions are the built-in `dependency-audit` skill.
+- `[team] wait_secs` (default 300; `0` waits for every agent): a `task` call that has waited this long returns with the reports that are in and names the agents still running; their reports arrive later as messages ([#8](https://github.com/sinnafuls/azazel-cli/issues/8)).
+
+### Fixed
+
+- A sub-agent waiting for its own agents no longer holds a `team.max_parallel` slot, which could leave its queued agents unable to start and hang the agents above it ([#8](https://github.com/sinnafuls/azazel-cli/issues/8)).
+- The terminal UI no longer falls behind a fast stream of text: it takes in everything the session has already said before it draws, instead of drawing once per event ([#8](https://github.com/sinnafuls/azazel-cli/issues/8)).
+- A tool call whose end the UI missed no longer shows as running forever; it is cleared when the agent's next request starts ([#8](https://github.com/sinnafuls/azazel-cli/issues/8)).
+
 ## [0.19.0] - 2026-11-21
 
 ### Added
