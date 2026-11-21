@@ -27,6 +27,7 @@ pub mod prompt;
 pub mod rules;
 pub mod runaway;
 pub mod scheme;
+pub mod scripts;
 pub mod session;
 pub mod settings;
 pub mod side;
