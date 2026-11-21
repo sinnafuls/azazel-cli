@@ -958,6 +958,9 @@ impl App {
                 trusted,
             })?;
         }
+        registry.load(&azazel_core::scripts::ScriptsExt {
+            scripts: Arc::new(azazel_core::scripts::Scripts::new(paths.clone(), trusted)),
+        })?;
         registry.load(&CustomCommandsExt {
             roots: run.command_roots(&paths, compat, &packages),
             shell: shell.clone(),

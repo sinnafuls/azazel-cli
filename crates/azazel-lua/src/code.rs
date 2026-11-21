@@ -12,6 +12,7 @@ use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, U
 use azazel_core::Post;
 use azazel_core::config::CodeFirstListing;
 use azazel_core::hooks::Wake;
+use azazel_core::scripts::{SavedScript, Scripts};
 use azazel_core::toolcall::{Luau, LuauEngine, unattended};
 use azazel_core::transcript::activity;
 use azazel_core::{
@@ -44,6 +45,8 @@ const TASK: &str = "task";
 /// The tool that finds tools kept back until they are asked for (those of MCP servers, when
 /// there are many) and makes what it finds callable.
 const TOOL_SEARCH: &str = "tool_search";
+/// How deep saved scripts may run one another with `tools.run`; the `eval` script is level 0.
+const MAX_SCRIPT_DEPTH: usize = 3;
 /// Tools `tools.search` returns unless told otherwise, and the most it returns.
 const SEARCH_LIMIT: usize = 8;
 const MAX_SEARCH_LIMIT: usize = 25;
@@ -68,8 +71,8 @@ const INTRO: &str = "`language: \"luau\"` runs a script that calls your other to
      a `schema` the value it reported. `classify(question, { \"a\", \"b\", ... }, { model? })` has a \
      small model pick one choice and returns `{ choice, index, confidence, reason }`. `store(key, \
      value)` keeps a JSON value in the session for later scripts; `load(key)` reads it. \
-     `tools.search(query)` finds tools not listed below and `tools.describe(name)` returns a tool's \
-     description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
+     `tools.search(query)` finds tools not listed below and the user's saved scripts, which \
+     `tools.run(name, input)` runs; `tools.describe(name)` returns a tool's description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
      model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
      In the background a call that needs the user's answer is refused. \
      `eval` and the agent tools cannot be called through `tools`.";
@@ -430,23 +433,55 @@ impl Run {
                 .await;
         }
         let tools = self.callable();
-        let documents: Vec<(String, String)> = tools
+        let saved = self.saved();
+        let mut documents: Vec<(String, String)> = tools
             .iter()
             .map(|tool| (tool.name().to_string(), tool.description().to_string()))
             .collect();
+        documents.extend(saved.iter().map(|script| {
+            let input = script.input.as_deref().unwrap_or_default();
+            (script.name.clone(), format!("{} {input}", script.description))
+        }));
         let hits: Vec<Value> = toolsearch::rank(&documents, &query, limit)
             .into_iter()
-            .filter_map(|index| tools.get(index))
-            .map(|tool| json!({ "name": tool.name(), "description": first_sentence(tool.description()) }))
+            .filter_map(|index| {
+                match tools.get(index) {
+                Some(tool) => {
+                    Some(json!({ "name": tool.name(), "description": first_sentence(tool.description()) }))
+                }
+                None => saved.get(index - tools.len()).map(|script| {
+                    json!({ "name": script.name, "description": script.description, "kind": "script" })
+                }),
+            }
+            })
             .collect();
         to_lua(lua, &Value::Array(hits))
     }
 
-    /// `tools.describe`: everything about one callable tool, or nil when there is none of
-    /// that name.
+    /// The saved scripts `tools.run` can run.
+    fn saved(&self) -> Vec<SavedScript> {
+        self.ctx
+            .services
+            .get::<Scripts>()
+            .map(|scripts| scripts.list())
+            .unwrap_or_default()
+    }
+
+    /// `tools.describe`: everything about one callable tool or saved script, or nil when there
+    /// is none of that name.
     fn describe_tool(&self, lua: &Lua, name: &str) -> mlua::Result<mlua::Value> {
         let Some(tool) = self.callable().into_iter().find(|tool| tool.name() == name) else {
-            return Ok(mlua::Value::Nil);
+            let Some(script) = self.saved().into_iter().find(|script| script.name == name) else {
+                return Ok(mlua::Value::Nil);
+            };
+            let described = json!({
+                "kind": "script",
+                "name": script.name,
+                "description": script.description,
+                "input": script.input,
+                "signature": format!("tools.run(\"{}\", input)", script.name),
+            });
+            return to_lua(lua, &described);
         };
         let described = json!({
             "name": tool.name(),
@@ -455,6 +490,75 @@ impl Run {
             "signature": signature(tool.as_ref()).trim_start_matches("- "),
         });
         to_lua(lua, &described)
+    }
+
+    /// `tools.run`: runs the saved script `name` in a VM of its own with `input` as its global
+    /// `input`, and returns `(value, nil)`, or `(nil, message)` when it cannot be run or fails.
+    /// Its tool calls pass the gate and count against the limits like the caller's own.
+    async fn run_saved(
+        self: &Arc<Self>,
+        lua: &Lua,
+        depth: usize,
+        name: String,
+        input: mlua::Value,
+    ) -> mlua::Result<(mlua::Value, mlua::Value)> {
+        let failed = |message: String| {
+            Ok((
+                mlua::Value::Nil,
+                mlua::Value::String(lua.create_string(&message)?),
+            ))
+        };
+        if depth >= MAX_SCRIPT_DEPTH {
+            return failed(format!(
+                "tools.run: scripts may run others only {MAX_SCRIPT_DEPTH} levels deep"
+            ));
+        }
+        let Some(script) = self.ctx.services.get::<Scripts>().and_then(|s| s.find(&name)) else {
+            return failed(format!("tools.run: there is no saved script `{name}`"));
+        };
+        let input = match input {
+            mlua::Value::Nil => Value::Null,
+            other => match from_lua(lua, other) {
+                Ok(value) => value,
+                Err(e) => return failed(format!("tools.run: the input: {}", describe(&e))),
+            },
+        };
+        match self.nested(script.source, &name, input, depth + 1).await {
+            Ok(value) => Ok((to_lua(lua, &value)?, mlua::Value::Nil)),
+            Err(message) => failed(format!("tools.run: `{name}`: {message}")),
+        }
+    }
+
+    /// Runs `code` in a new VM at nesting level `depth`, inside the running script's time and
+    /// call limits; returns the first value it returned, as JSON.
+    async fn nested(
+        self: &Arc<Self>,
+        code: String,
+        name: &str,
+        input: Value,
+        depth: usize,
+    ) -> Result<Value, String> {
+        let lua = Lua::new();
+        install(&lua, self, depth).map_err(|e| describe(&e))?;
+        let input = to_lua(&lua, &input).map_err(|e| describe(&e))?;
+        lua.globals().raw_set("input", input).map_err(|e| describe(&e))?;
+        lua.sandbox(true).map_err(|e| describe(&e))?;
+        let watched = self.clone();
+        lua.set_interrupt(move |_| watched.interrupt());
+        let function = lua
+            .load(code)
+            .set_name(format!("={name}"))
+            .set_mode(ChunkMode::Text)
+            .into_function()
+            .map_err(|e| describe(&e))?;
+        let returned = function
+            .call_async::<MultiValue>(())
+            .await
+            .map_err(|e| describe(&e))?;
+        match returned.into_iter().next() {
+            Some(value) => from_lua(&lua, value).map_err(|e| describe(&e)),
+            None => Ok(Value::Null),
+        }
     }
 
     /// `agents.run`: starts one agent through the `task` tool, so the call is checked like
@@ -613,11 +717,11 @@ impl Run {
 
 /// `tools`: indexing it with a tool's name gives a function that calls the tool. A failure is
 /// raised from Luau, so that the script gets a plain string naming the line of the call.
-/// `tools.search` and `tools.describe` take a string; called with a table they are the tools of
-/// those names, if there are any.
+/// `tools.search`, `tools.describe` and `tools.run` take a string; called with a table they are the
+/// tools of those names, if there are any.
 const TOOLS: &str = r#"
-local call, search, describe = ...
-local finders = { search = search, describe = describe }
+local call, search, describe, run = ...
+local finders = { search = search, describe = describe, run = run }
 return setmetatable({}, {
     __index = function(_, name)
         local find = finders[name]
@@ -637,7 +741,7 @@ return setmetatable({}, {
 
 /// The globals of a script: `tools`, `agents`, `parallel`, `classify`, `store`, `load`, `print`
 /// and `json`.
-fn install(lua: &Lua, run: &Arc<Run>) -> mlua::Result<()> {
+fn install(lua: &Lua, run: &Arc<Run>, depth: usize) -> mlua::Result<()> {
     // Luau's `require` reads source files from disk; a script reaches files through `tools` only.
     lua.globals().raw_set("require", mlua::Nil)?;
     let state = run.clone();
@@ -657,10 +761,15 @@ fn install(lua: &Lua, run: &Arc<Run>) -> mlua::Result<()> {
     })?;
     let state = run.clone();
     let describe_tool = lua.create_function(move |lua, name: String| state.describe_tool(lua, &name))?;
+    let state = run.clone();
+    let run_saved = lua.create_async_function(move |lua, (name, input): (String, mlua::Value)| {
+        let state = state.clone();
+        async move { state.run_saved(&lua, depth, name, input).await }
+    })?;
     let tools: Table = lua
         .load(TOOLS)
         .set_name("=tools")
-        .call((call, search, describe_tool))?;
+        .call((call, search, describe_tool, run_saved))?;
     tools.set_readonly(true);
     lua.globals().set("tools", tools)?;
 
@@ -746,7 +855,7 @@ impl Future for Script<'_> {
 /// after what it printed.
 async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
     let lua = Lua::new();
-    install(&lua, &run).map_err(|e| describe(&e))?;
+    install(&lua, &run, 0).map_err(|e| describe(&e))?;
     lua.sandbox(true).map_err(|e| describe(&e))?;
     let watched = run.clone();
     lua.set_interrupt(move |_| watched.interrupt());

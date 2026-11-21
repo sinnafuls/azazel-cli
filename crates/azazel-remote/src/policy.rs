@@ -171,6 +171,7 @@ const COMMANDS: &[&str] = &[
     "mcp",
     "media",
     "ext",
+    "script",
 ];
 
 /// Slash commands a browser never runs: they sign in or out, change the configuration or the
@@ -210,7 +211,7 @@ fn plain_word(word: &str) -> bool {
 /// raw text, and a quote or any other character outside [`plain_word`] fails it: the handlers
 /// split the arguments their own way (`/mcp` strips quotes), and the two must not disagree.
 fn subcommand_allowed(name: &str, args: &str) -> bool {
-    if !matches!(name, "mcp" | "preset" | "profile" | "memory" | "media") {
+    if !matches!(name, "mcp" | "preset" | "profile" | "memory" | "media" | "script") {
         return true;
     }
     let words: Vec<&str> = args.split_whitespace().collect();
@@ -227,6 +228,8 @@ fn subcommand_allowed(name: &str, args: &str) -> bool {
         ("preset" | "profile", [word]) => *word != "save",
         // `forget` deletes a memory and `auto` changes what is remembered from now on.
         ("memory", [] | ["list"]) => true,
+        // `save` and `delete` write files in the user's scripts folder.
+        ("script", [] | ["list"] | ["show", _]) => true,
         // `/media` reports the backends and takes no arguments.
         ("media", []) => true,
         _ => false,
