@@ -1015,6 +1015,7 @@ Models, permissions and setup:
 | `/migrate` | Bring over what pi, omp, jcode, Claude Code and Codex CLI hold: tick the harnesses and the kinds (models, keys, skills, commands, agents, MCP servers, rules, settings, chats, memory), read the plan, confirm; see [migrating](migrating.md) |
 | `/doctor` | Check the installation and this project's setup |
 | `/rules` | List the rule files, when each applies and whether it has in this session; see [rules](rules.md) |
+| `/script save <name> [description] \| list \| show <name> \| delete <name>` | Save the last successful foreground Luau `eval` of this session as a script that later `eval` scripts run with `tools.run`; see [saved scripts](skills-and-commands.md#saved-scripts) |
 | `/hooks` | List the hooks, where they come from and how each last ran; see [hooks](hooks.md) |
 
 Team and goals ([team](team.md), [goals](goals.md), [screen and playtesting](screen-and-playtesting.md)):

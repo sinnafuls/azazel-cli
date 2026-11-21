@@ -181,6 +181,26 @@ In the body:
 
 The expanded text is sent to the lead as your prompt. `@path` works in any prompt you type, not only in commands: the file must be UTF-8 text of at most 256 KB, paths are relative to the working directory, and an attached file counts as read for the [freshness rule](tools.md) of `write` and `edit`.
 
+## Saved scripts
+
+A saved script is a Luau script you keep so that the agent's later `eval` scripts can run it with `tools.run(name, input)` (see [`eval`](tools.md#code-execution)). You save it, not the agent: run a Luau `eval` that does what you want, then type `/script save <name> [description]`. That stores the source of the session's most recent successful foreground Luau `eval` (a failed one, a `background` one, and Python and JavaScript are skipped).
+
+| Command | Does |
+|---|---|
+| `/script save <name> [description]` | Save the last successful Luau `eval`; an existing script of that name is replaced |
+| `/script list`, `azazel scripts list` | List the scripts with where each comes from |
+| `/script show <name>`, `azazel scripts show <name>` | Print a script with its header |
+| `/script delete <name>`, `azazel scripts delete <name>` | Delete its file |
+
+A script is one file, `<name>.luau`, with a header holding `description`, `saved-at` and `input`. A comment `-- input: { path: string }` in the source becomes the `input` note that `tools.describe` shows. Names are lowercase letters, digits and `-`, up to 64 characters.
+
+| Order | Directory |
+|---|---|
+| 1 | `~/.azazel/scripts/` (where `/script save` writes) |
+| 2 | `<project>/.azazel/scripts/`, only when the project is [trusted](configuration.md); replaces a script of the same name |
+
+A script from an untrusted project is not loaded. Running a script costs the calling script's tool calls and time, and each tool call is checked by the permission rules as if the caller made it. A browser connected with [`azazel remote`](background-and-remote.md) may use `/script list` and `/script show` only; `save` and `delete` are refused there.
+
 ## `/init`
 
 `/init` sends the lead a fixed prompt: explore the repository and write `AGENTS.md` at the project root with the sections Build, Test, Layout and Conventions, giving exact commands, in under 200 lines. An existing `AGENTS.md` is corrected and extended rather than replaced. Azazel loads `AGENTS.md` into the system prompt of every later session in the project.

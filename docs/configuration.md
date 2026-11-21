@@ -572,6 +572,7 @@ unknown tier or profile) exits with status 2.
 | `azazel browser` | `open` | Show the agents' browser profile in a window to sign in to sites: `azazel browser open [URL]`; see [signing in](web-and-browser.md#signing-in) |
 | `azazel lsp` | `list`, `install` | List the language servers and install the ones azazel can; see [installing servers](lsp.md#installing-servers) |
 | `azazel rules` | `list`, `test` | Show the rule files of the project and test one; see [rules](rules.md) |
+| `azazel scripts` | `list`, `show`, `delete` | List, print and delete the saved Luau scripts that `eval` scripts run with `tools.run`; see [saved scripts](skills-and-commands.md#saved-scripts) |
 | `azazel memory` | `list`, `search`, `forget`, `export` | What is remembered about the project; see [memory](memory.md) |
 | `azazel index` | | Rebuild the index of the project's code |
 | `azazel rag` | `add`, `list`, `remove` | Collections of documents `semantic_search` can look through |

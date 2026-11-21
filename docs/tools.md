@@ -445,6 +445,8 @@ return table.concat(counts, "\n")
 - The script runs in a fresh sandboxed Luau VM: no file, process or network access except through `tools`.
 - Limits: 120 seconds of the script's own running time (waiting for a tool, an agent or a model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
 - `eval` itself, `task` and the other team tools cannot be called through `tools`; a script starts agents with `agents.run`.
+- `tools.run(name, input)` runs one of the user's [saved scripts](skills-and-commands.md#saved-scripts) in a VM of its own, with `input` (any JSON value) as the global `input`, and returns its first returned value, or `nil, message` when the script is missing, fails or is nested too deep. Its tool calls are judged by the permission engine one by one like the caller's and count against the caller's 50 calls and running time. Saved scripts may run others up to 3 levels deep. Only the user saves scripts, with `/script save`; the agent cannot.
+- `tools.search(query)` also returns matching saved scripts, as `{ name, description, kind = "script" }`, and `tools.describe(name)` describes one (`kind`, `description`, `input`, `signature`).
 - With `background: true` the script runs as a job instead; see [`eval`](#eval) for what changes.
 
 The tool's description lists the names of the callable tools only, within about 2000 characters, because the agent already has every tool's schema in its tool list; a script gets a tool's arguments with `tools.describe(name)`, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
