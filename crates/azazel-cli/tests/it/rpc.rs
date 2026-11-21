@@ -894,3 +894,48 @@ fn browser_open_refuses_an_address_that_is_not_http() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("not an http or https URL"));
 }
+
+#[cfg(feature = "lua")]
+#[test]
+fn a_background_script_asks_with_its_job_and_runs_on_once_approved() {
+    let mut client = Client::start("script_approval.json");
+    client.ask(
+        1,
+        json!({ "type": "prompt", "text": "write out.txt in the background" }),
+    );
+
+    // The script pauses at the write: the request names the job, and nothing was written.
+    let (_, request) = client.until(|line| line["type"] == "approval_request");
+    assert_eq!(request["tool"], "write", "{request}");
+    assert_eq!(request["job"], "lua-1", "{request}");
+    assert!(
+        request["note"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("runs the script again"),
+        "{request}"
+    );
+    assert!(!client.project().join("out.txt").exists());
+
+    let request_id = request["request_id"].clone();
+    let (_, answered) = client.ask(
+        2,
+        json!({ "type": "approval_response", "request_id": request_id, "decision": "allow" }),
+    );
+    assert_eq!(answered["success"], true, "{answered}");
+
+    // The script ran again, made the write once approved, and woke the lead, who ends the run.
+    let (_, idle) = client.until(|line| line["type"] == "idle" && line["stop"] == "stop");
+    assert_eq!(idle["agent"], "lead");
+    for _ in 0..100 {
+        if client.project().join("out.txt").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        std::fs::read_to_string(client.project().join("out.txt")).unwrap(),
+        "hi"
+    );
+    assert_eq!(client.finish(), Some(0));
+}

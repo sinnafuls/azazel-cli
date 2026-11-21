@@ -1,0 +1,21 @@
+{
+  "lead": [
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "c1",
+            "name": "eval",
+            "input": {
+              "language": "luau",
+              "code": "local a = tools.write({ path = 'out.txt', content = 'hi' }) return 'wrote'",
+              "background": true
+            }
+          }
+        ]
+      }
+    },
+    { "reply": { "text": "started" } },
+    { "reply": { "text": "done" } }
+  ]
+}
