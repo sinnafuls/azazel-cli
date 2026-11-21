@@ -57,35 +57,41 @@ fn ask(script: &Value, prompt: &str, wanted: &str) -> (String, Duration) {
     std::thread::spawn(move || {
         let mut buffer = [0u8; 8192];
         while let Ok(read) = reader.read(&mut buffer) {
-            if read == 0 || sender.send(String::from_utf8_lossy(&buffer[..read]).into_owned()).is_err() {
+            if read == 0
+                || sender
+                    .send(String::from_utf8_lossy(&buffer[..read]).into_owned())
+                    .is_err()
+            {
                 break;
             }
         }
     });
     let started = Instant::now();
-    let mut read_until = |wanted: &str, shown: &mut String| {
+    let read_until = |wanted: &str, shown: &mut String, writer: &mut Box<dyn Write + Send>| {
         while !shown.contains(wanted) {
             let left = LIMIT.saturating_sub(started.elapsed());
-            let more = received.recv_timeout(left).unwrap_or_else(|_| panic!("never showed `{wanted}`: {shown:?}"));
+            let more = received
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("never showed `{wanted}`: {shown:?}"));
             // A Windows console asks where the cursor is before it shows anything.
             for _ in more.matches("[6n") {
-                writer.write_all(b"[1;1R").unwrap();
+                writer.write_all(b"\x1b[1;1R").unwrap();
                 writer.flush().unwrap();
             }
             shown.push_str(&more);
         }
     };
     let mut shown = String::new();
-    read_until("mock/lead", &mut shown);
+    read_until("mock/lead", &mut shown, &mut writer);
     writer.write_all(prompt.as_bytes()).unwrap();
     writer.flush().unwrap();
     let mut typed = String::new();
-    read_until(prompt, &mut typed);
+    read_until(prompt, &mut typed, &mut writer);
     writer.write_all(b"\r").unwrap();
     writer.flush().unwrap();
     let sent = Instant::now();
     let mut after = String::new();
-    read_until(wanted, &mut after);
+    read_until(wanted, &mut after, &mut writer);
     let took = sent.elapsed();
     let _ = child.kill();
     let _ = child.wait();
@@ -96,7 +102,7 @@ fn ask(script: &Value, prompt: &str, wanted: &str) -> (String, Duration) {
 /// before it draws, so a screen shows what the agent said now, not what it said seconds ago.
 #[test]
 fn a_fast_stream_is_not_drawn_once_per_event() {
-    let (shown, _) = ask(&streamed_reply(), "go", &format!("w{} ", WORDS - 1));
+    let (shown, _) = ask(&streamed_reply(), "go", &format!("w{}", WORDS - 1));
     // Every frame is one synchronized update.
     let frames = shown.matches("\x1b[?2026h").count();
     assert!(frames > 0, "the terminal showed no frames: {shown:?}");
