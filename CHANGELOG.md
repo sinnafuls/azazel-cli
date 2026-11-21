@@ -5,6 +5,16 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-11-21
+
+### Changed
+
+- The Browser tab of `azazel remote` fills its pane in width and height: while a control device watches, the agents' page is laid out for the room that device has (320 to 1920 CSS px a side), and has its own size again when the last device stops watching. A tab the agent sized itself with `resize` keeps its size.
+
+### Fixed
+
+- A `task` call no longer blocks while its agents wait for a free `team.max_parallel` slot: it returns at once naming which agents started and which are queued, the results and the start of each queued agent arrive as messages, and `agent_stop` cancels a queued agent before it starts ([#7](https://github.com/sinnafuls/azazel-cli/issues/7)).
+
 ## [0.18.0] - 2026-11-21
 
 ### Added
