@@ -84,7 +84,7 @@ use crossterm::event::{
     MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use tokio::sync::mpsc;
 
 use crate::app::{Active, App};
@@ -104,6 +104,8 @@ pub(crate) use slash::{REWIND_NOTE, builtin_names as builtin_command_names, is_n
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
 const MAX_COMPLETION_FILES: usize = 20_000;
 const COMPLETION_ROWS: usize = 8;
+/// The most events of the session taken in before the next frame is drawn.
+const READY_BATCH: usize = 512;
 /// How the note about a `!command` the user ran starts in the agent's context.
 pub(crate) const SHELL_NOTE: &str = "I ran `";
 
@@ -963,6 +965,7 @@ impl Tui {
                 },
                 incoming = self.backend.next(), if self.held.is_empty() => {
                     self.on_incoming(incoming).await;
+                    self.take_ready().await;
                 }
                 // What arrived while a full-screen view had the terminal comes first.
                 _ = std::future::ready(()), if !self.held.is_empty() => {
@@ -1011,6 +1014,22 @@ impl Tui {
         if self.popup.is_some() {
             self.quit = true;
             let _ = self.draw();
+        }
+    }
+
+    /// Takes in what the session has already said before the next frame is drawn. A frame per
+    /// event cannot keep up with agents that stream: the screen would show what happened
+    /// seconds ago, and the events of sub-agents (a channel of limited size) would be dropped,
+    /// the end of a tool call among them.
+    async fn take_ready(&mut self) {
+        for _ in 0..READY_BATCH {
+            if self.quit || !self.held.is_empty() {
+                return;
+            }
+            match self.backend.next().now_or_never() {
+                Some(incoming) => self.on_incoming(incoming).await,
+                None => return,
+            }
         }
     }
 

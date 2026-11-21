@@ -125,8 +125,11 @@ fn last_lines(text: &str) -> Vec<String> {
 /// Brings `tools` up to date with `event`; the call that ended with it, if one did.
 pub(super) fn track(tools: &mut Vec<RunningTool>, event: &AgentEvent) -> Option<Ended> {
     match event {
+        // A new message is requested only once every call of the last one has ended, so a call
+        // still shown as running here lost its `ToolEnd` (a reader that fell behind) and is over.
+        AgentEvent::MessageStart => tools.clear(),
         // The calls of a message that is taken back, or not finished, never start.
-        AgentEvent::MessageStart | AgentEvent::Retry { .. } | AgentEvent::Rule { .. } => {
+        AgentEvent::Retry { .. } | AgentEvent::Rule { .. } => {
             tools.retain(|tool| !tool.writing());
         }
         AgentEvent::Stream(StreamEvent::ToolCallStart { index, id, name }) => tools.push(RunningTool {
@@ -302,6 +305,23 @@ mod tests {
             },
         );
         assert!(ended.is_some_and(|ended| ended.tool.call_id == "c1"));
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn a_call_whose_end_was_lost_is_over_when_the_next_message_starts() {
+        let mut tools = Vec::new();
+        track(
+            &mut tools,
+            &AgentEvent::ToolStart {
+                call_id: "c1".to_string(),
+                name: "shell".to_string(),
+                input: json!({"command": "sleep 1"}),
+            },
+        );
+        assert_eq!(tools.len(), 1);
+        // `ToolEnd` never arrived; the agent went on to its next request.
+        track(&mut tools, &AgentEvent::MessageStart);
         assert!(tools.is_empty());
     }
 
