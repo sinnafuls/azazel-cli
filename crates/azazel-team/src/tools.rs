@@ -193,7 +193,7 @@ impl Tool for TaskTool {
          every agent's report; with `wait: false` it returns their ids at once and each report arrives later \
          as a message. Give an agent a `schema` when you need its result as data: it then reports a JSON \
          value that matches the schema instead of prose. When an agent has to wait for a free slot the call \
-         returns at once and names the queued agents."
+         returns at once and names the queued agents. A wait that takes longer than `team.wait_secs` returns early          the same way."
     }
 
     fn schema(&self) -> Value {
@@ -303,6 +303,9 @@ impl Tool for TaskTool {
             WaitAll::Steered { finished, running } => {
                 ToolOutput::text(steered_text(&finished, &running)).with_details(results_details(&finished))
             }
+            WaitAll::TimedOut { finished, running } => {
+                ToolOutput::text(timed_out_text(&finished, &running)).with_details(results_details(&finished))
+            }
             WaitAll::Cancelled => ToolOutput::error("cancelled; the agents this call started were stopped"),
         }
     }
@@ -329,6 +332,26 @@ fn placement_text(started: &[String], queued: &[String], busy: usize, slots: usi
         "The call did not wait. Each result arrives as a message when it is ready, and so does the start \
          of a queued agent. `agent_wait` blocks until the next one, `agent_stop` cancels an agent, or carry on.",
     );
+    out
+}
+
+/// What a wait that ran into `team.wait_secs` says: what finished, and what goes on in the background.
+fn timed_out_text(finished: &[Finished], running: &[String]) -> String {
+    let mut out = String::from("stopped waiting: `team.wait_secs` passed.");
+    if !running.is_empty() {
+        out.push_str(&format!(
+            " Still running in the background: {}. Each result arrives as a message when it is ready;              `agent_wait` blocks until the next one, `agent_stop` cancels an agent.",
+            running.join(", ")
+        ));
+    }
+    for finished in finished {
+        out.push_str(
+            "
+
+",
+        );
+        out.push_str(&result_section(finished));
+    }
     out
 }
 

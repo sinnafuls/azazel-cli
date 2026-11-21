@@ -1352,6 +1352,7 @@ impl App {
             defs: agent_defs.clone(),
             max_parallel: config.team.max_parallel,
             max_depth: config.team.max_depth,
+            wait: Duration::from_secs(config.team.wait_secs),
             max_turns: config.team.max_turns,
             max_result_bytes: config.tools.max_result_bytes,
             compaction: (&config.compaction).into(),

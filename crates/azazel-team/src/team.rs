@@ -217,6 +217,12 @@ pub enum WaitAll {
         finished: Vec<Finished>,
         running: Vec<String>,
     },
+    /// `team.wait_secs` passed. `finished` ended meanwhile; `running` go on, and each of their
+    /// results reaches the caller as a message when it is ready.
+    TimedOut {
+        finished: Vec<Finished>,
+        running: Vec<String>,
+    },
     /// The call was cancelled; the agents were stopped.
     Cancelled,
 }
@@ -333,6 +339,9 @@ pub struct TeamDeps {
     pub defs: Arc<AgentDefs>,
     pub max_parallel: usize,
     pub max_depth: u32,
+    /// How long a `task` call waits for its agents before it returns and lets them report as
+    /// messages; 0 waits for all of them.
+    pub wait: Duration,
     /// Requests per task for an agent whose definition sets none; 0 is no limit.
     pub max_turns: u32,
     pub max_result_bytes: usize,
@@ -1439,7 +1448,7 @@ impl Team {
     /// Waits until every agent in `ids` has finished and returns their results in that order.
     /// `None` when `cancel` fired first; the agents are stopped then.
     pub async fn wait_all(&self, ids: &[String], cancel: &CancellationToken) -> Option<Vec<Finished>> {
-        match self.wait_batch(None, ids, None, cancel).await {
+        match self.wait_batch(None, ids, None, None, cancel).await {
             WaitAll::Finished(results) => Some(results),
             _ => None,
         }
@@ -1450,7 +1459,8 @@ impl Team {
     /// the agents still running go on, their results reaching `caller` as messages.
     pub async fn wait_for(&self, caller: &AgentInfo, ids: &[String], cancel: &CancellationToken) -> WaitAll {
         let steering = self.inner.handle_of(&caller.id).map(|handle| handle.steering());
-        self.wait_batch(Some(caller), ids, steering, cancel).await
+        let limit = Some(self.inner.deps.wait).filter(|wait| !wait.is_zero());
+        self.wait_batch(Some(caller), ids, steering, limit, cancel).await
     }
 
     /// Waits for `ids`; a sub-agent `caller` lends its slot meanwhile.
@@ -1459,13 +1469,14 @@ impl Team {
         caller: Option<&AgentInfo>,
         ids: &[String],
         steering: Option<watch::Receiver<u64>>,
+        limit: Option<Duration>,
         cancel: &CancellationToken,
     ) -> WaitAll {
         let lent = caller.filter(|caller| caller.id != LEAD);
         if let Some(caller) = lent {
             self.inner.lend_slot(&caller.id);
         }
-        let outcome = self.wait_batch_inner(ids, steering, cancel).await;
+        let outcome = self.wait_batch_inner(ids, steering, limit, cancel).await;
         if let Some(caller) = lent {
             self.inner.reclaim_slot(&caller.id);
         }
@@ -1476,8 +1487,10 @@ impl Team {
         &self,
         ids: &[String],
         mut steering: Option<watch::Receiver<u64>>,
+        limit: Option<Duration>,
         cancel: &CancellationToken,
     ) -> WaitAll {
+        let deadline = limit.map(|limit| Instant::now() + limit);
         loop {
             if steering.as_mut().is_some_and(|rx| *rx.borrow_and_update() > 0) {
                 return self.leave_running(ids);
@@ -1499,6 +1512,12 @@ impl Team {
                     }
                     return WaitAll::Finished(results);
                 }
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return match self.leave_running(ids) {
+                    WaitAll::Steered { finished, running } => WaitAll::TimedOut { finished, running },
+                    other => other,
+                };
             }
             let steered = async {
                 match steering.as_mut() {

@@ -118,16 +118,26 @@ fn git(dir: &Path, args: &[&str]) {
 
 impl Bench {
     async fn new(max_parallel: usize, repository: bool) -> Bench {
-        Bench::build(max_parallel, repository, None).await
+        Bench::build(max_parallel, repository, None, Duration::ZERO).await
+    }
+
+    /// A bench whose `task` calls wait `wait` for their agents at most.
+    async fn waiting(max_parallel: usize, wait: Duration) -> Bench {
+        Bench::build(max_parallel, false, None, wait).await
     }
 
     /// A bench whose team routes models with `routing`: `@default` is `mock/mid`, `@smol` (the
     /// rater) is `mock/smol`.
     async fn routed(routing: RoutingSettings) -> Bench {
-        Bench::build(4, false, Some(routing)).await
+        Bench::build(4, false, Some(routing), Duration::ZERO).await
     }
 
-    async fn build(max_parallel: usize, repository: bool, routing: Option<RoutingSettings>) -> Bench {
+    async fn build(
+        max_parallel: usize,
+        repository: bool,
+        routing: Option<RoutingSettings>,
+        wait: Duration,
+    ) -> Bench {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         let agents = project.join(".azazel/agents");
@@ -246,6 +256,7 @@ impl Bench {
             defs,
             max_parallel,
             max_depth: 2,
+            wait,
             max_turns: 0,
             max_result_bytes: 50_000,
             compaction: CompactionSettings::default(),
@@ -1684,4 +1695,83 @@ async fn a_parent_waiting_for_its_queued_child_does_not_keep_the_only_slot() {
     until_state(&bench, "worker-1", |state| *state == MemberState::Done).await;
     until_state(&bench, "boss-1", MemberState::is_finished).await;
     assert_eq!(bench.state("boss-1"), MemberState::Done);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_wait_ends_after_wait_secs_and_the_agent_reports_later() {
+    let mut bench = Bench::waiting(4, Duration::from_millis(300)).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "slow work", "model": "mock/w" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("moving on"));
+    bench.mock.push("lead", MockStep::text("noted"));
+    bench
+        .mock
+        .push("w", MockStep::tools("", &[("n", "nap", json!({ "ms": 1500 }))]));
+    bench.mock.push("w", MockStep::text("slow report"));
+    let calls = bench.run("go").await;
+    assert!(!calls[0].1, "{}", calls[0].2);
+    assert!(
+        calls[0].2.contains("`team.wait_secs`")
+            && calls[0].2.contains("Still running in the background: worker-1"),
+        "{}",
+        calls[0].2
+    );
+    assert!(
+        calls[0].3 < Duration::from_millis(1200),
+        "waited {:?}",
+        calls[0].3
+    );
+    assert!(bench.state("worker-1").is_active());
+
+    // Its report is delivered as a message, not lost with the wait.
+    bench.until_idle().await;
+    let last = bench.mock.requests_for("lead").pop().unwrap();
+    let delivered = user_texts(&last.messages).pop().unwrap();
+    assert!(
+        delivered.starts_with("<agent-result id=\"worker-1\" status=\"done\""),
+        "{delivered}"
+    );
+    assert!(delivered.contains("slow report"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_secs_zero_waits_for_every_agent() {
+    let mut bench = Bench::waiting(4, Duration::ZERO).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "slow work", "model": "mock/w" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("done"));
+    bench
+        .mock
+        .push("w", MockStep::tools("", &[("n", "nap", json!({ "ms": 700 }))]));
+    bench.mock.push("w", MockStep::text("slow report"));
+    let calls = bench.run("go").await;
+    assert!(calls[0].2.contains("slow report"), "{}", calls[0].2);
+    assert!(calls[0].3 >= Duration::from_millis(600), "{:?}", calls[0].3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_waiting_task_call_stops_its_agents() {
+    let bench = Bench::new(4, false).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "slow work", "model": "mock/w" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("stopped"));
+    bench
+        .mock
+        .push("w", MockStep::tools("", &[("n", "nap", json!({ "ms": 20000 }))]));
+    assert!(bench.lead.prompt(UserInput::text("go")));
+    until_state(&bench, "worker-1", napping).await;
+    assert!(bench.lead.abort());
+    let started = Instant::now();
+    until_state(&bench, "worker-1", MemberState::is_finished).await;
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(bench.nap_cancelled.load(Ordering::SeqCst));
 }

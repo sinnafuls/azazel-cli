@@ -223,6 +223,9 @@ config_table!(CheckpointsConfig {
 config_table!(TeamConfig {
     max_parallel: usize = 4,
     max_depth: u32 = 2,
+    /// Seconds a `task` call waits for its agents before it returns and they report as messages;
+    /// 0 waits for all of them.
+    wait_secs: u64 = 300,
     /// Requests per task for a sub-agent whose definition sets no `max-turns`; 0 is no limit.
     max_turns: u32 = 200,
     /// Days a finished sub-agent stays in the agent hub; its transcript file is deleted after

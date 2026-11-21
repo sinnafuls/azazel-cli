@@ -433,6 +433,7 @@ async fn with_lead_on(bench: &Bench, mock: Arc<MockProvider>) -> azazel_agent::A
         defs: Arc::new(discover(BUILTIN_AGENTS, &[])),
         max_parallel: 2,
         max_depth: 2,
+        wait: Duration::ZERO,
         max_turns: 0,
         max_result_bytes: 50_000,
         compaction: CompactionSettings::default(),
