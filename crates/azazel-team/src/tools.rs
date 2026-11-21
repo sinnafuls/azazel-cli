@@ -283,8 +283,8 @@ impl Tool for TaskTool {
         // yet: the call returns, and every agent of it reports as a message.
         if !input.wait || !queued.is_empty() {
             // Agents of a `wait: true` call were not set to report as messages; now they are.
-            let (finished, running) = match team.leave_running(&ids) {
-                WaitAll::Steered { finished, running } => (finished, running),
+            let (finished, running) = match input.wait.then(|| team.leave_running(&ids)) {
+                Some(WaitAll::Steered { finished, running }) => (finished, running),
                 _ => (Vec::new(), ids.clone()),
             };
             let started: Vec<String> = running.into_iter().filter(|id| !queued.contains(id)).collect();

@@ -1522,3 +1522,95 @@ async fn an_agent_that_runs_twice_is_counted_once_in_the_savings() {
     let (_, routed) = bench.team.routing().pop().unwrap();
     assert!((routed.saving_usd.unwrap() - 4.0).abs() < 1e-9, "{routed:?}");
 }
+
+/// Two workers asked for by one `task` call on a team with one slot: the first naps, the second
+/// has to wait.
+fn two_workers(bench: &Bench, wait: bool, nap_ms: u64) {
+    let agents = json!([
+        { "agent": "worker", "prompt": "first", "model": "mock/w1" },
+        { "agent": "worker", "prompt": "second", "model": "mock/w2" }
+    ]);
+    bench.lead_calls("t1", "task", json!({ "agents": agents, "wait": wait }));
+    bench
+        .mock
+        .push("w1", MockStep::tools("", &[("n", "nap", json!({ "ms": nap_ms }))]));
+    bench.mock.push("w1", MockStep::text("one done"));
+    bench.mock.push("w2", MockStep::text("two done"));
+}
+
+/// Every message the lead was sent, over all its requests.
+fn lead_inbox(bench: &Bench) -> String {
+    bench
+        .mock
+        .requests_for("lead")
+        .iter()
+        .flat_map(|request| user_texts(&request.messages))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_call_with_no_free_slot_returns_at_once_and_the_start_of_the_queued_agent_follows() {
+    let mut bench = Bench::new(1, false).await;
+    two_workers(&bench, true, 600);
+    for _ in 0..6 {
+        bench.mock.push("lead", MockStep::text("noted"));
+    }
+    let calls = bench.run("go").await;
+    assert!(!calls[0].1, "{}", calls[0].2);
+    assert!(calls[0].3 < Duration::from_millis(500), "waited {:?}", calls[0].3);
+    assert!(calls[0].2.starts_with("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees). "), "{}", calls[0].2);
+    assert!(calls[0].2.contains("agent_wait") && calls[0].2.contains("agent_stop"), "{}", calls[0].2);
+    assert_eq!(bench.state("worker-2"), MemberState::Queued);
+
+    // Both go on in the background; the lead hears that worker-2 started, and both reports.
+    until_state(&bench, "worker-2", MemberState::is_finished).await;
+    let started = Instant::now();
+    while !lead_inbox(&bench).contains("one done") || !lead_inbox(&bench).contains("two done") {
+        assert!(started.elapsed() < Duration::from_secs(10), "{}", lead_inbox(&bench));
+        bench.until_idle().await;
+    }
+    let inbox = lead_inbox(&bench);
+    let start = inbox.find("<agent-started id=\"worker-2\"").expect(&inbox);
+    assert!(inbox.find("<agent-result id=\"worker-1\"").unwrap() < start, "{inbox}");
+    assert!(start < inbox.find("<agent-result id=\"worker-2\"").unwrap(), "{inbox}");
+    assert!(!inbox.contains("<agent-started id=\"worker-1\""), "{inbox}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_false_names_the_started_and_the_queued_agents_apart() {
+    let mut bench = Bench::new(1, false).await;
+    two_workers(&bench, false, 300);
+    bench.mock.push("lead", MockStep::text("ok"));
+    let calls = bench.run("go").await;
+    assert!(calls[0].2.starts_with("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees). "), "{}", calls[0].2);
+    // With a slot for each there is nothing queued to name.
+    let mut roomy = Bench::new(4, false).await;
+    two_workers(&roomy, false, 50);
+    roomy.mock.push("lead", MockStep::text("ok"));
+    let calls = roomy.run("go").await;
+    assert!(calls[0].2.starts_with("started: worker-1, worker-2. The call did not wait."), "{}", calls[0].2);
+    assert!(!calls[0].2.contains("queued:"), "{}", calls[0].2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_a_queued_agent_cancels_it_before_it_starts() {
+    let mut bench = Bench::new(1, false).await;
+    two_workers(&bench, true, 600);
+    bench.mock.push("lead", MockStep::text("ok"));
+    bench.run("go").await;
+    assert_eq!(bench.state("worker-2"), MemberState::Queued);
+    assert_eq!(bench.team.stop("worker-2").unwrap(), ["worker-2"]);
+    until_state(&bench, "worker-2", |state| *state == MemberState::Stopped).await;
+    let result = loop {
+        if let Some(result) = bench.team.result("worker-2") {
+            break result;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert_eq!(result.report, "stopped before it started");
+    // It never asked a model, and the worker that held the slot was not touched.
+    assert!(bench.mock.requests_for("w2").is_empty());
+    until_state(&bench, "worker-1", |state| *state == MemberState::Done).await;
+    assert!(bench.mock.requests_for("w2").is_empty());
+}
