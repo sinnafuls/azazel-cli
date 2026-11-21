@@ -7,7 +7,7 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 - The lead (id `lead`) starts sub-agents with the `task` tool. Each one is created from an **agent definition** and sees only the prompt written for it.
 - A sub-agent's last message is its **report**. That report is all its parent sees of the work. An agent asked for a [typed result](#typed-results) reports a JSON value instead.
 - Ids are `<definition>-<n>` (`scout-1`, `scout-2`, …) unless the caller gives a `name`.
-- At most `team.max_parallel` sub-agents run at once; the rest are `queued`.
+- At most `team.max_parallel` sub-agents run at once; the rest are `queued`. A `task` call with an agent that has to wait for a slot returns at once, even with `wait: true`: it says which agents `started` and which are `queued` (`queued: x (3 of 3 slots busy; it starts when one frees)`), the agents that did get a slot keep running, and every result arrives as a message, as with `wait: false`. A short `<agent-started>` message tells the parent when a queued agent gets its slot. `agent_wait` blocks for the next result, `agent_stop` cancels a queued agent before it starts (its result is `stopped before it started`), and `agent_list` and `agent_status` show it as `queued`.
 - States: `queued`, `running`, `waiting for approval`, `done`, `failed`, `stopped`.
 - Transcripts are kept beside the session: `~/.azazel/projects/<slug>/sessions/<session id>/agents/<agent id>.jsonl`.
 - Sub-agents follow the session's [permission mode](permissions.md), also as it changes: switch the mode and an agent in the middle of its work is judged by the new one from its next tool call. Their approval prompts appear in the same place as the lead's, titled with the agent id.

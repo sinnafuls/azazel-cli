@@ -437,3 +437,97 @@ Do things.
         tool_names(lead)
     );
 }
+
+/// Two workers asked for by one `task` call; the first is slow, so with one slot the second waits.
+fn two_workers(wait: bool) -> Value {
+    json!({
+        "agents": [
+            { "agent": "worker", "prompt": "first", "model": "mock/w1" },
+            { "agent": "worker", "prompt": "second", "model": "mock/w2" }
+        ],
+        "wait": wait
+    })
+}
+
+const WORKER: &str = "---\nname: worker\ndescription: Does what it is told.\ntools: read\n---\nYou are a worker.\n";
+
+/// Every request of `model` the sandbox recorded, with its messages as one string.
+fn messages_of(sandbox: &Sandbox, model: &str) -> Vec<String> {
+    sandbox
+        .requests()
+        .iter()
+        .filter(|(m, _)| m == model)
+        .map(|(_, request)| request["messages"].to_string())
+        .collect()
+}
+
+#[test]
+fn a_task_call_that_finds_no_free_slot_returns_at_once_and_the_parent_hears_when_the_queued_agent_starts() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.project().join(".azazel/agents")).unwrap();
+    std::fs::write(sandbox.project().join(".azazel/agents/worker.md"), WORKER).unwrap();
+    let script = json!({
+        "lead": [
+            call("t1", "task", two_workers(true)),
+            text("carrying on"),
+            text("noted"),
+            text("noted again"),
+            text("and again"),
+            text("last"),
+        ],
+        "w1": [{ "delay_ms": 1500, "reply": { "text": "one done" } }],
+        "w2": [text("two done")],
+    });
+    let output = sandbox.print(&script, &["--set", "team.max_parallel=1", "--mode", "auto", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let lead = messages_of(&sandbox, "lead");
+    // The call came back before worker-1 was done, naming who runs and who waits.
+    assert!(
+        lead[1].contains("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees)."),
+        "{}",
+        lead[1]
+    );
+    assert!(!lead[1].contains("one done"), "{}", lead[1]);
+    // Later the lead is told that worker-2 started, and gets both reports.
+    let last = lead.last().unwrap();
+    assert!(last.contains("<agent-started id=\\\"worker-2\\\""), "{last}");
+    assert!(!last.contains("<agent-started id=\\\"worker-1\\\""), "{last}");
+    assert!(last.contains("one done") && last.contains("two done"), "{last}");
+}
+
+#[test]
+fn a_queued_agent_is_stopped_before_it_starts_and_wait_false_names_it_queued() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.project().join(".azazel/agents")).unwrap();
+    std::fs::write(sandbox.project().join(".azazel/agents/worker.md"), WORKER).unwrap();
+    let script = json!({
+        "lead": [
+            call("t1", "task", two_workers(false)),
+            call("t2", "agent_stop", json!({ "id": "worker-2" })),
+            text("stopped the second"),
+            text("noted"),
+            text("noted again"),
+            text("last"),
+        ],
+        "w1": [{ "delay_ms": 1500, "reply": { "text": "one done" } }],
+    });
+    let output = sandbox.print(&script, &["--set", "team.max_parallel=1", "--mode", "auto", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let lead = messages_of(&sandbox, "lead");
+    assert!(
+        lead[1].contains("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees)."),
+        "{}",
+        lead[1]
+    );
+    assert!(lead[2].contains("stopped: worker-2"), "{}", lead[2]);
+    let last = lead.last().unwrap();
+    assert!(
+        last.contains("status=\\\"stopped\\\"") && last.contains("stopped before it started"),
+        "{last}"
+    );
+    assert!(!last.contains("<agent-started"), "{last}");
+    // The stopped agent never asked a model.
+    assert!(messages_of(&sandbox, "w2").is_empty());
+}
