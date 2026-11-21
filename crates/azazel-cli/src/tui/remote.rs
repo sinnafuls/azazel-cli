@@ -643,6 +643,7 @@ async fn pump(
                     note,
                     destructive,
                     secret,
+                    job: None,
                 };
                 let (reply, answer) = oneshot::channel::<Option<ApprovalDecision>>();
                 let (answering, asked_of) = (client.clone(), shared.clone());

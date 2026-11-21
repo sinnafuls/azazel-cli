@@ -2,7 +2,7 @@
 //! Luau extension), through the same gate a call the model makes itself passes.
 
 use std::collections::HashMap;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -11,6 +11,7 @@ use azazel_agent::{Gate, GateDecision, Services, Tool, ToolCtx, ToolOutput, Tool
 use serde_json::Value;
 
 use crate::ext::ToolRegistry;
+use crate::ui::{ApprovalDecision, ApprovalRequest};
 
 /// The Luau engine behind `eval`'s `luau` language. It lives in `azazel-lua`; `azazel-tools` reaches
 /// it through the [`Luau`] service, so a build without the `lua` feature simply has none.
@@ -44,6 +45,118 @@ pub async fn unattended<F: std::future::Future>(work: F) -> F::Output {
 /// Whether the code asking runs inside [`unattended`].
 pub fn is_unattended() -> bool {
     UNATTENDED.try_with(|_| ()).is_ok()
+}
+
+/// How `eval` runs a background script.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Background {
+    /// Wall-clock time the passes of the script may take; zero is no limit.
+    pub max: Duration,
+    /// Whether a call that needs approval pauses the script (false: the call is refused).
+    pub pause: bool,
+    /// Longest a paused script waits for an answer; zero waits until the session ends.
+    pub pause_max: Duration,
+}
+
+#[derive(Default)]
+struct DeferState {
+    pending: HashMap<String, ApprovalRequest>,
+    decided: HashMap<String, (String, ApprovalDecision)>,
+    blocked: Option<String>,
+}
+
+/// What a background script does at a call the gate would ask about: the gate records the request
+/// and refuses the call for this pass (a script that pauses), or only refuses it. The answer the
+/// user gives is handed back with [`Deferral::decide`], and the gate applies it when the script
+/// runs again and makes the call again.
+pub struct Deferral {
+    pause: bool,
+    state: Mutex<DeferState>,
+}
+
+impl Deferral {
+    pub fn new(pause: bool) -> Arc<Deferral> {
+        Arc::new(Deferral {
+            pause,
+            state: Mutex::default(),
+        })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, DeferState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether calls that would ask pause the run (false: they are refused).
+    pub fn pauses(&self) -> bool {
+        self.pause && self.state().blocked.is_none()
+    }
+
+    /// The log of the run can no longer be replayed, for this reason; from now on calls that would
+    /// ask are refused.
+    pub fn block(&self, why: String) {
+        self.state().blocked.get_or_insert(why);
+    }
+
+    /// The user's answer for this call, taken once; `None` when there is none or it was for
+    /// another tool.
+    pub fn decided(&self, call_id: &str, tool: &str) -> Option<ApprovalDecision> {
+        let mut state = self.state();
+        match state.decided.remove(call_id) {
+            Some((decided_tool, decision)) if decided_tool == tool => Some(decision),
+            _ => None,
+        }
+    }
+
+    pub fn decide(&self, call_id: &str, tool: &str, decision: ApprovalDecision) {
+        self.state()
+            .decided
+            .insert(call_id.to_string(), (tool.to_string(), decision));
+    }
+
+    /// Records the request of a call that must wait for the user and returns the refusal the call
+    /// gets in this pass.
+    pub fn defer(&self, call_id: &str, request: ApprovalRequest) -> String {
+        let reason = format!(
+            "{} needs the user's approval; the script is paused until it is given",
+            request.tool
+        );
+        self.state().pending.insert(call_id.to_string(), request);
+        reason
+    }
+
+    /// The request [`Deferral::defer`] recorded for this call, if the call was deferred.
+    pub fn take_pending(&self, call_id: &str) -> Option<ApprovalRequest> {
+        self.state().pending.remove(call_id)
+    }
+
+    /// What a call that would ask is told when the script does not pause.
+    pub fn refusal(&self, tool: &str) -> String {
+        let mut text = format!(
+            "{tool} needed approval, which a background script cannot get; run it in the foreground \
+             (without `background`) or allow it with a rule"
+        );
+        if self.pause
+            && let Some(why) = &self.state().blocked
+        {
+            text.push_str(&format!("; this run cannot pause because {why}"));
+        }
+        text
+    }
+}
+
+tokio::task_local! {
+    static DEFERRAL: Arc<Deferral>;
+}
+
+/// Runs `work` so that a tool call it makes through [`ToolCaller`] that the gate would ask about
+/// is handled by `deferral` instead of asking.
+pub async fn deferring<F: std::future::Future>(deferral: Arc<Deferral>, work: F) -> F::Output {
+    DEFERRAL.scope(deferral, work).await
+}
+
+/// The deferral of the code asking, inside [`deferring`].
+pub fn deferral() -> Option<Arc<Deferral>> {
+    DEFERRAL.try_with(Arc::clone).ok()
 }
 
 /// How long a cancelled tool gets to wind down before its task is dropped.
@@ -274,6 +387,43 @@ mod tests {
             .await;
         assert!(panicked.is_error);
         assert_eq!(panicked.text_content(), "tool `echo` panicked");
+    }
+
+    #[tokio::test]
+    async fn a_deferral_is_visible_only_inside_deferring_and_an_answer_is_taken_once() {
+        assert!(deferral().is_none());
+        let outer = Deferral::new(true);
+        deferring(outer.clone(), async {
+            let seen = deferral().expect("inside deferring");
+            assert!(Arc::ptr_eq(&seen, &outer));
+            seen.decide("c1.1", "write", ApprovalDecision::AllowOnce);
+            // Another tool's answer is not for this call, and is gone once asked for.
+            assert_eq!(seen.decided("c1.1", "shell"), None);
+            assert_eq!(seen.decided("c1.1", "write"), None);
+            seen.decide("c1.1", "write", ApprovalDecision::AllowSession);
+            assert_eq!(
+                seen.decided("c1.1", "write"),
+                Some(ApprovalDecision::AllowSession)
+            );
+            assert_eq!(seen.decided("c1.1", "write"), None);
+        })
+        .await;
+        assert!(deferral().is_none());
+    }
+
+    #[test]
+    fn a_blocked_deferral_stops_pausing_and_says_why_in_its_refusal() {
+        let deferral = Deferral::new(true);
+        assert!(deferral.pauses());
+        assert!(!deferral.refusal("write").contains("cannot pause"));
+        deferral.block("call 4 is too big".to_string());
+        assert!(!deferral.pauses());
+        assert!(
+            deferral
+                .refusal("write")
+                .ends_with("; this run cannot pause because call 4 is too big")
+        );
+        assert!(!Deferral::new(false).pauses());
     }
 
     #[tokio::test]

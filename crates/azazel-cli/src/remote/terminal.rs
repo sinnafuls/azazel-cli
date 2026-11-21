@@ -1256,6 +1256,7 @@ mod tests {
             note: None,
             destructive: false,
             secret: false,
+            job: None,
         }
     }
 

@@ -37,6 +37,9 @@ pub struct ApprovalRequest {
     /// or for the session; an interface should not offer to remember it.
     #[serde(default)]
     pub secret: bool,
+    /// The background job (`lua-1`) whose script is paused at this call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

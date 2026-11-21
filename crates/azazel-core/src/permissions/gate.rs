@@ -265,42 +265,51 @@ impl Gate for PermissionGate {
                 ),
             })
         };
-        // A background script is not there to answer: what would ask is refused, in every UI.
-        if crate::toolcall::is_unattended() {
+        let request = ApprovalRequest {
+            agent: agent.clone(),
+            tool: tool.name().to_string(),
+            access: the_call.access,
+            subjects: subject.subjects.clone(),
+            input: input.clone(),
+            rule: rule.clone(),
+            destructive: risk.is_some(),
+            secret: secret.is_some(),
+            note: risk
+                .map(|risk| format!("destructive: this command {risk}; it is asked about in every mode"))
+                .or_else(|| {
+                    secret.as_ref().map(|secret| {
+                        format!(
+                            "secret file: `{secret}` may hold credentials; it is asked about in every \
+                             mode and cannot be allowed for good"
+                        )
+                    })
+                })
+                .or_else(|| {
+                    protected.then(|| "this path is protected and is asked about every time".to_string())
+                })
+                .or_else(|| tool.approval_note(input)),
+            job: None,
+        };
+        // A background script is not there to answer: it pauses until the user has (and the call
+        // is made again with the answer), or the call is refused, in every UI.
+        let answer = if let Some(deferral) = crate::toolcall::deferral() {
+            match deferral.decided(call_id, tool.name()) {
+                Some(decision) => Some(decision),
+                None if deferral.pauses() => return deny(deferral.defer(call_id, request)),
+                None => return deny(deferral.refusal(tool.name())),
+            }
+        } else if crate::toolcall::is_unattended() {
             return deny(format!(
-                "{} needed approval, which a background script cannot get; run it in the foreground                  (without `background`) or allow it with a rule",
+                "{} needed approval, which a background script cannot get; run it in the foreground \
+                 (without `background`) or allow it with a rule",
                 tool.name()
             ));
-        }
-        let Some(ui) = self.services.get::<Ui>() else {
-            return headless();
+        } else {
+            let Some(ui) = self.services.get::<Ui>() else {
+                return headless();
+            };
+            ui.0.approval(request).await
         };
-        let answer =
-            ui.0.approval(ApprovalRequest {
-                agent: agent.clone(),
-                tool: tool.name().to_string(),
-                access: the_call.access,
-                subjects: subject.subjects.clone(),
-                input: input.clone(),
-                rule: rule.clone(),
-                destructive: risk.is_some(),
-                secret: secret.is_some(),
-                note: risk
-                    .map(|risk| format!("destructive: this command {risk}; it is asked about in every mode"))
-                    .or_else(|| {
-                        secret.as_ref().map(|secret| {
-                            format!(
-                                "secret file: `{secret}` may hold credentials; it is asked about in every \
-                                 mode and cannot be allowed for good"
-                            )
-                        })
-                    })
-                    .or_else(|| {
-                        protected.then(|| "this path is protected and is asked about every time".to_string())
-                    })
-                    .or_else(|| tool.approval_note(input)),
-            })
-            .await;
         match answer {
             None => headless(),
             Some(ApprovalDecision::AllowOnce) => GateDecision::Allow { input: rewritten },

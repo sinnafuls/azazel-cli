@@ -369,7 +369,13 @@ config_table!(EvalConfig {
     luau: bool = true,
     /// Longest a background Luau script (`eval` with `background: true`) may run, in seconds of
     /// wall-clock time; 0 is no limit.
-    background_max_secs: u64 = 7200
+    background_max_secs: u64 = 7200,
+    /// What a background Luau script does at a tool call that needs your approval: `pause` asks
+    /// you and runs the script again once you answer; `deny` refuses the call.
+    background_approval: BackgroundApproval = BackgroundApproval::Pause,
+    /// Longest a paused background script waits for your answer, in seconds; 0 waits until the
+    /// session ends.
+    background_pause_secs: u64 = 0
 });
 config_table!(ScanConfig {
     /// Look for secrets committed to the project with `gitleaks`, once per session.
@@ -769,6 +775,7 @@ macro_rules! config_enum {
 }
 
 config_enum!(DestructivePolicy { Ask = "ask", Allow = "allow", Deny = "deny" } default Ask);
+config_enum!(BackgroundApproval { Pause = "pause", Deny = "deny" } default Pause);
 config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "iterm", Sixel = "sixel" } default Auto);
 config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);

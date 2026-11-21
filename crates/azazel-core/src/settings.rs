@@ -11,11 +11,11 @@ use std::sync::LazyLock;
 use toml::{Table, Value};
 
 use crate::config::{
-    AdvisorWhen, Autocomplete, CacheWarming, CheckReport, CodeFirstListing, Config, DesktopNotify,
-    DestructivePolicy, DiffView, DigestMode, EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall,
-    ModelRouting, PasteMode, PatchMode, PermissionMode, ProcessPriority, ProfileReset, QueueMode, ReadGuard,
-    RemoteAccess, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WorktreeTarget,
-    WriteSeverity,
+    AdvisorWhen, Autocomplete, BackgroundApproval, CacheWarming, CheckReport, CodeFirstListing, Config,
+    DesktopNotify, DestructivePolicy, DiffView, DigestMode, EditorMode, GlyphSetting, ImageMode, Indicator,
+    LspInstall, ModelRouting, PasteMode, PatchMode, PermissionMode, ProcessPriority, ProfileReset, QueueMode,
+    ReadGuard, RemoteAccess, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle,
+    WorktreeTarget, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -415,6 +415,10 @@ settings! {
             "Let agents run Luau scripts that call their other tools with the eval tool (builds with the lua feature).";
         "tools.eval.background_max_secs": Number, "Time limit of a background script",
             "Longest a background Luau script may run, in seconds of wall-clock time; 0 is no limit.";
+        "tools.eval.background_approval": Choice(BackgroundApproval::NAMES), "Approvals in background scripts",
+            "pause: the script waits for your answer and runs again once you give it; deny: the call is refused.";
+        "tools.eval.background_pause_secs": Number, "Longest a paused script waits",
+            "Seconds a paused background script waits for your answer before it fails; 0 waits until the session ends.";
     }
     Tools / "Language servers" {
         "lsp.servers": Kind::Table, "Servers",

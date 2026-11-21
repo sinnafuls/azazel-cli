@@ -1950,3 +1950,70 @@ fn local_files_are_written_without_asking_and_never_escaped() {
     f.state.set_mode(PermissionMode::Manual);
     assert!(prompts(&verdict(&f, "write", Access::Write, "src/main.rs")));
 }
+
+/// What `before` says for the call `call_id` inside `deferral`.
+async fn before_deferred(
+    rig: &Rig,
+    deferral: &Arc<crate::toolcall::Deferral>,
+    tool: &FakeTool,
+    call_id: &str,
+    input: Value,
+) -> GateDecision {
+    crate::toolcall::deferring(deferral.clone(), rig.gate.before(&agent(), tool, call_id, &input)).await
+}
+
+#[tokio::test]
+async fn a_pausing_deferral_records_what_would_ask_and_the_answer_is_applied_when_it_is_made_again() {
+    let rig = rig("");
+    let answers = Arc::new(Answers(std::sync::Mutex::default(), std::sync::Mutex::default()));
+    rig.services.insert(Arc::new(Ui(answers.clone())));
+    let deferral = crate::toolcall::Deferral::new(true);
+    let input = json!({"command": "cargo build"});
+
+    let GateDecision::Deny { reason } = before_deferred(&rig, &deferral, &SHELL, "c1.1", input.clone()).await
+    else {
+        panic!("a call that asks is not allowed in the pass that pauses");
+    };
+    assert!(reason.contains("approval"), "{reason}");
+    assert!(
+        answers.1.lock().unwrap().is_empty(),
+        "the user is not asked by the gate"
+    );
+    let pending = deferral.take_pending("c1.1").expect("the request is kept");
+    assert_eq!(pending.tool, "shell");
+    assert_eq!(pending.rule.as_deref(), Some("shell(cargo build:*)"));
+
+    deferral.decide("c1.1", "shell", ApprovalDecision::AllowSession);
+    assert!(matches!(
+        before_deferred(&rig, &deferral, &SHELL, "c1.1", input.clone()).await,
+        GateDecision::Allow { .. }
+    ));
+    // The session rule the answer made applies to the same call anywhere, without a question.
+    assert_eq!(before(&rig, &SHELL, input).await, Ok(None));
+    assert!(answers.1.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_deferral_that_does_not_pause_refuses_with_the_old_text_and_auto_never_defers() {
+    let rig = rig("");
+    let deferral = crate::toolcall::Deferral::new(false);
+    let GateDecision::Deny { reason } =
+        before_deferred(&rig, &deferral, &SHELL, "c1.1", json!({"command": "make"})).await
+    else {
+        panic!("refused");
+    };
+    assert_eq!(
+        reason,
+        "shell needed approval, which a background script cannot get; run it in the foreground \
+         (without `background`) or allow it with a rule"
+    );
+    assert!(deferral.take_pending("c1.1").is_none());
+
+    rig.f.state.set_mode(PermissionMode::Auto);
+    let pausing = crate::toolcall::Deferral::new(true);
+    assert!(matches!(
+        before_deferred(&rig, &pausing, &WRITE, "c1.2", json!({"path": "src/a.rs"})).await,
+        GateDecision::Allow { .. }
+    ));
+    assert!(pausing.take_pending("c1.2").is_none());
+}
