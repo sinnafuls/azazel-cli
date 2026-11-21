@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Compare `[tools] code_first` on and off for one task.
+"""Compare `[tools] code_first` off and on, and its two listings, for one task.
+
+The modes are `off` (every tool in the tool list), `names` (code-first, hidden tools listed by name)
+and `signatures` (code-first, hidden tools listed as one-line signatures: `[tools] code_first_listing`).
+`--modes off,names` is the default; `--modes off,signatures,names` compares all three.
 
 Runs the task N times in each mode with `azazel -p`, one run at a time, and sums what the usage
 ledger recorded for each run: requests, fresh input, output, cache reads and writes, estimated
@@ -12,6 +16,7 @@ copy of a project: the task may edit files. Nothing else should use azazel while
 a run is told apart by the time its requests were answered.
 
     python tools/code-first-compare.py --runs 3 "find where the retry policy is defined and explain it"
+    python tools/code-first-compare.py --runs 3 --modes off,signatures,names "..."
     python tools/code-first-compare.py --runs 5 --model anthropic/claude-sonnet-4-5 --cwd ~/scratch/proj "..."
 """
 import argparse
@@ -65,10 +70,12 @@ def ledger_lines(home, since, until):
     return out
 
 
-def run_once(args, home, code_first):
+def run_once(args, home, mode):
     command = [args.azazel, "-p", "--mode", args.mode, "--no-memory",
-               "--set", f"tools.code_first={'true' if code_first else 'false'}",
+               "--set", f"tools.code_first={'false' if mode == 'off' else 'true'}",
                "--set", "session.auto_name=false"]
+    if mode != "off":
+        command += ["--set", f"tools.code_first_listing={mode}"]
     if args.model:
         command += ["--model", args.model]
     if args.cwd:
@@ -97,6 +104,8 @@ def run_once(args, home, code_first):
     return total
 
 
+MODES = ["off", "names", "signatures"]
+
 FIELDS = [
     ("requests", "requests", "{:.1f}"),
     ("input", "input tokens", "{:,.0f}"),
@@ -112,29 +121,40 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("task", help="the prompt to run")
     parser.add_argument("--runs", type=int, default=3, help="runs per mode (default 3)")
-    parser.add_argument("--model", help="model for both modes, e.g. anthropic/claude-sonnet-4-5")
+    parser.add_argument("--modes", default="off,names",
+                        help="comma-separated modes to compare, from off, names, signatures (default off,names); "
+                             "the first is the baseline the change column is measured against")
+    parser.add_argument("--model", help="model for every mode, e.g. anthropic/claude-sonnet-4-5")
     parser.add_argument("--cwd", help="project directory to run in")
     parser.add_argument("--mode", default="auto", help="permission mode (default auto)")
     parser.add_argument("--azazel", default=shutil.which("azazel") or "azazel", help="the azazel binary")
     parser.add_argument("--home", help="azazel home (default $AZAZEL_HOME or ~/.azazel)")
     args = parser.parse_args()
 
+    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+    unknown = [m for m in modes if m not in MODES]
+    if len(modes) < 2 or unknown or len(set(modes)) != len(modes):
+        parser.error(f"--modes needs two or more different modes from {', '.join(MODES)}")
+
     home = home_dir(args)
-    results = {False: [], True: []}
-    # Alternate the modes so that drift (provider load, cache warmth) hits both alike.
+    results = {m: [] for m in modes}
+    # Alternate the modes so that drift (provider load, cache warmth) hits all alike.
     for n in range(args.runs):
-        for code_first in (False, True):
-            label = "code-first" if code_first else "standard  "
-            print(f"run {n + 1}/{args.runs} {label}", flush=True)
-            results[code_first].append(run_once(args, home, code_first))
+        for mode in modes:
+            print(f"run {n + 1}/{args.runs} {mode}", flush=True)
+            results[mode].append(run_once(args, home, mode))
 
     print()
-    print(f"{'median of ' + str(args.runs):<16}{'standard':>14}{'code-first':>14}{'change':>10}")
+    header = f"{'median of ' + str(args.runs):<16}" + "".join(f"{m:>14}" for m in modes)
+    print(header + "".join(f"{'chg ' + m[:4]:>8}" for m in modes[1:]))
     for key, name, fmt in FIELDS:
-        base = statistics.median(r[key] for r in results[False])
-        code = statistics.median(r[key] for r in results[True])
-        change = f"{(code - base) / base * 100:+.0f}%" if base else "n/a"
-        print(f"{name:<16}{fmt.format(base):>14}{fmt.format(code):>14}{change:>10}")
+        medians = [statistics.median(r[key] for r in results[m]) for m in modes]
+        line = f"{name:<16}" + "".join(f"{fmt.format(v):>14}" for v in medians)
+        base = medians[0]
+        for v in medians[1:]:
+            line += f"{(v - base) / base * 100:+.0f}%".rjust(8) if base else "n/a".rjust(8)
+        print(line)
+    print(f"(change columns: {', '.join(modes[1:])} against {modes[0]})")
     failed = sum(not r["ok"] for mode in results.values() for r in mode)
     if failed:
         print(f"\n{failed} run(s) exited with an error; their numbers are included.")
