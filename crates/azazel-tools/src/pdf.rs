@@ -1,6 +1,8 @@
 //! The text of a PDF for `read`, page by page.
 
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Once;
 
 use pdf_extract::{Document, PlainTextOutput, output_doc_page};
 
@@ -27,13 +29,54 @@ pub fn parse_pages(text: &str) -> Result<(u32, u32), String> {
 /// pass `max_bytes`), each under a `--- page N ---` line, then a footer that says how to go on
 /// when there is more.
 pub fn read(bytes: &[u8], pages: Option<(u32, u32)>, max_bytes: usize) -> Result<String, String> {
-    render(bytes, pages, MAX_PAGES, max_bytes)
+    quietly(|| render(bytes, pages, MAX_PAGES, max_bytes))
 }
 
 /// Every page of the PDF in `bytes`, each under a `--- page N ---` line, for a caller that pages
 /// the text itself.
 pub fn read_all(bytes: &[u8]) -> Result<String, String> {
-    render(bytes, None, u32::MAX, usize::MAX)
+    quietly(|| render(bytes, None, u32::MAX, usize::MAX))
+}
+
+thread_local! {
+    /// Set while this thread parses a PDF, whose parser panics on fonts it cannot read.
+    static PARSING: Cell<bool> = const { Cell::new(false) };
+    static PANICS: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Runs `parse` with the parser's panics kept off the terminal, where they would be printed over
+/// the UI once per page; they are caught in [`render`] and counted into one log line instead.
+/// Panics anywhere else, and on other threads, still reach the hook that was there before.
+fn quietly<T>(parse: impl FnOnce() -> T) -> T {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let earlier = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if PARSING.with(Cell::get) {
+                PANICS.with(|n| n.set(n.get() + 1));
+            } else {
+                earlier(info);
+            }
+        }));
+    });
+    PARSING.with(|p| p.set(true));
+    PANICS.with(|n| n.set(0));
+    let out = parse();
+    PARSING.with(|p| p.set(false));
+    let panics = PANICS.with(Cell::get);
+    if panics > 0 {
+        tracing::warn!(
+            panics,
+            "the PDF parser failed on parts of a file; those parts were skipped"
+        );
+    }
+    out
+}
+
+/// How many parser panics the last PDF read on this thread caught, for tests.
+#[cfg(test)]
+pub(crate) fn caught_panics() -> u32 {
+    PANICS.with(Cell::get)
 }
 
 fn render(
@@ -187,5 +230,21 @@ pub(crate) mod tests {
             broken.starts_with("not a readable PDF") || broken.contains("malformed"),
             "{broken}"
         );
+    }
+
+    #[test]
+    fn a_parser_panic_while_reading_is_counted_instead_of_printed() {
+        // What the font parser does on a font it cannot read: panic from inside the parse.
+        let failed = quietly(|| {
+            (0..3)
+                .filter(|_| catch_unwind(|| panic!("failed to parse")).is_err())
+                .count()
+        });
+        assert_eq!(failed, 3);
+        // The hook took all three, so none went to the default hook that prints to stderr.
+        assert_eq!(caught_panics(), 3);
+        // Outside a read nothing is counted: the earlier hook gets panics again.
+        let _ = catch_unwind(|| panic!("outside a read"));
+        assert_eq!(caught_panics(), 3);
     }
 }

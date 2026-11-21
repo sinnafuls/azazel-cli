@@ -7,6 +7,10 @@ GitHub are its section here.
 
 ## [0.20.0] - 2026-11-21
 
+### Fixed
+
+- Reading a PDF whose fonts the parser cannot read no longer prints `failed to parse` panic messages over the terminal UI, one per page; the pages it cannot read are skipped as before, and the log gets one line per file.
+
 ### Added
 
 - `/security-check [path or focus]` checks the project's lockfiles, runtimes, base images and CI pins for known vulnerabilities and end-of-life versions, with osv-scanner or trivy when installed (else the OSV API), the CISA KEV catalogue and endoflife.date, and reports what to upgrade now, soon or not at all, with the exact version and command. It changes nothing. The same instructions are the built-in `dependency-audit` skill.
