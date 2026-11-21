@@ -51,6 +51,7 @@ mod sessions;
 mod setup;
 mod side;
 mod tools;
+mod tui;
 mod traces;
 mod usage;
 mod voice;
