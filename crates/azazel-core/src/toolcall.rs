@@ -23,9 +23,10 @@ pub trait LuauEngine: Send + Sync {
     /// Runs `code` as the agent of `ctx`.
     async fn run(&self, code: String, ctx: &ToolCtx) -> ToolOutput;
     /// Starts `code` as a background job of the agent of `ctx` and returns at once with the job's
-    /// id. The job ends after `max` of wall-clock time (never when `max` is zero), and the agent is
-    /// woken with its result.
-    fn start(&self, code: String, ctx: &ToolCtx, max: Duration) -> ToolOutput;
+    /// id. The job ends after `background.max` of wall-clock time spent running (never when it is
+    /// zero), and the agent is woken with its result. `background` also says whether a call that
+    /// needs approval pauses the script.
+    fn start(&self, code: String, ctx: &ToolCtx, background: Background) -> ToolOutput;
 }
 
 /// The service that holds the engine.

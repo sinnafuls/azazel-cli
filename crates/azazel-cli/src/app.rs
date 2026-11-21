@@ -19,7 +19,7 @@ use azazel_core::agents::{self, AgentDef, LeadAgent};
 use azazel_core::cache::{CacheLedger, Warmer};
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, expand_mentions};
-use azazel_core::config::{SessionResume, set_override};
+use azazel_core::config::{BackgroundApproval, SessionResume, set_override};
 use azazel_core::context::ContextExt;
 use azazel_core::hooks::HooksExt;
 use azazel_core::limits::{LimitsExt, Spend};
@@ -806,7 +806,11 @@ impl App {
                 config.tools.eval.javascript,
                 eval_luau(&config.tools.eval),
             )
-            .with_background_max_secs(config.tools.eval.background_max_secs),
+            .with_background_max_secs(config.tools.eval.background_max_secs)
+            .with_background_approvals(
+                config.tools.eval.background_approval == BackgroundApproval::Pause,
+                config.tools.eval.background_pause_secs,
+            ),
         ));
         registry.load(&CoreToolsExt {
             shell: shell.clone(),

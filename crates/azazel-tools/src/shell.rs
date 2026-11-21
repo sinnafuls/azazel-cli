@@ -54,6 +54,8 @@ struct Job {
     output: Arc<Mutex<OutputBuffer>>,
     state: Arc<Mutex<JobState>>,
     kill: CancellationToken,
+    /// What a running job that is not a process waits for the user to answer, when it does.
+    waiting: Arc<Mutex<Option<String>>>,
 }
 
 /// Background processes of one session. Dropping it kills them all.
@@ -145,6 +147,7 @@ impl Jobs {
                 output,
                 state,
                 kill,
+                waiting: Arc::default(),
             },
         );
         id
@@ -159,6 +162,7 @@ impl Jobs {
             output: Arc::new(Mutex::new(OutputBuffer::new(0, JOB_TAIL_LINES))),
             state: Arc::new(Mutex::new(JobState::Running)),
             kill: CancellationToken::new(),
+            waiting: Arc::default(),
         };
         locked(&self.jobs).insert(
             id,
@@ -169,6 +173,7 @@ impl Jobs {
                 output: handle.output.clone(),
                 state: handle.state.clone(),
                 kill: handle.kill.clone(),
+                waiting: handle.waiting.clone(),
             },
         );
         handle
@@ -180,7 +185,13 @@ impl Jobs {
             JobState::Ended(TaskEnd::Failed) => "failed".to_string(),
             JobState::Ended(TaskEnd::TimedOut) => "timed out".to_string(),
             JobState::Ended(TaskEnd::Killed) => "killed".to_string(),
-            JobState::Running => format!("running for {}s", job.started.elapsed().as_secs()),
+            JobState::Running => {
+                let running = job.started.elapsed().as_secs();
+                match &*locked(&job.waiting) {
+                    Some(what) => format!("waiting for {what} (running for {running}s)"),
+                    None => format!("running for {running}s"),
+                }
+            }
             JobState::Exited(Some(code)) => format!("exited with code {code}"),
             JobState::Exited(None) => "exited".to_string(),
             JobState::Killed => "killed".to_string(),
@@ -264,6 +275,7 @@ pub struct TaskHandle {
     output: Arc<Mutex<OutputBuffer>>,
     state: Arc<Mutex<JobState>>,
     kill: CancellationToken,
+    waiting: Arc<Mutex<Option<String>>>,
 }
 
 impl TaskHandle {
@@ -283,6 +295,11 @@ impl TaskHandle {
         for line in text.lines() {
             output.push(line);
         }
+    }
+
+    /// Shows the job as waiting for the user (`approval of write`), or as running again.
+    pub fn set_waiting(&self, what: Option<String>) {
+        *locked(&self.waiting) = what;
     }
 
     /// Records how the job ended; the first end counts.

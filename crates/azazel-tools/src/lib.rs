@@ -162,7 +162,8 @@ impl Extension for CoreToolsExt {
                     settings.languages,
                     r.services().clone(),
                 )
-                .with_background_max(settings.background_max),
+                .with_background_max(settings.background_max)
+                .with_background_approvals(settings.background_pause, settings.background_pause_max),
             ));
         }
         r.tool(Arc::new(ShellTool::new(

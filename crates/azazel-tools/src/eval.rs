@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use azazel_agent::{Access, AgentInfo, CodeFirst, Services, Tool, ToolCtx, ToolOutput, ToolSource};
 use azazel_core::process::{AgentEnv, RunOptions, run_program};
 use azazel_core::scheme::local_dir;
-use azazel_core::toolcall::{Luau, ToolCaller};
+use azazel_core::toolcall::{Background, Luau, ToolCaller};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -113,6 +113,10 @@ pub struct EvalSettings {
     pub languages: Vec<Language>,
     /// Wall-clock cap of a background Luau script; zero is no cap.
     pub background_max: Duration,
+    /// Whether a background script pauses at a call that needs approval (false: it is refused).
+    pub background_pause: bool,
+    /// Longest a paused script waits for an answer; zero waits until the session ends.
+    pub background_pause_max: Duration,
 }
 
 impl EvalSettings {
@@ -121,7 +125,17 @@ impl EvalSettings {
         EvalSettings {
             languages: vec![Language::Python, Language::Javascript],
             background_max: DEFAULT_BACKGROUND_MAX,
+            background_pause: true,
+            background_pause_max: Duration::ZERO,
         }
+    }
+
+    /// Sets whether a background script pauses at a call that needs approval, and how many seconds
+    /// it waits for the answer; zero waits until the session ends.
+    pub fn with_background_approvals(mut self, pause: bool, wait_secs: u64) -> EvalSettings {
+        self.background_pause = pause;
+        self.background_pause_max = Duration::from_secs(wait_secs);
+        self
     }
 
     /// Sets the cap of a background script, in seconds; zero is no cap.
@@ -145,6 +159,8 @@ impl EvalSettings {
         EvalSettings {
             languages,
             background_max: DEFAULT_BACKGROUND_MAX,
+            background_pause: true,
+            background_pause_max: Duration::ZERO,
         }
     }
 }
@@ -156,6 +172,8 @@ pub struct EvalTool {
     languages: Vec<Language>,
     /// Wall-clock cap of a background script.
     background_max: Duration,
+    background_pause: bool,
+    background_pause_max: Duration,
     services: Arc<Services>,
     /// The description before the Luau engine can describe itself: everything but its paragraph.
     base: String,
@@ -207,6 +225,8 @@ impl EvalTool {
             env,
             languages,
             background_max: DEFAULT_BACKGROUND_MAX,
+            background_pause: true,
+            background_pause_max: Duration::ZERO,
             services,
             base,
             description: OnceLock::new(),
@@ -216,6 +236,14 @@ impl EvalTool {
     /// Caps a background script at `max` of wall-clock time; zero is no cap.
     pub fn with_background_max(mut self, max: Duration) -> Self {
         self.background_max = max;
+        self
+    }
+
+    /// Sets whether a background script pauses at a call that needs approval, and how long it
+    /// waits for the answer; zero waits until the session ends.
+    pub fn with_background_approvals(mut self, pause: bool, wait: Duration) -> Self {
+        self.background_pause = pause;
+        self.background_pause_max = wait;
         self
     }
 
@@ -355,7 +383,12 @@ impl Tool for EvalTool {
                 );
             }
             if input.background {
-                return engine.0.start(input.code, ctx, self.background_max);
+                let background = Background {
+                    max: self.background_max,
+                    pause: self.background_pause,
+                    pause_max: self.background_pause_max,
+                };
+                return engine.0.start(input.code, ctx, background);
             }
             return engine.0.run(input.code, ctx).await;
         }
@@ -591,8 +624,13 @@ mod tests {
         async fn run(&self, code: String, _: &ToolCtx) -> ToolOutput {
             ToolOutput::text(format!("ran {code}"))
         }
-        fn start(&self, code: String, _: &ToolCtx, max: Duration) -> ToolOutput {
-            ToolOutput::text(format!("started {code} for {}s", max.as_secs()))
+        fn start(
+            &self,
+            code: String,
+            _: &ToolCtx,
+            background: azazel_core::toolcall::Background,
+        ) -> ToolOutput {
+            ToolOutput::text(format!("started {code} for {}s", background.max.as_secs()))
         }
     }
 

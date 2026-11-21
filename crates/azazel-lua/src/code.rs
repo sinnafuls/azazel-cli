@@ -13,7 +13,7 @@ use azazel_core::Post;
 use azazel_core::config::CodeFirstListing;
 use azazel_core::hooks::Wake;
 use azazel_core::scripts::{SavedScript, Scripts};
-use azazel_core::toolcall::{Luau, LuauEngine, unattended};
+use azazel_core::toolcall::{Background, Luau, LuauEngine, unattended};
 use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch,
@@ -959,7 +959,8 @@ impl LuauEngine for LuauEval {
         describe_tools(&tools, hidden, listing)
     }
 
-    fn start(&self, code: String, ctx: &ToolCtx, max: Duration) -> ToolOutput {
+    fn start(&self, code: String, ctx: &ToolCtx, background: Background) -> ToolOutput {
+        let max = background.max;
         let Some(caller) = ctx.services.get::<ToolCaller>() else {
             return ToolOutput::error("scripts cannot call tools in this session");
         };
