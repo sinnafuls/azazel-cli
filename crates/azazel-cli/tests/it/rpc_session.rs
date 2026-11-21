@@ -1262,3 +1262,22 @@ fn find_draft(root: &Path, id: &str) -> bool {
     }
     false
 }
+
+#[test]
+fn security_check_sends_the_dependency_audit_skill_as_the_prompt() {
+    let mut client = Client::start(&replies(&["audited"]), &[]);
+    let rows = client.ok(json!({ "type": "list_commands" }));
+    assert!(
+        rows.as_array().unwrap().iter().any(|row| row["name"] == "security-check"),
+        "{rows}"
+    );
+    let sent = client.ok(json!({ "type": "run_command", "name": "security-check", "args": "web/" }));
+    assert_eq!(sent["outcome"], "prompt");
+    let text = sent["text"].as_str().unwrap();
+    assert!(text.contains("# Dependency audit") && text.contains("api.osv.dev"), "{text}");
+    assert!(text.ends_with("Arguments: web/") || text.contains("web/"), "{text}");
+    assert!(!text.contains("$ARGUMENTS"), "{text}");
+    client.until(|line| line["type"] == "idle");
+    let first = &client.requests()[0];
+    assert_eq!(user_texts(first), [text.to_string()]);
+}

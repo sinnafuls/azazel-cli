@@ -111,6 +111,7 @@ The built-in skills are extracted to `~/.azazel/cache/skills-<hash>/` the first 
 | `code-review` | Reviewing a diff, branch or pull request: rubric, severities, findings format |
 | `debt-ledger` | Listing the `shortcut: <limit>; upgrade when <trigger>` comments of a codebase as a table, flagging those without a trigger |
 | `debugging` | Finding the cause of a failure: reproduce, isolate, hypothesise, instrument, fix, prove |
+| `dependency-audit` | Checking lockfiles, runtimes and base images for known vulnerabilities (osv-scanner, trivy or the OSV API; CISA KEV; endoflife.date) and reporting what to upgrade; run it with `/security-check [path or focus]`. Read-only |
 | `design-tokens` | Deriving colour, type, spacing, radius and shadow tokens and emitting them as CSS and a Tailwind theme |
 | `docs-writing` | READMEs, tutorials, how-to guides, reference pages, changelogs |
 | `frontend-design` | Building or restyling a user interface so that it looks designed |

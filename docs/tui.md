@@ -1039,6 +1039,7 @@ Skills, extensions and services:
 | Command | Description |
 |---|---|
 | `/skills` | List skills and where they come from |
+| `/security-check [path or focus]` | Check the project's dependencies, runtimes and base images for known vulnerabilities and end-of-life versions, guided by the built-in `dependency-audit` skill; read-only |
 | `/skill:<name> [args]` | Run a skill; see [skills and commands](skills-and-commands.md) |
 | `/ext` | List loaded extensions and Luau scripts, with the errors of disabled scripts |
 | `/reload` | Read skills, custom commands, agent definitions, hooks, key bindings and the theme again, then drop all Luau extension state and load the scripts again ([extensions](extensions.md)). It reports what changed and every file that failed to load |
