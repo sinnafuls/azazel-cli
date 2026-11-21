@@ -669,12 +669,12 @@ See [team](team.md). The lead has all of these. A sub-agent always has `agent_se
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `task` | `agents: [{agent, prompt, name?, model?, isolation?}]`, `wait?` | Starts the listed agents in parallel. With `wait` (default true) returns every report; with `wait: false` returns the ids and each report arrives later as a message. What the user types while it waits ends the wait; the agents still running report later as messages |
+| `task` | `agents: [{agent, prompt, name?, model?, isolation?}]`, `wait?` | Starts the listed agents in parallel. With `wait` (default true) returns every report; with `wait: false` returns at once, naming the agents that started and those queued for a free `team.max_parallel` slot, and each report arrives later as a message. A `wait` call with a queued agent returns at once the same way; a queued agent's start also arrives as an `<agent-started>` message. What the user types while it waits ends the wait; the agents still running report later as messages |
 | `agent_send` | `to`, `message`, `ask?` | Messages an agent id, `parent` or `all` and returns at once with how it arrived: `delivered at its next step`, `woke it` (a finished agent resumes with the message) or `queued`. With `ask: true` the agent answers the question on the side, from its conversation, without stopping or recording it; the answer is the result |
 | `agent_stop` | `id`, `reason?` | Stops an agent the caller started, and the agents it started |
 | `agent_wait` | `ids?`, `timeout_secs?` | Waits (default 600 s) until a started agent has a new result, a message arrives, or the user types |
-| `agent_list` | none | Id, definition, state, activity, time, tokens and cost of every agent |
-| `agent_status` | `id` | What an agent (or `all`) is doing, without asking a model: state, time, the tool it runs now, its last lines, the files it changed, its worktree's changes and commits, tokens and cost |
+| `agent_list` | none | Id, definition, state (`queued` while it waits for a slot), activity, time, tokens and cost of every agent |
+| `agent_status` | `id` | What an agent (or `all`) is doing, without asking a model: state (`queued` while it waits for a slot), time, the tool it runs now, its last lines, the files it changed, its worktree's changes and commits, tokens and cost |
 | `worktree_apply` | `agent` | Brings an isolated agent's changes into the main tree and removes its worktree. On a conflict the worktree is kept |
 | `worktree_discard` | `agent` | Removes an isolated agent's worktree and branch |
 | `report` | `result` | Hands in the agent's result as a value that matches the schema it was given; a value that does not match is refused with what is wrong. Offered only to an agent that owes a [typed result](team.md#typed-results) |
