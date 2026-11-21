@@ -73,16 +73,17 @@
 	open={true}
 	docked
 	attention
-	title="{f.agent === 'lead' ? 'Allow' : `${f.agent} asks to use`} {f.tool}?"
+	title="{f.job ? `Script ${f.job} asks to use` : f.agent === 'lead' ? 'Allow' : `${f.agent} asks to use`} {f.tool}?"
 	subtitle={ACCESS[f.access] ?? f.access}
 	dismissible={false}
 >
 	<div class="grid gap-3" data-request="approval">
-		{#if f.destructive || f.secret || f.agent !== 'lead'}
+		{#if f.destructive || f.secret || f.job || f.agent !== 'lead'}
 			<div class="flex flex-wrap items-center gap-2">
 				{#if f.destructive}<Badge variant="destructive">Destroys work</Badge>{/if}
 				{#if f.secret}<Badge variant="destructive">Secret file</Badge>{/if}
 				{#if f.agent !== 'lead'}<Badge variant="outline" class="font-mono">{f.agent}</Badge>{/if}
+				{#if f.job}<Badge variant="outline" class="font-mono">{f.job}</Badge>{/if}
 			</div>
 		{/if}
 

@@ -1671,10 +1671,13 @@ impl Tui {
                 self.announce(Level::Info, prompt.clone());
                 None
             }
-            UiRequest::Approval { request, .. } => Some(format!(
-                "{} needs permission to use {}",
-                request.agent.id, request.tool
-            )),
+            UiRequest::Approval { request, .. } => Some(match &request.job {
+                Some(job) => format!(
+                    "script {job} of {} needs permission to use {}",
+                    request.agent.id, request.tool
+                ),
+                None => format!("{} needs permission to use {}", request.agent.id, request.tool),
+            }),
             UiRequest::Plan { .. } => Some("a plan is ready for review".to_string()),
             // Opened by the user a moment ago.
             UiRequest::Settings { .. } => None,
@@ -1743,7 +1746,13 @@ impl Tui {
                 let body = overlay::approval_body(&request.tool, &request.subjects, &request.input);
                 let (items, rows) =
                     approval_rows(request.rule.as_deref(), request.destructive, request.secret);
-                let title = format!("{} wants to use {}", request.agent.id, request.tool);
+                let title = match &request.job {
+                    Some(job) => format!(
+                        "script {job} of {} wants to use {}",
+                        request.agent.id, request.tool
+                    ),
+                    None => format!("{} wants to use {}", request.agent.id, request.tool),
+                };
                 // A stray Enter must not approve a command that destroys work: start on "Deny".
                 let deny = rows.iter().position(|row| *row == ApprovalRow::Deny);
                 let start = deny.filter(|_| request.destructive).unwrap_or(0);

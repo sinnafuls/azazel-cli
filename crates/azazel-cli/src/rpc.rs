@@ -157,6 +157,7 @@ pub(crate) fn approval_frame(request_id: String, request: ApprovalRequest) -> Fr
         note: request.note,
         destructive: request.destructive,
         secret: request.secret,
+        job: request.job,
     }
 }
 

@@ -840,6 +840,10 @@ pub enum Frame {
         /// file until the session ends, and `always` is not on offer.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         secret: bool,
+        /// The background job (`lua-1`) whose script is paused at this call; it runs again from
+        /// the start once the request is answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        job: Option<String>,
     },
     /// An agent or extension asks the user something.
     UiRequest {

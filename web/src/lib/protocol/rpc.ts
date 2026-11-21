@@ -544,6 +544,11 @@ export type Frame =
 			 * file until the session ends, and `always` is not on offer.
 			 */
 			secret?: boolean;
+			/**
+			 * The background job (`lua-1`) whose script is paused at this call; it runs again from
+			 * the start once the request is answered.
+			 */
+			job?: string | null;
 	  }
 	| ((
 			| (Question & {

@@ -214,6 +214,7 @@ impl<W: Write> Printer<W> {
                 input,
                 rule,
                 note,
+                job,
                 ..
             } => {
                 let what = if subjects.is_empty() {
@@ -221,7 +222,11 @@ impl<W: Write> Printer<W> {
                 } else {
                     subjects.join(", ")
                 };
-                self.line(&format!("? {agent} wants to use {tool}: {what}"));
+                let by = match job {
+                    Some(job) => format!("{agent}'s script {job}"),
+                    None => agent.clone(),
+                };
+                self.line(&format!("? {by} wants to use {tool}: {what}"));
                 if let Some(note) = note {
                     self.line(&format!("  {note}"));
                 }

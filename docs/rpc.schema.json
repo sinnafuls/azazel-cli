@@ -2103,6 +2103,13 @@
             "secret": {
               "type": "boolean",
               "description": "The call reads or writes a secret file (`.env`, a private key): `session` allows that\nfile until the session ends, and `always` is not on offer."
+            },
+            "job": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The background job (`lua-1`) whose script is paused at this call; it runs again from\nthe start once the request is answered."
             }
           },
           "required": [
