@@ -5,6 +5,17 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-21
+
+### Added
+
+- Saved Luau scripts: `/script save <name> [description]` keeps the last successful Luau `eval` of the session; `/script list`, `/script show` and `/script delete` manage them, as does `azazel scripts list|show|delete`. User scripts live in `~/.azazel/scripts/`, project scripts in `.azazel/scripts/` (trusted projects only). A script runs another with `tools.run(name, input)`, and `tools.search` finds saved scripts too.
+- A background Luau script pauses at a tool call that needs your approval and asks you (the request names the job); once you allow it, the script runs again with its earlier results replayed, so nothing runs twice. `step(name, fn)` keeps a value such as `os.time()` the same across runs. `[tools.eval] background_approval = "pause" | "deny"` and `background_pause_secs` choose what happens; `azazel -p` still refuses. The RPC `approval_request` frame has an optional `job` member.
+
+### Changed
+
+- Code-first mode lists the tools it hides by name only (MCP tools counted per server), and the model gets arguments with `tools.search` and `tools.describe`: the tool list is about 12.7 KB instead of 17 KB. `[tools] code_first_listing = "signatures"` keeps the one-line signatures; `tools/code-first-compare.py` compares both.
+
 ## [0.18.1] - 2026-11-21
 
 ### Changed
