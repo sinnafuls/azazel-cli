@@ -1054,13 +1054,29 @@
             },
             "on": {
               "type": "boolean"
+            },
+            "width": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "height": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
             }
           },
           "required": [
             "type",
             "on"
           ],
-          "description": "Starts (`on`) or stops receiving `browser_frame` frames, a live picture of the tab the\nagents' browser shows. Frames are produced only while someone watches. Answers with\n[`BrowserState`]."
+          "description": "Starts (`on`) or stops receiving `browser_frame` frames, a live picture of the tab the\nagents' browser shows. Frames are produced only while someone watches. With `width` and\n`height`, the room the client has for the picture in CSS pixels, the page is laid out for\nthat shape while the client watches, so that the picture fills the room: at that size\nwhen both sides are between 320 and 1920, and otherwise at the nearest size of the same\nshape. Sending it again with another size changes it, and without one the client asks\nfor none. The size of the client that has taken the browser over is used, and otherwise\nthe one sent last; when the last client stops watching the page has its own size again.\nAnswers with [`BrowserState`]."
         },
         {
           "type": "object",

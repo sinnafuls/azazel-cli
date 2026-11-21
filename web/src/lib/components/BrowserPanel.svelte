@@ -1,7 +1,10 @@
 <script lang="ts">
 	// The agents' browser, live. One header row says what it is on (the page's title over its
 	// address), what it is doing (a badge) and holds the buttons; the picture of the tab fills the
-	// panel under it from edge to edge, scaled to fit. A device that may control can take it over
+	// panel under it from edge to edge, in width and in height: a device that may control tells the
+	// host how much room the picture has, and the host lays the agent's page out for that shape
+	// while the device watches. Until that size lands, and on a device that may only watch, the
+	// picture keeps its own shape inside the room. A device that may control can take it over
 	// (the agents wait): an address row then stands under the header (back, forward, reload and the
 	// address), and clicks, the wheel and keys over the picture go to the page, until the browser is
 	// handed back.
@@ -34,6 +37,7 @@
 		wheelDelta,
 		type BrowserStatus
 	} from '$lib/browser/input';
+	import { ROOM_SETTLE_MS } from '$lib/browser/live.svelte';
 	import { toasts } from '$lib/toasts.svelte';
 	import { viewport } from '$lib/media.svelte';
 	import { cn } from '$lib/utils';
@@ -149,6 +153,36 @@
 	}
 	$effect(() => {
 		if (!holding) composing = false;
+	});
+
+	// The room the picture has is told to the host: at once when it is first known, so that the
+	// first pictures have its shape, and afterwards when it has stopped changing for a moment (a
+	// pane that is dragged, a window that is resized, the address row that comes and goes). A box
+	// that is not shown has no size and says nothing: the room it had is the one it comes back to.
+	$effect(() => {
+		const el = box;
+		if (!el || !canControl || typeof ResizeObserver === 'undefined') return;
+		const b = live;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		let first = true;
+		const tell = () => {
+			timer = null;
+			const { clientWidth: width, clientHeight: height } = el;
+			if (width > 0 && height > 0) {
+				first = false;
+				b.fit({ width, height });
+			}
+		};
+		const seen = new ResizeObserver(() => {
+			if (timer !== null) clearTimeout(timer);
+			if (first) tell();
+			else timer = setTimeout(tell, ROOM_SETTLE_MS);
+		});
+		seen.observe(el);
+		return () => {
+			seen.disconnect();
+			if (timer !== null) clearTimeout(timer);
+		};
 	});
 
 	async function take(on: boolean) {
@@ -510,21 +544,22 @@
 			{/if}
 
 			<div class={cn('flex min-w-0 flex-col', fill && 'min-h-0 flex-1')} data-browser-body>
-				<!-- No box of its own: the picture is as wide as the panel and has its own shape, until
-				     it would be taller than what is left (of the pane, or of most of the screen in a
-				     sheet); then it keeps its shape inside, with bars beside it. A hairline under it ends
-				     a white page on a white ground. -->
+				<!-- No box of its own: the room of the picture is as wide as the panel and as tall as
+				     what is left of the pane, or half the screen in a sheet, which has no height of its
+				     own to give. The host lays the page out for that room, so the picture fills it; one
+				     of another shape (the first, one an agent sized, one laid out for another device)
+				     keeps its shape inside, in the middle. A hairline under it ends a white page on a
+				     white ground. -->
 				<!-- It takes the keyboard only while this device holds the browser, as an `application`:
 				     the field in it has the focus then, and a ring drawn over the picture shows that. -->
 				<div
 					bind:this={box}
 					class={cn(
-						'relative w-full shrink overflow-hidden shadow-[0_1px_0_0_var(--border)] outline-none',
-						fill ? 'min-h-0' : 'max-h-[70svh]',
+						'relative w-full overflow-hidden shadow-[0_1px_0_0_var(--border)] outline-none',
+						fill ? 'min-h-0 flex-1' : 'h-[50svh] shrink-0',
 						holding &&
 							'touch-none after:pointer-events-none after:absolute after:inset-0 focus-within:after:ring-2 focus-within:after:ring-ring/60 focus-within:after:ring-inset'
 					)}
-					style:aspect-ratio="{picture?.width ?? 16} / {picture?.height ?? 9}"
 					data-browser-picture
 					data-vaul-no-drag={holding ? '' : undefined}
 					role={holding ? 'application' : undefined}

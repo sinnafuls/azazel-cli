@@ -1,7 +1,12 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import BrowserPanel from '$lib/components/BrowserPanel.svelte';
-import { BrowserLive, HOLD_HEARTBEAT_MS, type BrowserCommand } from '$lib/browser/live.svelte';
+import {
+	BrowserLive,
+	HOLD_HEARTBEAT_MS,
+	ROOM_SETTLE_MS,
+	type BrowserCommand
+} from '$lib/browser/live.svelte';
 import { CommandError } from '$lib/rpc/client';
 import { toasts } from '$lib/toasts.svelte';
 import type { BrowserState, FrameOf } from '$lib/protocol';
@@ -37,7 +42,10 @@ function host(initial: BrowserState = OPEN, refuse?: (c: BrowserCommand) => Erro
 	});
 	const live = new BrowserLive(send);
 	const watches = () => sent.filter((c) => c.type === 'browser_watch').map((c) => c.on);
-	return { live, sent, watches, set: (s: BrowserState) => (state = s) };
+	/** Every `browser_watch` as it was sent, without its `type`. */
+	const asked = () =>
+		sent.filter((c) => c.type === 'browser_watch').map(({ type: _type, ...rest }) => rest);
+	return { live, sent, watches, asked, set: (s: BrowserState) => (state = s) };
 }
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
@@ -211,6 +219,149 @@ describe('the subscription to pictures', () => {
 		h.live.onState({ type: 'browser_state', at: 12, running: false } as BrowserState);
 		expect(h.live.picture).toBeNull();
 		expect(h.live.state).toEqual({ running: false });
+	});
+});
+
+describe('the room the picture has', () => {
+	it('is told with the watch, and again when it changes', async () => {
+		const h = host();
+		h.live.attached();
+		h.live.fit({ width: 360, height: 1300 });
+		// Nobody watches yet: there is nothing to lay out for.
+		await settle();
+		expect(h.asked()).toEqual([]);
+		h.live.watch(true);
+		await settle();
+		expect(h.asked()).toEqual([{ on: true, width: 360, height: 1300 }]);
+		// The same room is not told twice; another one is, in whole CSS pixels.
+		h.live.fit({ width: 360, height: 1300 });
+		await settle();
+		expect(h.asked()).toHaveLength(1);
+		h.live.fit({ width: 359.6, height: 1251.2 });
+		await settle();
+		expect(h.asked().at(-1)).toEqual({ on: true, width: 360, height: 1251 });
+		expect(h.asked()).toHaveLength(2);
+		expect(h.live.watching).toBe(true);
+	});
+
+	it('is told once more to a new socket, and never with a watch that stops', async () => {
+		const h = host();
+		h.live.attached();
+		h.live.fit({ width: 800, height: 500 });
+		h.live.watch(true);
+		await settle();
+		h.live.detached();
+		h.live.attached();
+		await settle();
+		h.live.watch(false);
+		await settle();
+		expect(h.asked()).toEqual([
+			{ on: true, width: 800, height: 500 },
+			{ on: true, width: 800, height: 500 },
+			{ on: false }
+		]);
+		// Watching again says it again: the host forgot it with the watch.
+		h.live.watch(true);
+		await settle();
+		expect(h.asked().at(-1)).toEqual({ on: true, width: 800, height: 500 });
+	});
+
+	it('is taken back with a watch that names none, and a room with no size is none', async () => {
+		const h = host();
+		h.live.attached();
+		h.live.watch(true);
+		h.live.fit({ width: 800, height: 500 });
+		await settle();
+		h.live.fit({ width: 0, height: 500 });
+		await settle();
+		h.live.fit(null);
+		await settle();
+		expect(h.asked()).toEqual([{ on: true }, { on: true, width: 800, height: 500 }, { on: true }]);
+	});
+
+	describe('as the panel measures it', () => {
+		/** A `ResizeObserver` the test fires, and the size the boxes it observes then have. */
+		let fire: (() => void)[] = [];
+		const size = { width: 0, height: 0 };
+		const sized = (width: number, height: number) => {
+			Object.assign(size, { width, height });
+			for (const f of fire) f();
+		};
+		const real = {
+			observer: globalThis.ResizeObserver,
+			width: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth'),
+			height: Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
+		};
+		beforeEach(() => {
+			fire = [];
+			Object.assign(size, { width: 0, height: 0 });
+			globalThis.ResizeObserver = class {
+				private readonly run: () => void;
+				constructor(cb: ResizeObserverCallback) {
+					this.run = () => cb([], this as unknown as ResizeObserver);
+				}
+				observe() {
+					fire.push(this.run);
+				}
+				unobserve() {}
+				disconnect() {
+					fire = fire.filter((f) => f !== this.run);
+				}
+			} as unknown as typeof ResizeObserver;
+			for (const side of ['width', 'height'] as const)
+				Object.defineProperty(
+					HTMLElement.prototype,
+					side === 'width' ? 'clientWidth' : 'clientHeight',
+					{
+						configurable: true,
+						get(this: HTMLElement) {
+							return this.hasAttribute('data-browser-picture') ? size[side] : 0;
+						}
+					}
+				);
+			vi.useFakeTimers();
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+			globalThis.ResizeObserver = real.observer;
+			if (real.width) Object.defineProperty(HTMLElement.prototype, 'clientWidth', real.width);
+			if (real.height) Object.defineProperty(HTMLElement.prototype, 'clientHeight', real.height);
+		});
+		const flush = () => vi.advanceTimersByTimeAsync(0);
+
+		it('tells the first size at once and a later one when it has settled', async () => {
+			const h = host();
+			h.live.attached();
+			render(BrowserPanel, { session: session(h.live), canControl: true, fill: true });
+			await flush();
+			expect(h.asked()).toEqual([{ on: true }]);
+			// A box that is not laid out yet says nothing.
+			sized(0, 0);
+			await flush();
+			expect(h.asked()).toHaveLength(1);
+			sized(360, 1252);
+			await flush();
+			expect(h.asked().at(-1)).toEqual({ on: true, width: 360, height: 1252 });
+			// A pane that is dragged: only where it stops is told.
+			sized(400, 1252);
+			await vi.advanceTimersByTimeAsync(ROOM_SETTLE_MS - 50);
+			sized(520, 1252);
+			await vi.advanceTimersByTimeAsync(ROOM_SETTLE_MS - 50);
+			expect(h.asked()).toHaveLength(2);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(h.asked()).toHaveLength(3);
+			expect(h.asked().at(-1)).toEqual({ on: true, width: 520, height: 1252 });
+		});
+
+		it('says no size from a device that may only watch', async () => {
+			const h = host();
+			h.live.attached();
+			render(BrowserPanel, { session: session(h.live), canControl: false, fill: true });
+			await flush();
+			sized(360, 1252);
+			await vi.advanceTimersByTimeAsync(ROOM_SETTLE_MS);
+			expect(h.asked()).toEqual([{ on: true }]);
+		});
 	});
 });
 

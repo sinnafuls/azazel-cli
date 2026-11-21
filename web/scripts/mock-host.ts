@@ -1392,6 +1392,9 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boo
 	// What a device is refused for its access carries the code `refused`, as the real server's does.
 	if (access === 'view' && !VIEW_COMMANDS.has(type) && !(type === 'browser_watch' && viewBrowser))
 		return fail(c, id, `A view link cannot send \`${type}\`. Ask for a control link.`, 'refused');
+	// A view link that may watch sees the page at the size it has: the real server refuses a size.
+	if (access === 'view' && type === 'browser_watch' && (msg.width != null || msg.height != null))
+		return fail(c, id, 'A view link cannot set the size of the browser.', 'refused');
 	switch (type) {
 		case 'browser_watch':
 			s.browser.watch(c, msg.on === true);

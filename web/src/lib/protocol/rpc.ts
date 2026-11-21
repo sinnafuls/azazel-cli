@@ -254,6 +254,8 @@ export type Request1 =
 	| {
 			type: 'browser_watch';
 			on: boolean;
+			width?: number | null;
+			height?: number | null;
 	  }
 	| {
 			type: 'browser_take';
