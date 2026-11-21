@@ -535,3 +535,36 @@ fn a_queued_agent_is_stopped_before_it_starts_and_wait_false_names_it_queued() {
     // The stopped agent never asked a model.
     assert!(messages_of(&sandbox, "w2").is_empty());
 }
+
+#[test]
+fn a_task_call_stops_waiting_after_wait_secs_and_the_report_arrives_as_a_message() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.project().join(".azazel/agents")).unwrap();
+    std::fs::write(sandbox.project().join(".azazel/agents/worker.md"), WORKER).unwrap();
+    let script = json!({
+        "lead": [
+            call("t1", "task", json!({ "agents": [{ "agent": "worker", "prompt": "slow", "model": "mock/w1" }] })),
+            text("carrying on"),
+            text("noted"),
+            text("last"),
+        ],
+        "w1": [{ "delay_ms": 2500, "reply": { "text": "slow report" } }],
+    });
+    let output = sandbox.print(&script, &["--set", "team.wait_secs=1", "--mode", "auto", "go"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let lead = messages_of(&sandbox, "lead");
+    // The call came back while the worker was still going, and says who it is.
+    assert!(
+        lead[1].contains("team.wait_secs") && lead[1].contains("Still running in the background: worker-1"),
+        "{}",
+        lead[1]
+    );
+    assert!(!lead[1].contains("slow report"), "{}", lead[1]);
+    // Its report reaches the lead later as a message.
+    let last = lead.last().unwrap();
+    assert!(
+        last.contains("<agent-result id=\\\"worker-1\\\"") && last.contains("slow report"),
+        "{last}"
+    );
+}
