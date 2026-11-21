@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
 use azazel_core::Post;
+use azazel_core::config::CodeFirstListing;
 use azazel_core::hooks::Wake;
 use azazel_core::toolcall::{Luau, LuauEngine, unattended};
 use azazel_core::transcript::activity;
@@ -31,8 +32,8 @@ use crate::script::{describe, locked};
 const EVAL: &str = "eval";
 /// The description's list of callable tool names stays within about 500 tokens.
 const LISTING_CHARS: usize = 2_000;
-/// In code-first mode the tools that are only callable from a script are listed as signatures,
-/// within about 1.5k tokens; the rest of them by name.
+/// With `code_first_listing = "signatures"` the tools that are only callable from a script are
+/// listed as signatures, within about 1.5k tokens; the rest of them by name.
 const CODE_FIRST_LISTING_CHARS: usize = 6_000;
 /// What `print` keeps; a script that prints more is told so.
 const MAX_PRINTED_BYTES: usize = 1024 * 1024;
@@ -190,12 +191,40 @@ fn cut(mut text: String, max: usize) -> String {
     text
 }
 
+/// `mcp__<server>__<tool>` names of one server counted on one line: `mcp__<server> (N tools)`.
+/// Other names stay as they are, in the order given.
+fn grouped_names(tools: &[&Arc<dyn Tool>]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut servers: Vec<(String, usize)> = Vec::new();
+    for tool in tools {
+        let name = tool.name();
+        match name.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")) {
+            Some((server, _)) => {
+                let server = format!("mcp__{server}");
+                match servers.iter_mut().find(|(known, _)| *known == server) {
+                    Some((_, count)) => *count += 1,
+                    None => servers.push((server, 1)),
+                }
+            }
+            None => parts.push(name.to_string()),
+        }
+    }
+    parts.extend(
+        servers
+            .into_iter()
+            .map(|(server, count)| format!("{server} ({count} tool{})", if count == 1 { "" } else { "s" })),
+    );
+    parts.join(", ")
+}
+
 /// The description with the tools a script can call. The tools the model is offered are listed by
 /// name only: their arguments are in its tool list, and `tools.describe` gives them for the rest.
 /// Listing every signature here cost more than a thousand tokens of every request. The `hidden`
-/// tools (code-first mode) are in no tool list, so their signatures are listed, as many as fit in
-/// [`CODE_FIRST_LISTING_CHARS`], and the rest by name.
-fn describe_tools(tools: &[Arc<dyn Tool>], hidden: &[Arc<dyn Tool>]) -> String {
+/// tools (code-first mode) are in no tool list: with [`CodeFirstListing::Names`] they are listed by
+/// name, a server's MCP tools as one counted entry, and the model asks `tools.search` and
+/// `tools.describe` for arguments; with `Signatures` their signatures are listed, as many as fit
+/// in [`CODE_FIRST_LISTING_CHARS`], and the rest by name.
+fn describe_tools(tools: &[Arc<dyn Tool>], hidden: &[Arc<dyn Tool>], listing: CodeFirstListing) -> String {
     let names = |tools: &[&Arc<dyn Tool>]| {
         cut(
             tools
@@ -213,7 +242,14 @@ fn describe_tools(tools: &[Arc<dyn Tool>], hidden: &[Arc<dyn Tool>]) -> String {
         .collect();
     let mut out = format!("{INTRO}\n\nCallable tools: {}\n", names(&offered));
     let hidden: Vec<&Arc<dyn Tool>> = hidden.iter().filter(|tool| !blocked(tool.name())).collect();
-    if !hidden.is_empty() {
+    if !hidden.is_empty() && listing == CodeFirstListing::Names {
+        out.push_str(&format!(
+            "\nTools you call only from a script (they are not in your tool list; `tools.search(query)` \
+             finds one and `tools.describe(name)` gives its arguments; an `mcp__<server>` entry stands for \
+             that server's tools, named `mcp__<server>__<tool>`): {}\n",
+            cut(grouped_names(&hidden), LISTING_CHARS)
+        ));
+    } else if !hidden.is_empty() {
         out.push_str("\nTools you call only from a script (they are not in your tool list):\n");
         let mut used = 0;
         let mut listed = 0;
@@ -808,7 +844,10 @@ impl LuauEngine for LuauEval {
             .get::<ToolCaller>()
             .map(|caller| caller.tools.tools(&anyone))
             .unwrap_or_default();
-        describe_tools(&tools, hidden)
+        let listing = services
+            .get::<CodeFirstListing>()
+            .map_or_else(CodeFirstListing::default, |listing| *listing);
+        describe_tools(&tools, hidden, listing)
     }
 
     fn start(&self, code: String, ctx: &ToolCtx, max: Duration) -> ToolOutput {
@@ -1043,7 +1082,7 @@ mod tests {
             shown("task", "Start agents.", &schema),
             shown(EVAL, "Run code.", &schema),
         ];
-        let listed = describe_tools(&tools, &[]);
+        let listed = describe_tools(&tools, &[], CodeFirstListing::Signatures);
         assert!(listed.contains("\nCallable tools: read\n"), "{listed}");
         assert!(!listed.contains("task,") && !listed.contains("eval,"), "{listed}");
 
@@ -1052,7 +1091,7 @@ mod tests {
         for i in 0..120 {
             tools.push(shown(&format!("mcp__server__tool_{i}"), &long, &schema));
         }
-        let listed = describe_tools(&tools, &[]);
+        let listed = describe_tools(&tools, &[], CodeFirstListing::Signatures);
         assert!(
             listed.len() < INTRO.len() + LISTING_CHARS + 400,
             "{}",
@@ -1068,7 +1107,11 @@ mod tests {
             json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]});
         let tools: Vec<Arc<dyn Tool>> = vec![shown("read", "Read a file.", &schema)];
         let few: Vec<Arc<dyn Tool>> = vec![shown("glob", "Find files by pattern.", &schema)];
-        let listed = describe_tools(&[tools[0].clone(), few[0].clone()], &few);
+        let listed = describe_tools(
+            &[tools[0].clone(), few[0].clone()],
+            &few,
+            CodeFirstListing::Signatures,
+        );
         assert!(
             listed.contains(
                 "
@@ -1089,7 +1132,7 @@ Callable tools: read
         let many: Vec<Arc<dyn Tool>> = (0..200)
             .map(|i| shown(&format!("mcp__s__tool_{i:03}"), &long, &schema))
             .collect();
-        let listed = describe_tools(&many, &many);
+        let listed = describe_tools(&many, &many, CodeFirstListing::Signatures);
         let block = listed
             .split(
                 "(they are not in your tool list):
@@ -1106,5 +1149,44 @@ Callable tools: read
         assert!(signatures.contains("- mcp__s__tool_000{"), "{signatures}");
         assert!(rest.contains("mcp__s__tool_199") || rest.contains('…'), "{rest}");
         assert!(!rest.contains("mcp__s__tool_000"), "{rest}");
+    }
+
+    #[test]
+    fn hidden_tools_are_listed_by_name_with_mcp_servers_counted() {
+        let schema = json!({"type": "object", "properties": {"path": {"type": "string"}}});
+        let mut tools: Vec<Arc<dyn Tool>> = vec![shown("read", "Read a file.", &schema)];
+        let mut hidden: Vec<Arc<dyn Tool>> = vec![shown("glob", "Find files.", &schema)];
+        for i in 0..300 {
+            hidden.push(shown(&format!("mcp__github__tool_{i}"), "Does a thing.", &schema));
+        }
+        hidden.push(shown("mcp__one__only", "Does a thing.", &schema));
+        tools.extend(hidden.iter().cloned());
+        let listed = describe_tools(&tools, &hidden, CodeFirstListing::Names);
+        assert!(
+            listed.contains(
+                "Callable tools: read
+"
+            ),
+            "{listed}"
+        );
+        assert!(
+            listed.contains(
+                "): glob, mcp__github (300 tools), mcp__one (1 tool)
+"
+            ),
+            "{listed}"
+        );
+        assert!(listed.contains("tools.describe(name)"), "{listed}");
+        assert!(!listed.contains("- glob{"), "{listed}");
+        assert!(!listed.contains("mcp__github__tool_0"), "{listed}");
+        // The listing does not grow with the number of tools of a server.
+        assert!(listed.len() < INTRO.len() + 1_000, "{}", listed.len());
+        // Both listings are deterministic: the description is part of the cached prompt.
+        for listing in [CodeFirstListing::Names, CodeFirstListing::Signatures] {
+            assert_eq!(
+                describe_tools(&tools, &hidden, listing),
+                describe_tools(&tools, &hidden, listing)
+            );
+        }
     }
 }

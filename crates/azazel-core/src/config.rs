@@ -299,6 +299,10 @@ config_table!(ToolsConfig {
     /// every other tool is called from a Luau `eval` script, which lists their signatures. Needs
     /// `tools.eval.luau`.
     code_first: bool = false,
+    /// How `eval`'s description lists the tools code-first mode hides: `names` (by name, MCP tools
+    /// as one `mcp__<server>` line with a count; `tools.search` and `tools.describe` give the
+    /// arguments) or `signatures` (one-line signatures within about 6000 characters).
+    code_first_listing: CodeFirstListing = CodeFirstListing::Names,
     /// Tools kept out of the prompt until the model searches for them, where the provider
     /// searches for tools itself (Claude 4.5 and later on Anthropic's API). A name ending in `*`
     /// covers every tool it starts.
@@ -805,6 +809,10 @@ config_enum!(
     LspInstall { Ask = "ask", Auto = "auto", Off = "off" } default Ask
 );
 config_enum!(WriteSeverity { Error = "error", Warning = "warning" } default Error);
+config_enum!(
+    /// `names`: code-first mode lists the hidden tools by name; `signatures`: with their arguments.
+    CodeFirstListing { Names = "names", Signatures = "signatures" } default Names
+);
 config_enum!(
     /// `auto`: `patch` instead of `edit` for OpenAI GPT and Codex models; `on`: both for every
     /// model; `off`: never `patch`.

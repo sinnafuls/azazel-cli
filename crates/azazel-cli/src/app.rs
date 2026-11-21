@@ -737,6 +737,7 @@ impl App {
             ..azazel_agent::ToolSettings::default()
         }));
         services.insert(Arc::new(azazel_agent::Deferral(config.tools.defer.clone())));
+        services.insert(Arc::new(config.tools.code_first_listing));
         // Large JSON results lose their noise and, with `tools.digest`, large results become notes;
         // decided once, when the result is produced.
         if let Some(digester) = crate::digest::digester(&config, paths.cache_dir().join("digests")) {
