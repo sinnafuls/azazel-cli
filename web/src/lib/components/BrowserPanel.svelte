@@ -543,7 +543,9 @@
 				</form>
 			{/if}
 
-			<div class={cn('flex min-w-0 flex-col', fill && 'min-h-0 flex-1')} data-browser-body>
+			<!-- The room never gets shorter than 10rem: in a pane too short for that and the rows
+			     around it, the pane scrolls. -->
+			<div class={cn('flex min-w-0 flex-col', fill && 'flex-1')} data-browser-body>
 				<!-- No box of its own: the room of the picture is as wide as the panel and as tall as
 				     what is left of the pane, or half the screen in a sheet, which has no height of its
 				     own to give. The host lays the page out for that room, so the picture fills it; one
@@ -556,7 +558,7 @@
 					bind:this={box}
 					class={cn(
 						'relative w-full overflow-hidden shadow-[0_1px_0_0_var(--border)] outline-none',
-						fill ? 'min-h-0 flex-1' : 'h-[50svh] shrink-0',
+						fill ? 'min-h-40 flex-1' : 'h-[50svh] shrink-0',
 						holding &&
 							'touch-none after:pointer-events-none after:absolute after:inset-0 focus-within:after:ring-2 focus-within:after:ring-ring/60 focus-within:after:ring-inset'
 					)}
@@ -606,7 +608,7 @@
 							alt="The page the agent's browser shows{live.state?.title
 								? `: ${live.state.title}`
 								: ''}"
-							class="size-full object-contain select-none"
+							class="absolute inset-0 size-full object-contain select-none"
 							draggable="false"
 						/>
 					{:else}

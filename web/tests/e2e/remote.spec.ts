@@ -469,6 +469,25 @@ const CLICKABLE = `<!doctype html>
 	</body>
 </html>`;
 
+/**
+ * A page with one small button in its lower right corner, at any size of the window: the title
+ * says whether a click was on the button or beside it, and how large the window was then.
+ */
+const CORNER = `<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<title>Not clicked</title>
+		<style>
+			html, body { height: 100%; margin: 0; background: #fff; }
+			button { position: fixed; right: 0; bottom: 0; width: 30vw; height: 20vh; border: 0; background: #2563eb; }
+		</style>
+	</head>
+	<body onclick="document.title = (event.target.tagName === 'BUTTON' ? 'Hit ' : 'Missed ') + innerWidth + 'x' + innerHeight">
+		<button aria-label="Corner"></button>
+	</body>
+</html>`;
+
 /** A page that is one field: its title says what is in the field, and that Enter was pressed. */
 const TYPABLE = `<!doctype html>
 <html lang="en">
@@ -610,6 +629,84 @@ test("the Browser tab shows the agent's browser; taking over, a click reaches it
 		await expect(panel.getByRole('textbox', { name: 'Address' })).toHaveCount(0);
 		await expect(panel.getByRole('button', { name: 'Take over' })).toBeEnabled();
 		await expect(title).toHaveText('Clicked');
+	} finally {
+		await stack.stop();
+		await site.close();
+	}
+});
+
+test('the picture fills its room at any size of the window, and a click lands where it points', async ({
+	page
+}) => {
+	test.skip(!agentBrowserFound, 'no Chromium-based browser on this machine for the agent to open');
+	const site = await serve(CORNER);
+	const stack = new Stack();
+	try {
+		await stack.start('auto', false, [], browses(site.url, 'Opened the page.'));
+		await openSession(page, stack);
+		await expect(page.getByRole('paragraph').filter({ hasText: 'Opened the page.' })).toBeVisible();
+
+		const pane = page.getByRole('complementary', { name: 'Agents, usage and browser' });
+		await pane.getByRole('tab', { name: 'Browser' }).click();
+		const panel = pane.locator('[data-browser]');
+		const title = panel.locator('[data-browser-title]');
+		const picture = panel.locator('[data-browser-picture]');
+		const img = picture.getByRole('img');
+		/** The room of the picture, and the bars a picture of another shape leaves in it. */
+		const room = () =>
+			picture.evaluate((el) => {
+				const r = el.getBoundingClientRect();
+				const i = el.querySelector('img');
+				if (!i?.naturalWidth) return { width: r.width, height: r.height, bars: Infinity };
+				const scale = Math.min(r.width / i.naturalWidth, r.height / i.naturalHeight);
+				return {
+					width: r.width,
+					height: r.height,
+					bars: Math.max(r.width - i.naturalWidth * scale, r.height - i.naturalHeight * scale)
+				};
+			});
+		const filled = async () => {
+			await expect
+				.poll(async () => (await room()).bars, { timeout: 20_000 })
+				.toBeLessThanOrEqual(2);
+			return room();
+		};
+		/** Clicks the picture at fractions of its room, and returns what the page's title says. */
+		const clickAt = async (fx: number, fy: number, said: RegExp) => {
+			const r = await room();
+			await picture.click({ position: { x: r.width * fx, y: r.height * fy } });
+			await expect(title).toHaveText(said);
+			return (await title.textContent()) ?? '';
+		};
+		/** The size the page of the agent has, as its title says after a click. */
+		const sizeIn = (text: string) => text.split(' ')[1].split('x').map(Number);
+
+		await expect(title).toHaveText('Not clicked');
+		await expect(img).toBeVisible();
+		await panel.getByRole('button', { name: 'Take over' }).click();
+		await expect(panel.getByRole('status')).toHaveText('Holding');
+
+		// The page is laid out for the room: it has the room's shape, and the button in its corner
+		// is under the corner of the picture, the rest of the page under the rest.
+		const first = await filled();
+		const hit = await clickAt(0.9, 0.95, /^Hit /);
+		const [w1, h1] = sizeIn(hit);
+		expect(Math.abs(w1 / h1 - first.width / first.height)).toBeLessThan(0.02);
+		await clickAt(0.5, 0.5, /^Missed /);
+		await clickAt(0.9, 0.7, /^Missed /);
+
+		// The window gets taller and narrower: the room does, and then the page. A click in the new
+		// corner is on the button, and one where the button was before is beside it.
+		await page.setViewportSize({ width: 1100, height: 1300 });
+		await expect.poll(async () => (await room()).height).toBeGreaterThan(first.height + 200);
+		const second = await filled();
+		const again = await clickAt(0.9, 0.95, /^Hit /);
+		const [w2, h2] = sizeIn(again);
+		expect([w2, h2]).not.toEqual([w1, h1]);
+		expect(Math.abs(w2 / h2 - second.width / second.height)).toBeLessThan(0.02);
+		await clickAt(0.9, 0.78, /^Missed /);
+		await clickAt(0.65, 0.95, /^Missed /);
+		await clickAt(0.75, 0.85, /^Hit /);
 	} finally {
 		await stack.stop();
 		await site.close();

@@ -45,7 +45,9 @@
 // those of the profiles (their chip, menu, settings and the notice of a usage limit) to a folder of
 // their own beside each size's, `<size>-<theme>-profiles`; those of the Browser tab (no browser,
 // waiting for the first picture, watching a page, holding it) to `<size>-<theme>-browser`, with the
-// boxes of its parts in boxes.json. All but the first need a browser for the agent to open: without
+// boxes of its parts in boxes.json. The Browser tab is measured in two tall, narrow windows as
+// well: its picture has to fill the room under the header there too, which it does because the
+// host lays the agent's page out for that room. All but the first need a browser for the agent to open: without
 // one on the machine only the first is measured, and the test says so in an annotation.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
@@ -75,6 +77,14 @@ const VIEWS: View[] = [
 	{ name: '1440x900-zoom200', width: 720, height: 450, scale: 2 }
 ];
 const THEMES = ['dark', 'light'] as const;
+/**
+ * The windows the Browser tab is also measured in: tall and narrow, where a picture of a wide page
+ * would fill a third of its room. The first has the tab in a sheet, the second in the pane.
+ */
+const TALL: View[] = [
+	{ name: '724x1360', width: 724, height: 1360, scale: 1 },
+	{ name: '1024x1360', width: 1024, height: 1360, scale: 1 }
+];
 
 /** Declares a test of `view`: a zoomed one gets a browser that draws every CSS pixel `scale` times. */
 function at(view: View, title: string, body: Parameters<typeof test>[2]) {
@@ -1680,8 +1690,18 @@ interface BrowserBoxes {
 	open: Box | null;
 	/** How far anything inside that group reaches past its border box. */
 	overhang: { x: number; y: number } | null;
-	/** The picture the host sent, the box it is drawn in, and how it is fitted to that box. */
-	img: (Box & { naturalWidth: number; naturalHeight: number; fit: string }) | null;
+	/**
+	 * The picture the host sent, the box it is drawn in, how it is fitted to that box, and how much
+	 * of the room is left beside it and under it: the bars of a picture of another shape.
+	 */
+	img:
+		| (Box & {
+				naturalWidth: number;
+				naturalHeight: number;
+				fit: string;
+				bars: { x: number; y: number };
+		  })
+		| null;
 	/** What stands in the place of the picture until the first one arrives. */
 	waiting: string | null;
 	/** What is drawn around the picture's box: nothing, it is no card. */
@@ -1792,7 +1812,16 @@ function browserBoxes(): BrowserBoxes {
 					...of(img),
 					naturalWidth: img.naturalWidth,
 					naturalHeight: img.naturalHeight,
-					fit: getComputedStyle(img).objectFit
+					fit: getComputedStyle(img).objectFit,
+					bars: (() => {
+						const r = picture!.getBoundingClientRect();
+						if (!img.naturalWidth || !img.naturalHeight) return { x: r.width, y: r.height };
+						const scale = Math.min(r.width / img.naturalWidth, r.height / img.naturalHeight);
+						return {
+							x: round(r.width - img.naturalWidth * scale),
+							y: round(r.height - img.naturalHeight * scale)
+						};
+					})()
 				}
 			: null,
 		waiting: picture?.querySelector('[data-browser-waiting]')?.textContent?.trim() ?? null,
@@ -1817,8 +1846,10 @@ function browserBoxes(): BrowserBoxes {
 /**
  * What has to hold of the Browser tab in every state, at every size. `fill`: the panel is in the
  * pane beside the chat, as tall as the pane, and not in a sheet that is as tall as what is in it.
+ * `fills`: the host has laid the page out for the room this device has, so the picture is as wide
+ * and as tall as its room.
  */
-function browserHolds(b: BrowserBoxes, state: string, fill: boolean) {
+function browserHolds(b: BrowserBoxes, state: string, fill: boolean, fills = false) {
 	const said = (what: string) => `${state}: ${what}: ${JSON.stringify(b)}`;
 	const near = 0.5;
 	expect(b.sideways, said('nothing scrolls sideways')).toEqual({ scroller: 0, page: 0 });
@@ -1923,15 +1954,17 @@ function browserHolds(b: BrowserBoxes, state: string, fill: boolean) {
 		radius: '0px',
 		background: 'rgba(0, 0, 0, 0)'
 	});
-	// The box has the shape of the picture (16:9 until one arrives) at the width of the panel, until
-	// it would be taller than what is left of the pane, or than 70% of the window in a sheet; the
-	// picture is whole inside it.
-	let shape = 9 / 16;
+	// The room of the picture is as wide as the panel and as tall as what is left of the pane under
+	// the rows above it (and over the note), or half the window in a sheet; the picture is whole
+	// inside it, and once the host has laid the page out for the room, it is the room: no bars.
 	if (b.img) {
 		const img = b.img;
 		expect(img.naturalWidth, said('the picture has a width')).toBeGreaterThan(0);
 		expect(img.fit, said('the picture keeps its shape')).toBe('contain');
-		shape = img.naturalHeight / img.naturalWidth;
+		if (fills) {
+			expect(img.bars.x, said('no bars beside the picture')).toBeLessThanOrEqual(2);
+			expect(img.bars.y, said('no bars over or under the picture')).toBeLessThanOrEqual(2);
+		}
 		for (const [edge, inside] of [
 			['left', img.left >= picture.left - near],
 			['top', img.top >= picture.top - near],
@@ -1943,18 +1976,41 @@ function browserHolds(b: BrowserBoxes, state: string, fill: boolean) {
 		expect(b.waiting, said('its place says a picture is on its way')).toBe(
 			'Waiting for the first picture…'
 		);
-	const most = fill
-		? b.room.bottom - picture.top - (b.parts.note?.height ?? 0)
-		: 0.7 * b.viewport.height;
-	const shaped = picture.width * shape;
+	// In a pane too short for the rows and ten rems of picture the pane scrolls, and the room is
+	// those ten rems.
+	const tall = fill
+		? Math.max(b.room.bottom - picture.top - (b.parts.note?.height ?? 0), 160)
+		: 0.5 * b.viewport.height;
+	expect(Math.abs(picture.height - tall), said(`the picture's room is ${tall} tall`)).toBeLessThan(
+		2
+	);
+	const over = b.parts.address ?? b.parts.error ?? b.parts.header;
 	expect(
-		Math.abs(picture.height - Math.min(shaped, most)),
-		said(`the picture is ${Math.min(shaped, most)} tall`)
-	).toBeLessThan(1);
+		Math.abs(picture.top - over.bottom),
+		said('the room starts under the row above it')
+	).toBeLessThan(2);
+	if (fill && !b.parts.note && picture.height > 160)
+		expect(
+			Math.abs(picture.bottom - b.room.bottom),
+			said('the room ends at the bottom of the pane')
+		).toBeLessThan(2);
+}
+
+/** Waits until the picture on screen is one of the room it has: the host laid the page out for it. */
+async function fillsItsRoom(page: Page) {
+	await expect
+		.poll(
+			async () => {
+				const b = await page.evaluate(browserBoxes);
+				return b.img ? Math.max(b.img.bars.x, b.img.bars.y) : Infinity;
+			},
+			{ message: 'the picture fills its room', timeout: 20_000 }
+		)
+		.toBeLessThanOrEqual(2);
 }
 
 // The Browser tab: before the agent has a browser, while it shows one, and while this device holds it.
-for (const view of VIEWS)
+for (const view of [...VIEWS, ...TALL])
 	for (const theme of THEMES)
 		at(view, `the Browser tab holds at ${view.name}, ${theme}`, async ({ page }) => {
 			const { width, height } = view;
@@ -1966,9 +2022,10 @@ for (const view of VIEWS)
 			const where = new Map<string, string[]>();
 			let shot = 0;
 			const panel = page.locator('[data-browser]:visible');
-			const capture = async (state: string) => {
+			const capture = async (state: string, fills = false) => {
 				await page.mouse.move(width - 2, 2);
 				await settle(page);
+				if (fills) await fillsItsRoom(page);
 				const m = await page.evaluate(audit, 'body');
 				const file = `${String(++shot).padStart(2, '0')}-${state}`;
 				await page.screenshot({ path: join(dir, `${file}.png`) });
@@ -1978,7 +2035,7 @@ for (const view of VIEWS)
 				expect(m.texts, `${state}: texts measured`).toBeGreaterThan(0);
 				const b = await page.evaluate(browserBoxes);
 				boxes[file] = b;
-				browserHolds(b, state, wide);
+				browserHolds(b, state, wide, fills);
 				return b;
 			};
 			/** The Browser tab of the pane beside the chat, or of the sheet a narrow window has for it. */
@@ -2094,7 +2151,7 @@ for (const view of VIEWS)
 					await expect
 						.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
 						.toBeGreaterThan(0);
-					const watching = await capture('watching');
+					const watching = await capture('watching', true);
 					expect(watching.waiting, 'the picture took its place').toBeNull();
 					expect(watching.buttons.map((b) => b.name)).toEqual(['Take over', 'Sign in']);
 					expect(Object.keys(watching.parts), 'the header and the picture').toEqual([
@@ -2124,7 +2181,8 @@ for (const view of VIEWS)
 							.getByRole('application')
 							.getByRole('textbox', { name: "Type into the agent's page" })
 					).toBeFocused();
-					const holding = await capture('holding');
+					// The address row and the note took room from the picture: the page is laid out anew.
+					const holding = await capture('holding', true);
 					expect(holding.buttons.map((b) => b.name)).toEqual(['Hand back', 'Sign in']);
 					expect(holding.focused, 'the keyboard is on the picture').toBe(true);
 					expect(
@@ -2155,7 +2213,7 @@ for (const view of VIEWS)
 					// The picture, where a short window starts it below the fold.
 					if (holding.pictureHidden > 0) {
 						await panel.locator('[data-browser-picture]').scrollIntoViewIfNeeded();
-						await capture('holding-picture');
+						await capture('holding-picture', true);
 					}
 				}
 			} finally {
@@ -2376,7 +2434,7 @@ const TIPS: Record<string, string> = {
 // on its blank page; a tooltip under the pointer; the ring of a button Tab reached; an address that
 // is typed, a step back and one forward; what the host refuses; another device that holds the
 // browser; and a view link, which may not watch.
-for (const view of VIEWS)
+for (const view of [...VIEWS, TALL[0]])
 	for (const theme of THEMES)
 		at(
 			view,
@@ -2413,11 +2471,12 @@ for (const view of VIEWS)
 					expect(m.texts, `${state}: texts measured`).toBeGreaterThan(0);
 					return file;
 				};
-				const capture = async (state: string) => {
+				const capture = async (state: string, fills = false) => {
+					if (fills) await fillsItsRoom(page);
 					const file = await audited(state);
 					const b = await page.evaluate(browserBoxes);
 					boxes[file] = b;
-					browserHolds(b, state, wide);
+					browserHolds(b, state, wide, fills);
 					return b;
 				};
 				/** The tab that chooses this panel: Tab goes on from it into the panel. */
@@ -2493,7 +2552,7 @@ for (const view of VIEWS)
 							.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth))
 							.toBeGreaterThan(0);
 						await expect(button('Open')).toHaveCount(0);
-						const blank = await capture('blank');
+						const blank = await capture('blank', true);
 						expect(blank.open, 'nothing is left to open').toBeNull();
 						expect(blank.buttons.map((b) => b.name)).toEqual(['Take over', 'Sign in']);
 						expect(Object.keys(blank.parts), 'the header and the picture').toEqual([
@@ -2542,7 +2601,7 @@ for (const view of VIEWS)
 						await expect(panel).toHaveAttribute('data-status', 'you');
 						const field = panel.getByRole('textbox', { name: 'Address' });
 						await expect(field).toHaveValue('about:blank');
-						addressHolds(await capture('holding-blank'), 'holding-blank');
+						addressHolds(await capture('holding-blank', true), 'holding-blank');
 
 						// An address is typed and opened; a step back is the blank page, a step forward the
 						// page that was left.
@@ -2556,7 +2615,7 @@ for (const view of VIEWS)
 						await button('Forward').click();
 						await expect(title).toHaveText(SITE_TITLE);
 						await expect(field).toHaveValue(address);
-						const holding = await capture('holding');
+						const holding = await capture('holding', true);
 						addressHolds(holding, 'holding');
 						expect(holding.buttons.map((b) => b.name)).toEqual(['Hand back', 'Sign in']);
 						expect(
@@ -2572,7 +2631,7 @@ for (const view of VIEWS)
 						await button('Forward').click();
 						const alert = panel.locator('[data-browser-error]').getByRole('alert');
 						await expect(alert).toContainText("there is no later page in this tab's history");
-						const failed = await capture('holding-error');
+						const failed = await capture('holding-error', true);
 						addressHolds(failed, 'holding-error');
 						expect(
 							Object.keys(failed.parts),
