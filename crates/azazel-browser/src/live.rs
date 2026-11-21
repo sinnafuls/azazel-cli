@@ -68,6 +68,50 @@ impl LiveSettings {
     }
 }
 
+impl LiveSettings {
+    /// The tallest picture: half as tall again as the widest, so that the picture of a tall,
+    /// narrow pane is not scaled down for its height.
+    pub(crate) fn max_height(self) -> u32 {
+        self.max_width / 2 * 3
+    }
+}
+
+/// The size of the page a device that watches wants to see, in CSS pixels: the room its picture
+/// has, so that the page is laid out for that shape and the picture fills it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveViewport {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl LiveViewport {
+    /// The shortest and the longest side a page is laid out with for a device.
+    pub const MIN: u32 = 320;
+    pub const MAX: u32 = 1920;
+
+    /// The viewport for a room of `width` by `height` CSS pixels: the room itself when its sides
+    /// are within [`Self::MIN`] and [`Self::MAX`], and otherwise the nearest size of the same
+    /// shape that is, so that the picture still fills the room. A room more than six times as
+    /// long as it is wide has no such size: its sides are held to the limits, and the picture
+    /// has bars. `None` for a room with no size.
+    pub fn fitted(width: u32, height: u32) -> Option<LiveViewport> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let (mut w, mut h) = (f64::from(width), f64::from(height));
+        let (min, max) = (f64::from(Self::MIN), f64::from(Self::MAX));
+        let grow = (min / w.min(h)).max(1.0);
+        (w, h) = (w * grow, h * grow);
+        let shrink = (max / w.max(h)).min(1.0);
+        (w, h) = (w * shrink, h * shrink);
+        let side = |n: f64| (n.round() as u32).clamp(Self::MIN, Self::MAX);
+        Some(LiveViewport {
+            width: side(w),
+            height: side(h),
+        })
+    }
+}
+
 /// One picture of the tab being watched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveFrame {
@@ -178,6 +222,17 @@ impl FrameMeta {
             scale: number("pageScaleFactor").unwrap_or(1.0),
         };
         (meta.device_width > 0.0 && meta.device_height > 0.0).then_some(meta)
+    }
+
+    /// A picture of a page laid out at `width` by `height` CSS pixels, with nothing above it
+    /// and no zoom: what the next picture shows after the page was given that size.
+    pub fn sized(width: f64, height: f64) -> Option<FrameMeta> {
+        (width > 0.0 && height > 0.0).then_some(FrameMeta {
+            device_width: width,
+            device_height: height,
+            offset_top: 0.0,
+            scale: 1.0,
+        })
     }
 
     /// The viewport position, in CSS pixels, of the point at fractions `fx`,`fy` of the picture.
@@ -467,6 +522,22 @@ mod tests {
             ..meta
         };
         assert_eq!(zoomed.to_css(1.0, 1.0), (400.0, 300.0));
+    }
+
+    #[test]
+    fn a_viewport_keeps_the_shape_of_the_room_within_its_limits() {
+        let fitted = |w, h| LiveViewport::fitted(w, h).map(|v| (v.width, v.height));
+        // A room within the limits is the viewport.
+        assert_eq!(fitted(360, 1300), Some((360, 1300)));
+        assert_eq!(fitted(1920, 320), Some((1920, 320)));
+        // Too short or too long a side: the same shape, larger or smaller.
+        assert_eq!(fitted(720, 250), Some((922, 320)));
+        assert_eq!(fitted(215, 700), Some((320, 1042)));
+        assert_eq!(fitted(2560, 1440), Some((1920, 1080)));
+        // No size of that shape is within both limits: the sides are held to them.
+        assert_eq!(fitted(100, 4000), Some((320, 1920)));
+        assert_eq!(fitted(0, 600), None);
+        assert_eq!(fitted(600, 0), None);
     }
 
     #[test]

@@ -21,7 +21,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
 use crate::launch::{LEFT_AT_ONCE, NOT_FOUND, find_binary, launch};
-use crate::live::{self, BrowserStateInfo, Feed, LiveFrame, LiveInput, LiveSettings, UserActions};
+use crate::live::{
+    self, BrowserStateInfo, Feed, FrameMeta, LiveFrame, LiveInput, LiveSettings, LiveViewport, UserActions,
+};
 use crate::page::{self, Baselines, Condition, Key, ShotFrame};
 
 pub const NO_TAB: &str = "no tab is open; use the `open` action first";
@@ -238,6 +240,9 @@ struct Tab {
     /// How the last scaled screenshot of the viewport each agent was given relates to the page:
     /// that agent's `x`,`y` are read in it. Per agent, since another agent was shown another image.
     frames: HashMap<String, ShotFrame>,
+    /// Whether an agent set the size of this tab's viewport itself (`resize`): it keeps that size
+    /// whatever a device that watches asks for.
+    sized: bool,
 }
 
 /// What an action acts on.
@@ -576,6 +581,7 @@ impl Running {
             refs: HashMap::new(),
             numbered: 0,
             frames: HashMap::new(),
+            sized: false,
         });
         Ok(self.tabs.len() - 1)
     }
@@ -1252,6 +1258,7 @@ impl Running {
                             .await?;
                         // The last screenshot no longer shows the window as it is.
                         self.tabs[index].frames.clear();
+                        self.tabs[index].sized = true;
                         text(format!("viewport is {width}×{height}"))
                     }
                     "console" => {
@@ -1293,6 +1300,13 @@ impl Running {
             }
         }
     }
+}
+
+/// The tab of `session` in the browser that runs, to lay it out anew.
+fn tab_of<'a>(running: &'a mut Option<&mut Running>, session: &str) -> Option<&'a mut Tab> {
+    running
+        .as_deref_mut()
+        .and_then(|running| running.tabs.iter_mut().find(|tab| tab.session == session))
 }
 
 /// An `Input` for one of the actions the controls of the web page come to.
@@ -1337,6 +1351,9 @@ pub struct BrowserSession {
     acted: Mutex<UserActions>,
     /// The screencast that runs now.
     cast: tokio::sync::Mutex<Option<Cast>>,
+    /// The size each client that watches wants the page laid out at, the one that asked last at
+    /// the end.
+    asks: Mutex<Vec<(String, LiveViewport)>>,
 }
 
 /// Who has taken the browser over, and when it last did something with it.
@@ -1350,6 +1367,8 @@ struct Cast {
     cdp: Arc<Cdp>,
     session: String,
     cancel: CancellationToken,
+    /// The size its tab is laid out at for the clients that watch, when it is not the tab's own.
+    viewport: Option<LiveViewport>,
 }
 
 impl BrowserSession {
@@ -1371,6 +1390,7 @@ impl BrowserSession {
             released: Notify::new(),
             acted: Mutex::default(),
             cast: tokio::sync::Mutex::new(None),
+            asks: Mutex::default(),
         }
     }
 
@@ -1488,7 +1508,7 @@ impl BrowserSession {
         let done = running.act(&input, artifacts).await;
         let done = self.with_note(note, done, running);
         self.keep_taken(call_id, running);
-        self.settle(state.as_ref()).await;
+        self.settle(state.as_mut()).await;
         done
     }
 
@@ -1603,7 +1623,7 @@ impl BrowserSession {
             agent,
         )
         .await?;
-        self.settle(state.as_ref()).await;
+        self.settle(state.as_mut()).await;
         let running = state.as_mut().ok_or(NO_TAB)?;
 
         // A short first line: an interface with boxes makes it the title of the box.
@@ -1646,7 +1666,7 @@ impl BrowserSession {
             said = running.snapshot_taken(index, said).await?;
             self.keep_taken(call_id, running);
         }
-        self.settle(state.as_ref()).await;
+        self.settle(state.as_mut()).await;
         Ok(vec![Block::text(said)])
     }
 
@@ -1773,7 +1793,7 @@ impl BrowserSession {
             }
             self.baselines.forget_all();
         }
-        self.settle(state.as_ref()).await;
+        self.settle(state.as_mut()).await;
         Ok(())
     }
 
@@ -1813,8 +1833,51 @@ impl BrowserSession {
             })
         });
         self.mark();
-        let state = self.state.lock().await;
-        self.settle(state.as_ref()).await;
+        if self.watchers.load(Ordering::SeqCst) == 0 {
+            // Nobody is left to lay the page out for.
+            self.asks.lock().unwrap_or_else(PoisonError::into_inner).clear();
+        }
+        self.refit().await;
+    }
+
+    /// `holder`, a client that watches, has room for a picture of `viewport`: the tab shown is
+    /// laid out at that size while someone watches, so that its picture fills the room. With
+    /// `None` the client asks for no size any more. The size asked for by the client that has
+    /// taken the browser over is the one used, and otherwise the one asked for last; with none,
+    /// and when the last watcher leaves, the tab has its own size again. A tab an agent sized
+    /// itself (`resize`) keeps that size.
+    pub async fn set_viewport(&self, holder: &str, viewport: Option<LiveViewport>) {
+        self.want_viewport(holder, viewport);
+        self.refit().await;
+    }
+
+    /// [`BrowserSession::set_viewport`] without touching the browser: the size is used the next
+    /// time the browser is brought up to date ([`BrowserSession::watch`],
+    /// [`BrowserSession::refit`], an action).
+    pub fn want_viewport(&self, holder: &str, viewport: Option<LiveViewport>) {
+        let mut asks = self.asks.lock().unwrap_or_else(PoisonError::into_inner);
+        asks.retain(|(who, _)| who != holder);
+        if let Some(viewport) = viewport {
+            asks.push((holder.to_string(), viewport));
+        }
+    }
+
+    /// Brings the screencast and the size of the page up to date with who watches and who has
+    /// the browser: for after [`BrowserSession::take`] and [`BrowserSession::give_back`], which
+    /// do not wait for the browser.
+    pub async fn refit(&self) {
+        let mut state = self.state.lock().await;
+        self.settle(state.as_mut()).await;
+    }
+
+    /// The size the clients that watch want the page laid out at.
+    fn asked(&self) -> Option<LiveViewport> {
+        let holder = self.held_by();
+        let asks = self.asks.lock().unwrap_or_else(PoisonError::into_inner);
+        holder
+            .and_then(|holder| asks.iter().find(|(who, _)| *who == holder))
+            .or(asks.last())
+            .map(|(_, viewport)| *viewport)
     }
 
     /// Takes the browser over for `holder`: the agents' next browser action waits until
@@ -1942,7 +2005,12 @@ impl BrowserSession {
                 None => held.await,
                 Some(until) => tokio::select! {
                     () = &mut held => {}
-                    () = tokio::time::sleep_until(until) => {}
+                    () = tokio::time::sleep_until(until) => {
+                        // The size its client asked for goes with a hold that ran out.
+                        if self.held_until().is_none() {
+                            self.refit().await;
+                        }
+                    }
                 },
             }
         }
@@ -2048,7 +2116,7 @@ impl BrowserSession {
         // A wheel starts nothing: a burst of them would otherwise replay at 150 ms each.
         tokio::time::sleep(settle_pause(&input)).await;
         self.touch(holder);
-        self.settle(state.as_ref()).await;
+        self.settle(state.as_mut()).await;
         Ok(())
     }
 
@@ -2082,11 +2150,11 @@ impl BrowserSession {
 
     /// Brings what the clients see up to date after the browser changed: its state, and the
     /// screencast, which follows the tab shown while someone watches.
-    async fn settle(&self, running: Option<&Running>) {
+    async fn settle(&self, running: Option<&mut Running>) {
         let watchers = self.watchers.load(Ordering::SeqCst);
-        let running = running.filter(|running| !running.cdp.is_closed());
+        let mut running = running.filter(|running| !running.cdp.is_closed());
         self.open.store(running.is_some(), Ordering::SeqCst);
-        match running {
+        match running.as_deref() {
             Some(running) => {
                 if self.state_tx.receiver_count() > 0 {
                     let mut info = running.describe().await;
@@ -2112,7 +2180,7 @@ impl BrowserSession {
                 });
             }
         }
-        let wanted = running.filter(|_| watchers > 0).and_then(|running| {
+        let wanted = running.as_deref().filter(|_| watchers > 0).and_then(|running| {
             let tab = running.current_tab()?;
             Some((running.cdp.clone(), tab.session.clone(), tab.name.clone()))
         });
@@ -2123,6 +2191,28 @@ impl BrowserSession {
             _ => false,
         };
         if same {
+            if let Some(cast) = cast.as_mut() {
+                let before = cast.viewport;
+                cast.viewport = self
+                    .fit(
+                        &cast.cdp,
+                        &cast.session,
+                        before,
+                        tab_of(&mut running, &cast.session),
+                    )
+                    .await;
+                if cast.viewport != before {
+                    // The browser keeps its pictures within the size of the first one: started
+                    // anew, they are pictures of the whole page at its new size.
+                    let _ = cast
+                        .cdp
+                        .call(Some(&cast.session), "Page.stopScreencast", json!({}))
+                        .await;
+                    if let Err(why) = self.start_cast(&cast.cdp, &cast.session).await {
+                        tracing::debug!("the live view of the browser did not start again: {why}");
+                    }
+                }
+            }
             return;
         }
         if let Some(old) = cast.take() {
@@ -2131,41 +2221,135 @@ impl BrowserSession {
                 .cdp
                 .call(Some(&old.session), "Page.stopScreencast", json!({}))
                 .await;
+            // Nobody watches this tab any more: it has its own size again.
+            if old.viewport.is_some() {
+                let _ = old
+                    .cdp
+                    .call(
+                        Some(&old.session),
+                        "Emulation.clearDeviceMetricsOverride",
+                        json!({}),
+                    )
+                    .await;
+                if let Some(tab) = tab_of(&mut running, &old.session) {
+                    tab.frames.clear();
+                }
+            }
             self.feed.clear();
         }
         let Some((cdp, session, tab)) = wanted else {
             return;
         };
-        let live = self.settings.live.clamped();
+        // Before the first picture, so that it is one of the size asked for.
+        let viewport = self
+            .fit(&cdp, &session, None, tab_of(&mut running, &session))
+            .await;
         let cancel = CancellationToken::new();
         tokio::spawn(live::pump(
             cdp.clone(),
             cdp.subscribe(),
             (session.clone(), tab),
             self.feed.clone(),
-            live.fps,
+            self.settings.live.clamped().fps,
             cancel.clone(),
         ));
-        let started = cdp
-            .call(
-                Some(&session),
-                "Page.startScreencast",
-                json!({
-                    "format": "jpeg",
-                    "quality": live.quality,
-                    "maxWidth": live.max_width,
-                    "maxHeight": live.max_width,
-                    "everyNthFrame": 1,
-                }),
-            )
-            .await;
-        match started {
-            Ok(_) => *cast = Some(Cast { cdp, session, cancel }),
+        match self.start_cast(&cdp, &session).await {
+            Ok(_) => {
+                *cast = Some(Cast {
+                    cdp,
+                    session,
+                    cancel,
+                    viewport,
+                });
+            }
             Err(why) => {
                 cancel.cancel();
+                if viewport.is_some() {
+                    let _ = cdp
+                        .call(Some(&session), "Emulation.clearDeviceMetricsOverride", json!({}))
+                        .await;
+                }
                 tracing::debug!("the live view of the browser did not start: {why}");
             }
         }
+    }
+
+    /// Asks the browser for pictures of the tab of `session`.
+    async fn start_cast(&self, cdp: &Cdp, session: &str) -> Result<Value, String> {
+        let live = self.settings.live.clamped();
+        cdp.call(
+            Some(session),
+            "Page.startScreencast",
+            json!({
+                "format": "jpeg",
+                "quality": live.quality,
+                "maxWidth": live.max_width,
+                "maxHeight": live.max_height(),
+                "everyNthFrame": 1,
+            }),
+        )
+        .await
+    }
+
+    /// Lays the watched tab out at the size the clients that watch ask for, when it is laid out
+    /// at `now` (`None`: its own size). Returns the size it is laid out at for them afterwards.
+    /// A tab an agent sized itself is left alone: the agent is checking the page at that size.
+    async fn fit(
+        &self,
+        cdp: &Cdp,
+        session: &str,
+        now: Option<LiveViewport>,
+        tab: Option<&mut Tab>,
+    ) -> Option<LiveViewport> {
+        let tab = tab?;
+        if tab.sized {
+            return None;
+        }
+        let want = self.asked();
+        if want == now {
+            return now;
+        }
+        let done = match want {
+            // No scale factor of its own: screenshots keep the pixels they had.
+            Some(viewport) => {
+                let metrics = json!({
+                    "width": viewport.width,
+                    "height": viewport.height,
+                    "deviceScaleFactor": 0,
+                    "mobile": false,
+                });
+                cdp.call(Some(session), "Emulation.setDeviceMetricsOverride", metrics)
+                    .await
+            }
+            None => {
+                cdp.call(Some(session), "Emulation.clearDeviceMetricsOverride", json!({}))
+                    .await
+            }
+        };
+        if let Err(why) = done {
+            tracing::debug!("the size of the watched page was not set: {why}");
+            return now;
+        }
+        // Neither the last screenshot an agent was given nor the last picture a client saw shows
+        // the page as it is laid out now: positions in them are not positions in it. Where a
+        // click in the next picture lands is known before that picture arrives.
+        tab.frames.clear();
+        let size = match want {
+            Some(viewport) => Some((f64::from(viewport.width), f64::from(viewport.height))),
+            None => {
+                let metrics = cdp.call(Some(session), "Page.getLayoutMetrics", json!({})).await;
+                let side = |key: &str| {
+                    metrics
+                        .as_ref()
+                        .ok()
+                        .and_then(|metrics| metrics.get("cssVisualViewport")?.get(key)?.as_f64())
+                };
+                side("clientWidth").zip(side("clientHeight"))
+            }
+        };
+        self.feed
+            .set_meta(size.and_then(|(width, height)| FrameMeta::sized(width, height)));
+        want
     }
 
     /// Closes the browser if it runs and lets go of a hold. The next action starts a new browser.

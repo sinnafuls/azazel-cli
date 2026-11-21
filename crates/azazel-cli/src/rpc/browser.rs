@@ -170,7 +170,7 @@ pub(crate) use real::Browser;
 mod real {
     use std::collections::{HashMap, HashSet};
 
-    use azazel_browser::{BrowserSession, BrowserStateInfo, LiveButton, LiveInput};
+    use azazel_browser::{BrowserSession, BrowserStateInfo, LiveButton, LiveInput, LiveViewport};
     use azazel_protocol::{BrowserInput, MouseButton};
     use tokio::sync::{broadcast, mpsc};
 
@@ -185,6 +185,8 @@ mod real {
         Leave {
             holder: String,
         },
+        /// Who has the browser changed without a job: the size of the page follows.
+        Refit,
     }
 
     /// The browser session, as the clients of a session reach it.
@@ -254,6 +256,9 @@ mod real {
             {
                 drop(pending);
                 let outcome = self.session.take(&holder, force);
+                if outcome.is_ok() {
+                    let _ = self.jobs.send(Job::Refit);
+                }
                 return reply(outcome.and_then(|()| state_data(&self.session, &holder)));
             }
             *pending.entry(holder.clone()).or_insert(0) += 1;
@@ -422,10 +427,15 @@ mod real {
         while let Some(job) = queue.recv().await {
             match job {
                 Job::Leave { holder } => {
+                    session.want_viewport(&holder, None);
                     if set(&holder, false) {
                         session.watch(false).await;
+                    } else {
+                        // It may have had the browser, and its size with it.
+                        session.refit().await;
                     }
                 }
+                Job::Refit => session.refit().await,
                 Job::Do {
                     holder,
                     command,
@@ -434,9 +444,16 @@ mod real {
                     // Anything a holder asks of the browser shows it is there.
                     session.renew(&holder);
                     let outcome = match command {
-                        Command::BrowserWatch { on } => {
+                        Command::BrowserWatch { on, width, height } => {
+                            let room = width.zip(height).filter(|_| on);
+                            session.want_viewport(
+                                &holder,
+                                room.and_then(|(width, height)| LiveViewport::fitted(width, height)),
+                            );
                             if set(&holder, on) {
                                 session.watch(on).await;
+                            } else {
+                                session.refit().await;
                             }
                             if on {
                                 let _ = resend.send(holder.clone());
@@ -447,9 +464,14 @@ mod real {
                             Ok(input) => session.user_input(&holder, input).await,
                             Err(why) => Err(why),
                         },
-                        Command::BrowserTake { on: true, force } => session.take(&holder, force),
+                        Command::BrowserTake { on: true, force } => {
+                            let taken = session.take(&holder, force);
+                            session.refit().await;
+                            taken
+                        }
                         Command::BrowserTake { .. } => {
                             session.give_back(&holder);
+                            session.refit().await;
                             Ok(())
                         }
                         Command::BrowserSignIn { url } => session.sign_in(&holder, url.as_deref()).await,
@@ -547,7 +569,11 @@ mod tests {
             let (tx, rx) = tokio::sync::oneshot::channel();
             browser.run(
                 holder.to_string(),
-                Command::BrowserWatch { on: true },
+                Command::BrowserWatch {
+                    on: true,
+                    width: None,
+                    height: None,
+                },
                 Box::new(move |outcome| {
                     let _ = tx.send(outcome);
                 }),
@@ -628,7 +654,14 @@ mod tests {
         );
 
         // Behind a queued command the take waits its turn, and answers that the browser is held.
-        let watch = send("a", Command::BrowserWatch { on: false });
+        let watch = send(
+            "a",
+            Command::BrowserWatch {
+                on: false,
+                width: None,
+                height: None,
+            },
+        );
         let off = send("a", take(false));
         let on = send("a", take(true));
         for done in [watch, off, on] {

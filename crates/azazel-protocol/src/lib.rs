@@ -369,9 +369,21 @@ pub enum Command {
     /// `/forget-approvals` does. Answers with [`Forgotten`].
     ForgetApprovals,
     /// Starts (`on`) or stops receiving `browser_frame` frames, a live picture of the tab the
-    /// agents' browser shows. Frames are produced only while someone watches. Answers with
-    /// [`BrowserState`].
-    BrowserWatch { on: bool },
+    /// agents' browser shows. Frames are produced only while someone watches. With `width` and
+    /// `height`, the room the client has for the picture in CSS pixels, the page is laid out for
+    /// that shape while the client watches, so that the picture fills the room: at that size
+    /// when both sides are between 320 and 1920, and otherwise at the nearest size of the same
+    /// shape. Sending it again with another size changes it, and without one the client asks
+    /// for none. The size of the client that has taken the browser over is used, and otherwise
+    /// the one sent last; when the last client stops watching the page has its own size again.
+    /// Answers with [`BrowserState`].
+    BrowserWatch {
+        on: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+    },
     /// Takes over the agents' browser (`on`), or hands it back. While it is taken over, the
     /// agents' next browser action waits, and `browser_input` is accepted from this client only;
     /// when it is handed back the agent is told what you did. Fails while another client has

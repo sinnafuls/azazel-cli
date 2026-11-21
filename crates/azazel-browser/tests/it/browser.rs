@@ -862,3 +862,110 @@ async fn a_click_that_continues_a_row_reaches_the_page_as_one_press() {
     session.watch(false).await;
     session.shutdown().await;
 }
+
+/// The next picture of the tab that is `width` by `height` pixels.
+async fn frame_of(
+    frames: &mut tokio::sync::watch::Receiver<Option<Arc<azazel_browser::LiveFrame>>>,
+    width: u32,
+    height: u32,
+) -> Arc<azazel_browser::LiveFrame> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if let Some(frame) = frames.borrow_and_update().clone()
+                && (frame.width, frame.height) == (width, height)
+            {
+                return frame;
+            }
+            frames.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "no picture of {width}x{height}: {:?}",
+            frames.borrow().as_ref().map(|f| (f.width, f.height))
+        )
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_watched_page_is_laid_out_for_the_room_of_the_device_and_has_its_own_size_again_afterwards() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bench = Bench::new(dir.path());
+    let site = serve(LIVE_PAGE).await;
+    bench.ok(json!({ "action": "open", "url": site })).await;
+    let size = || async {
+        bench
+            .ok(json!({ "action": "eval", "expression": "innerWidth + 'x' + innerHeight" }))
+            .await
+    };
+    let own = size().await;
+    assert_ne!(own, "\"360x1300\"");
+
+    // A size asked for before anyone watches changes nothing.
+    let session = bench.session.clone();
+    let room = |width, height| azazel_browser::LiveViewport::fitted(width, height);
+    session.set_viewport("phone", room(360, 1300)).await;
+    assert_eq!(size().await, own);
+
+    // The first picture of a watcher is one of the room it has, and so is the page.
+    let mut frames = session.frames();
+    session.watch(true).await;
+    frame_of(&mut frames, 360, 1300).await;
+    assert_eq!(size().await, "\"360x1300\"");
+
+    // Another watcher asks later: its size is used, until the first takes the browser over.
+    session.watch(true).await;
+    session.set_viewport("laptop", room(800, 500)).await;
+    frame_of(&mut frames, 800, 500).await;
+    session.take("phone", false).unwrap();
+    session.refit().await;
+    frame_of(&mut frames, 360, 1300).await;
+
+    // A click is placed in the picture of the new shape: the upper half is the button.
+    session
+        .user_input(
+            "phone",
+            azazel_browser::LiveInput::Click {
+                x: 0.5,
+                y: 0.45,
+                button: azazel_browser::LiveButton::Left,
+                count: 1,
+                continues: false,
+            },
+        )
+        .await
+        .unwrap();
+    session.give_back("phone");
+    session.refit().await;
+    frame_of(&mut frames, 800, 500).await;
+    // The agent is told first that the user used the browser.
+    let seen = bench
+        .ok(json!({ "action": "eval", "expression": "document.title + ' ' + innerWidth + 'x' + innerHeight" }))
+        .await;
+    assert!(seen.ends_with("\"clicked 800x500\""), "{seen}");
+
+    // A client that asks for no size any more leaves the other's; the last one leaves the page
+    // its own.
+    session.set_viewport("laptop", None).await;
+    frame_of(&mut frames, 360, 1300).await;
+    session.watch(false).await;
+    assert_eq!(size().await, "\"360x1300\"");
+    session.watch(false).await;
+    assert_eq!(size().await, own);
+
+    // A page the agent sized itself keeps that size while a device watches.
+    bench
+        .ok(json!({ "action": "resize", "width": 640, "height": 480 }))
+        .await;
+    session.set_viewport("phone", room(360, 1300)).await;
+    session.watch(true).await;
+    frame_of(&mut frames, 640, 480).await;
+    assert_eq!(size().await, "\"640x480\"");
+    session.watch(false).await;
+    session.shutdown().await;
+}

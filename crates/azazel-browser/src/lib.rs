@@ -21,7 +21,7 @@ use azazel_core::{
 use serde_json::{Value, json};
 
 pub use launch::{NOT_FOUND, find_binary, open_profile};
-pub use live::{BrowserStateInfo, LiveButton, LiveFrame, LiveInput, LiveSettings};
+pub use live::{BrowserStateInfo, LiveButton, LiveFrame, LiveInput, LiveSettings, LiveViewport};
 pub use session::{BrowserSession, Input, Settings};
 
 const DESCRIPTION: &str = "Drive a real Chromium browser: open pages, read them as an accessibility \

@@ -289,13 +289,23 @@ pub fn check(access: Access, command: &Value, grants: Grants) -> Result<(), Stri
     let Some(kind) = command.get("type").and_then(Value::as_str) else {
         return Err("a command has a `type`".to_string());
     };
+    let given = |member: &str| command.get(member).is_some_and(|value| !value.is_null());
     if access == Access::View {
-        return match VIEW.contains(&kind) || (kind == "browser_watch" && grants.view_browser) {
+        if kind == "browser_watch" && grants.view_browser {
+            // Watching changes nothing; the size of the page is what the agent works with.
+            return match given("width") || given("height") {
+                true => Err(
+                    "this is a view link: the size of the agents' browser is set from a control link"
+                        .to_string(),
+                ),
+                false => Ok(()),
+            };
+        }
+        return match VIEW.contains(&kind) {
             true => Ok(()),
             false => Err(format!("this is a view link: `{kind}` needs a control link")),
         };
     }
-    let given = |member: &str| command.get(member).is_some_and(|value| !value.is_null());
     let text = |member: &str| command.get(member).and_then(Value::as_str).unwrap_or_default();
     let refused = |why: &str| Err(format!("`{kind}` is not available from a browser: {why}"));
     if grants.full_access {
@@ -710,6 +720,11 @@ mod tests {
         assert!(check(Access::View, &watch, bypass(false)).is_err());
         assert!(check(Access::View, &watch, open).is_ok());
         assert!(check(Access::Control, &watch, bypass(false)).is_ok());
+        // A view link that may watch sees the page at the size it has: it sets none.
+        let sized = json!({ "type": "browser_watch", "on": true, "width": 360, "height": 1300 });
+        assert!(check(Access::View, &sized, open).is_err());
+        assert!(check(Access::View, &sized, bypass(false)).is_err());
+        assert!(check(Access::Control, &sized, bypass(false)).is_ok());
         // Taking over, typing, signing in and starting it are never a view link's, whatever it
         // may watch.
         for kind in ["browser_take", "browser_input", "browser_sign_in", "browser_open"] {
