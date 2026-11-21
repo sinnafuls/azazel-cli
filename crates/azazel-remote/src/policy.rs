@@ -154,6 +154,7 @@ const COMMANDS: &[&str] = &[
     "usage",
     "stats",
     "skills",
+    "security-check",
     "agents",
     "msg",
     "stop",

@@ -91,7 +91,7 @@ mod tests {
     use crate::skills::{SkillRoot, SkillSource, discover};
 
     /// The skills every installation has.
-    const REQUIRED: [&str; 24] = [
+    const REQUIRED: [&str; 25] = [
         "api-design",
         "audit",
         "azazel-extensions",
@@ -99,6 +99,7 @@ mod tests {
         "code-review",
         "debt-ledger",
         "debugging",
+        "dependency-audit",
         "design-tokens",
         "docs-writing",
         "frontend-design",

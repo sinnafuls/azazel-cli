@@ -762,7 +762,34 @@ impl crate::ext::CommandHandler for ListSkills {
     }
 }
 
-/// Registers skill roots, the `skills` prompt part, the `skill` tool, `skill://` and `/skills`.
+/// `/security-check [path or focus]`: sends the `dependency-audit` skill to the lead as the user's
+/// prompt, as `/skill:dependency-audit` does.
+struct SecurityCheck(Arc<SkillRegistry>);
+
+#[async_trait]
+impl crate::ext::CommandHandler for SecurityCheck {
+    async fn run(&self, args: &str, ctx: &crate::ext::ExtCtx) -> crate::ext::CommandOutcome {
+        match self.0.get(SECURITY_CHECK_SKILL).filter(|skill| skill.user_invocable) {
+            Some(skill) => {
+                self.0.mark_used(&skill);
+                allow_for_prompt(&ctx.services, &skill);
+                crate::ext::CommandOutcome::Prompt {
+                    text: invocation_text(&skill, args),
+                    model: skill.model.clone(),
+                }
+            }
+            None => crate::ext::CommandOutcome::Error(format!(
+                "the {SECURITY_CHECK_SKILL} skill is not loaded in this session; /skills lists them"
+            )),
+        }
+    }
+}
+
+/// The built-in skill behind `/security-check`.
+const SECURITY_CHECK_SKILL: &str = "dependency-audit";
+
+/// Registers skill roots, the `skills` prompt part, the `skill` tool, `skill://`, `/skills` and
+/// `/security-check`.
 pub struct SkillsExt {
     /// Lowest precedence first.
     pub roots: Vec<SkillRoot>,
@@ -791,7 +818,14 @@ impl crate::ext::Extension for SkillsExt {
             name: "skills".to_string(),
             description: "List skills and where they come from".to_string(),
             argument_hint: None,
-            handler: Arc::new(ListSkills(registry)),
+            handler: Arc::new(ListSkills(registry.clone())),
+        });
+        r.command(crate::ext::Command {
+            name: "security-check".to_string(),
+            description: "Check the project's dependencies, runtimes and images for known vulnerabilities and end-of-life versions"
+                .to_string(),
+            argument_hint: Some("[path or focus]".to_string()),
+            handler: Arc::new(SecurityCheck(registry)),
         });
         Ok(())
     }
