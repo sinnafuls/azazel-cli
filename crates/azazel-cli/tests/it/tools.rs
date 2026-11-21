@@ -863,3 +863,32 @@ fn a_scripted_eval_runs_a_saved_script_with_input_and_the_description_names_tool
         .unwrap();
     assert!(description.contains("tools.run(name, input)"), "{description}");
 }
+
+#[cfg(feature = "lua")]
+#[test]
+fn print_mode_keeps_refusing_a_background_call_that_needs_approval() {
+    let sandbox = Sandbox::new();
+    // Nobody is there to answer in print mode, so the script is not paused: the call is refused
+    // and the script sees the refusal.
+    let script = json!({ "lead": [
+        { "reply": { "tool_calls": [{ "id": "t1", "name": "eval", "input": {
+            "language": "luau",
+            "code": "local ok, why = pcall(tools.write, { path = 'out.txt', content = 'hi' }) return why",
+            "background": true
+        } }] } },
+        { "reply": { "text": "started" } },
+        { "reply": { "text": "done" } },
+    ] });
+    let output = sandbox.azazel(&script, &["--mode", "manual"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let texts = message_texts(sandbox.requests().last().unwrap());
+    let woken = texts
+        .iter()
+        .find(|text| text.starts_with("<job-exit id=\"lua-1\">"))
+        .unwrap_or_else(|| panic!("the lead was not told: {texts:#?}"));
+    assert!(
+        woken.contains("write needed approval, which a background script cannot get"),
+        "{woken}"
+    );
+    assert!(!sandbox.project().join("out.txt").exists());
+}

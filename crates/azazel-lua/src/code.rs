@@ -77,7 +77,7 @@ const INTRO: &str = "`language: \"luau\"` runs a script that calls your other to
      `tools.search(query)` finds tools not listed below and the user's saved scripts, which \
      `tools.run(name, input)` runs; `tools.describe(name)` returns a tool's description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
      model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
-     In the background a call that needs the user's approval pauses the script; once approved it runs again from the start with earlier results replayed, so make the same calls in the same order and wrap os.time or math.random in `step(name, fn)`. \
+     In the background a call that needs approval pauses the script; it reruns once answered. \
      `eval` and the agent tools cannot be called through `tools`.";
 
 /// What bounds one script.
