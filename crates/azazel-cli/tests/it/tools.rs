@@ -171,6 +171,17 @@ const NEVER_HIDDEN: [&str; 5] = ["patch", "plan_submit", "report", "goal_done", 
 #[cfg(feature = "lua")]
 #[test]
 fn code_first_keeps_a_fixed_core_in_the_tool_list_and_a_script_reaches_the_rest() {
+    code_first_run("names");
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn code_first_with_signature_listing_keeps_the_same_core_and_lists_arguments() {
+    code_first_run("signatures");
+}
+
+#[cfg(feature = "lua")]
+fn code_first_run(listing: &str) {
     let sandbox = Sandbox::new();
     std::fs::write(
         sandbox.project().join("a.txt"),
@@ -182,7 +193,15 @@ fn code_first_keeps_a_fixed_core_in_the_tool_list_and_a_script_reaches_the_rest(
         "eval",
         json!({ "language": "luau", "code": "return tools.glob{ pattern = '*.txt' }" }),
     )]);
-    let output = sandbox.azazel(&script, &["--set", "tools.code_first=true"]);
+    let output = sandbox.azazel(
+        &script,
+        &[
+            "--set",
+            "tools.code_first=true",
+            "--set",
+            &format!("tools.code_first_listing={listing}"),
+        ],
+    );
     assert!(output.status.success(), "{}", stderr(&output));
     // The hidden tool ran from the script.
     assert!(sandbox.results()[0].contains("a.txt"), "{:?}", sandbox.results());
@@ -209,14 +228,22 @@ fn code_first_keeps_a_fixed_core_in_the_tool_list_and_a_script_reaches_the_rest(
         );
     }
 
-    // Hidden tools are described as signatures, in the one description that is built once.
+    // Hidden tools are described in the one description that is built once.
     let description = tool(&requests[0], "eval").unwrap()["description"]
         .as_str()
         .unwrap();
-    assert!(
-        description.contains("- glob{ ") && description.contains("pattern: string"),
-        "{description}"
-    );
+    if listing == "signatures" {
+        assert!(
+            description.contains("- glob{ ") && description.contains("pattern: string"),
+            "{description}"
+        );
+    } else {
+        assert!(
+            description.contains("tools.describe(name)") && description.contains("glob, "),
+            "{description}"
+        );
+        assert!(!description.contains("- glob{ "), "{description}");
+    }
     assert_eq!(tool(&requests[1], "eval").unwrap()["description"], description);
 }
 
