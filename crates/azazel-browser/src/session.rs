@@ -1837,7 +1837,8 @@ impl BrowserSession {
             // Nobody is left to lay the page out for.
             self.asks.lock().unwrap_or_else(PoisonError::into_inner).clear();
         }
-        self.refit().await;
+        let mut state = self.state.lock().await;
+        self.settle(state.as_mut()).await;
     }
 
     /// `holder`, a client that watches, has room for a picture of `viewport`: the tab shown is
@@ -1864,10 +1865,13 @@ impl BrowserSession {
 
     /// Brings the screencast and the size of the page up to date with who watches and who has
     /// the browser: for after [`BrowserSession::take`] and [`BrowserSession::give_back`], which
-    /// do not wait for the browser.
+    /// do not wait for the browser. Without a browser there is nothing to lay out, and whether
+    /// one is open is left as it is.
     pub async fn refit(&self) {
         let mut state = self.state.lock().await;
-        self.settle(state.as_mut()).await;
+        if state.is_some() {
+            self.settle(state.as_mut()).await;
+        }
     }
 
     /// The size the clients that watch want the page laid out at.
