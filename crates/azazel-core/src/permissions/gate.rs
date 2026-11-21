@@ -298,12 +298,6 @@ impl Gate for PermissionGate {
                 None if deferral.pauses() => return deny(deferral.defer(call_id, request)),
                 None => return deny(deferral.refusal(tool.name())),
             }
-        } else if crate::toolcall::is_unattended() {
-            return deny(format!(
-                "{} needed approval, which a background script cannot get; run it in the foreground \
-                 (without `background`) or allow it with a rule",
-                tool.name()
-            ));
         } else {
             let Some(ui) = self.services.get::<Ui>() else {
                 return headless();

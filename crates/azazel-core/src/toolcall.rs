@@ -32,22 +32,6 @@ pub trait LuauEngine: Send + Sync {
 /// The service that holds the engine.
 pub struct Luau(pub Arc<dyn LuauEngine>);
 
-tokio::task_local! {
-    static UNATTENDED: ();
-}
-
-/// Runs `work` so that no tool call it makes through [`ToolCaller`] may ask the user: a call that
-/// the gate would ask about is denied instead. For code that runs after the turn that started it
-/// (a background script), where a question would wait for an answer nobody expects to give.
-pub async fn unattended<F: std::future::Future>(work: F) -> F::Output {
-    UNATTENDED.scope((), work).await
-}
-
-/// Whether the code asking runs inside [`unattended`].
-pub fn is_unattended() -> bool {
-    UNATTENDED.try_with(|_| ()).is_ok()
-}
-
 /// How `eval` runs a background script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Background {

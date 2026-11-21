@@ -1226,6 +1226,114 @@ async fn a_background_script_pauses_at_a_call_that_needs_approval_and_goes_on_on
     );
 }
 
+/// A user who is present and refuses everything.
+struct Denier;
+
+#[async_trait]
+impl UiBridge for Denier {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+        Ok(false)
+    }
+    async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+        Ok(0)
+    }
+    async fn input(&self, _: &str) -> Result<String, UiError> {
+        Err(UiError::NoUser)
+    }
+    fn notify(&self, _: azazel_core::ext::Level, _: &str) {}
+    async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+        Some(ApprovalDecision::Deny {
+            feedback: Some("not now".into()),
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_denied_call_ends_the_background_script_and_nothing_after_it_runs() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    bench.services.insert(Arc::new(Ui(Arc::new(Denier))));
+    let marker = bench.paths.project_root.join("ran.txt");
+    let command = format!("echo ran > \"{}\"", marker.display());
+    let id = start_background(
+        &bench,
+        &format!("tools.shell({{ command = {command:?} }}) return 'after'"),
+    )
+    .await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("failed"), "{text}");
+    assert!(text.contains("the user denied shell"), "{text}");
+    assert!(text.contains("not now"), "{text}");
+    assert!(!text.contains("after"), "{text}");
+    assert!(!marker.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_that_does_not_repeat_its_calls_fails_with_where_it_diverged() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    bench.services.insert(Arc::new(Ui(Arc::new(Approver {
+        asked: AtomicUsize::new(0),
+    }))));
+    // The command changes from one pass to the next: a replay cannot match it to the first.
+    let id = start_background(
+        &bench,
+        r#"tools.shell({ command = "echo " .. string.format("%.9f", os.clock()) })"#,
+    )
+    .await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("failed"), "{text}");
+    assert!(text.contains("replay diverged at call 1"), "{text}");
+    assert!(text.contains("step(name, fn)"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_step_value_is_the_same_in_every_pass_so_the_replay_matches() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    let user = Arc::new(Approver {
+        asked: AtomicUsize::new(0),
+    });
+    bench.services.insert(Arc::new(Ui(user.clone())));
+    let id = start_background(
+        &bench,
+        r#"
+        local t = step("clock", function() return string.format("%.9f", os.clock()) end)
+        tools.shell({ command = "echo " .. t })
+        return t
+        "#,
+    )
+    .await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("finished"), "{text}");
+    assert_eq!(user.asked.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_result_too_big_to_keep_stops_the_script_pausing_and_the_call_is_refused_with_why() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    let user = Arc::new(Approver {
+        asked: AtomicUsize::new(0),
+    });
+    bench.services.insert(Arc::new(Ui(user.clone())));
+    let id = start_background(
+        &bench,
+        r#"
+        local big = step("big", function() return string.rep("x", 300 * 1024) end)
+        local ok, why = pcall(tools.shell, { command = "echo hi" })
+        return tostring(ok) .. " " .. why
+        "#,
+    )
+    .await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("needed approval"), "{text}");
+    assert!(
+        text.contains("cannot pause because the result of call 1 (step big)"),
+        "{text}"
+    );
+    assert_eq!(user.asked.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn with_nobody_present_or_background_approval_deny_a_background_call_is_refused_as_before() {
     let marker_of = |bench: &Bench| bench.paths.project_root.join("ran.txt");
