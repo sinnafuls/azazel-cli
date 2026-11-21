@@ -253,6 +253,7 @@ Sent when a tool call needs the user's permission. The agent waits until the mat
 | `note` | Optional: a remark to show, such as a cost warning |
 | `destructive` | Optional, `true` when the call would destroy work: approval should not be the answer a stray key gives |
 | `secret` | Optional, `true` when the call reads or writes a [secret file](permissions.md#secret-files): `session` allows that file until the session ends, and `always` saves nothing |
+| `job` | Optional: the background job (`lua-1`) of a Luau script that is paused at this call; once the request is answered `allow`, `session` or `always`, the script runs again from the start with its earlier calls replayed |
 
 `decision` in the response:
 

@@ -54,6 +54,12 @@ one session file.
 - When its work is done and nobody has been attached for ten minutes, it exits. Its session is saved
   like any other: `azazel -c` or `/resume` continues it.
 
+A background Luau script (`eval` with `background: true`) waits the same way: at a tool call that needs
+approval the script pauses, the request names its job (`lua-1`), and once you allow it the script runs again
+from the start with its earlier calls replayed, not repeated. See [`eval`](tools.md#eval) for what a script
+must do to be replayed, and `[tools.eval] background_approval` and `background_pause_secs` in
+[configuration](configuration.md).
+
 Start with `--mode auto` (or with allow rules) when the work should not wait for you.
 
 ### Attaching
