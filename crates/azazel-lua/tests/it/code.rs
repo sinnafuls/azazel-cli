@@ -78,6 +78,16 @@ impl Bench {
 
     /// Like `new`, with `background_max_secs` for background scripts.
     fn with_cap(mode: &str, limits: CodeLimits, cap_secs: u64) -> Bench {
+        Bench::with_eval(
+            mode,
+            limits,
+            azazel_tools::eval::EvalSettings::from_switches(true, true, true)
+                .with_background_max_secs(cap_secs),
+        )
+    }
+
+    /// Like `new`, with the settings `eval` is built from.
+    fn with_eval(mode: &str, limits: CodeLimits, eval: azazel_tools::eval::EvalSettings) -> Bench {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         let home = dir.path().join("home");
@@ -99,10 +109,7 @@ impl Bench {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
-        services.insert(Arc::new(
-            azazel_tools::eval::EvalSettings::from_switches(true, true, true)
-                .with_background_max_secs(cap_secs),
-        ));
+        services.insert(Arc::new(eval));
         let registry = Arc::new(Registry::new(ExtCtx {
             services: services.clone(),
             cwd: paths.cwd.clone(),
@@ -617,13 +624,19 @@ async fn parallel_runs_calls_at_the_same_time_and_returns_results_in_their_place
         started.elapsed()
     );
     assert_eq!(output.details, Some(json!({ "tool_calls": 6 })));
-    // Every call passed the gate under an id of its own.
+    // Every call passed the gate under an id of its own: the place of the `parallel` call, the
+    // branch, and the call in the branch.
     let mut seen = bench.seen();
     seen.sort();
     assert_eq!(
         seen,
         [
-            "nap c1.1", "nap c1.2", "nap c1.3", "nap c1.4", "nap c1.5", "nap c1.6"
+            "nap c1.1.1.1",
+            "nap c1.1.2.1",
+            "nap c1.1.3.1",
+            "nap c1.1.4.1",
+            "nap c1.1.5.1",
+            "nap c1.1.6.1"
         ]
     );
 
@@ -689,6 +702,39 @@ async fn parallel_runs_calls_at_the_same_time_and_returns_results_in_their_place
     assert_eq!(
         wrong.text_content(),
         "script error: parallel: every entry must be a function; entry `1` is not"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn calls_in_parallel_branches_get_their_call_ids_from_their_place_not_their_timing() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    bench.registry.tools.add("test", Slow::new("nap", Access::Read));
+    // Branch 1 is slow to start its second call and branch 2 is quick: the ids still follow the
+    // branches, and a call after the `parallel` goes on counting at the top level.
+    let output = bench
+        .run(
+            r#"
+            local first = tools.nap({ n = 1 })
+            local got = parallel({
+                function() return tools.nap({ n = 2 }) .. tools.nap({ n = 3 }) end,
+                function() return tools.nap({ n = 4 }) end,
+            })
+            return first .. " " .. got[1] .. " " .. got[2] .. " " .. tools.nap({ n = 5 })
+            "#,
+        )
+        .await;
+    assert_eq!(output.text_content(), "10 2030 40 50");
+    let mut seen = bench.seen();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            "nap c1.1",
+            "nap c1.2.1.1",
+            "nap c1.2.1.2",
+            "nap c1.2.2.1",
+            "nap c1.3"
+        ]
     );
 }
 
@@ -1135,31 +1181,85 @@ async fn start_background(bench: &Bench, code: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_background_script_is_denied_instead_of_asking_even_when_a_user_is_present() {
+async fn a_background_script_pauses_at_a_call_that_needs_approval_and_goes_on_once_allowed() {
     let bench = Bench::new("manual", CodeLimits::default());
     let user = Arc::new(Approver {
         asked: AtomicUsize::new(0),
     });
     bench.services.insert(Arc::new(Ui(user.clone())));
+    bench.write(
+        "a.txt", "one
+",
+    );
     let marker = bench.paths.project_root.join("ran.txt");
     let command = format!("echo ran > \"{}\"", marker.display());
 
     let id = start_background(
         &bench,
-        &format!("return tools.shell({{ command = {command:?} }})"),
+        &format!(
+            "local a = tools.read({{ path = 'a.txt' }}) tools.shell({{ command = {command:?} }}) return a"
+        ),
     )
     .await;
     let text = finished_job(&bench, &id).await;
+    assert!(text.contains(&format!("[{id}: finished")), "{text}");
+    assert!(text.contains("one"), "{text}");
+    assert_eq!(user.asked.load(Ordering::SeqCst), 1);
+    assert!(marker.exists());
+    // The read was replayed on the second pass, not made again: the gate saw it once.
+    let reads = bench
+        .seen()
+        .iter()
+        .filter(|call| call.starts_with("read "))
+        .count();
+    assert_eq!(reads, 1, "{:?}", bench.seen());
+    let shells = bench
+        .seen()
+        .iter()
+        .filter(|call| call.starts_with("shell "))
+        .count();
+    assert_eq!(
+        shells,
+        2,
+        "asked in pass one, run in pass two: {:?}",
+        bench.seen()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_nobody_present_or_background_approval_deny_a_background_call_is_refused_as_before() {
+    let marker_of = |bench: &Bench| bench.paths.project_root.join("ran.txt");
+    let script = |bench: &Bench| {
+        let command = format!("echo ran > \"{}\"", marker_of(bench).display());
+        format!("return select(2, pcall(tools.shell, {{ command = {command:?} }}))")
+    };
+
+    // Nobody present: the default bridge is Headless.
+    let bench = Bench::new("manual", CodeLimits::default());
+    let id = start_background(&bench, &script(&bench)).await;
+    let text = finished_job(&bench, &id).await;
     assert!(text.contains("needed approval"), "{text}");
     assert!(text.contains("foreground"), "{text}");
-    assert!(text.contains(&format!("[{id}: failed")), "{text}");
+    assert!(!marker_of(&bench).exists());
+
+    // Somebody present, but the setting says deny: the user is never asked.
+    let bench = Bench::with_eval(
+        "manual",
+        CodeLimits::default(),
+        azazel_tools::eval::EvalSettings::from_switches(true, true, true).with_background_approvals(false, 0),
+    );
+    let user = Arc::new(Approver {
+        asked: AtomicUsize::new(0),
+    });
+    bench.services.insert(Arc::new(Ui(user.clone())));
+    let id = start_background(&bench, &script(&bench)).await;
+    let text = finished_job(&bench, &id).await;
+    assert!(text.contains("needed approval"), "{text}");
     assert_eq!(user.asked.load(Ordering::SeqCst), 0);
-    assert!(!marker.exists());
+    assert!(!marker_of(&bench).exists());
 
     // The same call in the foreground does ask, and runs once approved.
-    let foreground = bench
-        .run(&format!("return tools.shell({{ command = {command:?} }})"))
-        .await;
+    let foreground = bench.run(&script(&bench)).await;
     assert!(!foreground.is_error, "{}", foreground.text_content());
     assert_eq!(user.asked.load(Ordering::SeqCst), 1);
 }

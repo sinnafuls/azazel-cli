@@ -1,8 +1,9 @@
 //! The Luau engine behind `eval`'s `luau` language: a script that calls the harness's tools, so an
 //! agent can do a job of several steps in one call and get back only what it asks for.
 
+use std::collections::BTreeSet;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -13,10 +14,11 @@ use azazel_core::Post;
 use azazel_core::config::CodeFirstListing;
 use azazel_core::hooks::Wake;
 use azazel_core::scripts::{SavedScript, Scripts};
-use azazel_core::toolcall::{Background, Luau, LuauEngine, unattended};
+use azazel_core::toolcall::{Background, Deferral, Luau, LuauEngine, deferring};
 use azazel_core::transcript::activity;
 use azazel_core::{
-    ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch,
+    ApprovalDecision, ApprovalRequest, ArtifactStore, EntryKind, ExtError, Extension, Registrar,
+    SessionStore, ToolCaller, Ui, toolsearch,
 };
 use azazel_team::{MemberState, Team};
 use azazel_tools::{Jobs, TaskEnd};
@@ -27,6 +29,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::convert::{from_lua, to_lua, tool_input};
+use crate::replay::{Journal, Kind, Lookup, Outcome, Site};
 use crate::script::{describe, locked};
 
 /// The tool a script runs in; it cannot call itself.
@@ -74,7 +77,7 @@ const INTRO: &str = "`language: \"luau\"` runs a script that calls your other to
      `tools.search(query)` finds tools not listed below and the user's saved scripts, which \
      `tools.run(name, input)` runs; `tools.describe(name)` returns a tool's description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
      model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
-     In the background a call that needs the user's answer is refused. \
+     In the background a call that needs the user's approval pauses the script; once approved it runs again from the start with earlier results replayed, so make the same calls in the same order and wrap os.time or math.random in `step(name, fn)`. \
      `eval` and the agent tools cannot be called through `tools`.";
 
 /// What bounds one script.
@@ -304,6 +307,63 @@ struct Run {
     /// Held shared by a call that may run beside others and alone by one that may not, so the
     /// calls of a `parallel` keep the order an agent's own calls would.
     turns: tokio::sync::RwLock<()>,
+    /// What the earlier passes of a background run that can pause did; `None` in the foreground
+    /// and in a run that cannot pause.
+    journal: Option<Arc<Journal>>,
+    /// What the gate does at a call that needs approval; set in every background run.
+    deferral: Option<Arc<Deferral>>,
+    pass: PassState,
+}
+
+/// What happens in one pass of a script that can pause.
+#[derive(Default)]
+struct PassState {
+    /// A call paused the run or the run diverged: no call may start any more.
+    stopping: AtomicBool,
+    /// Calls that were started and have not settled.
+    in_flight: AtomicUsize,
+    settled: tokio::sync::Notify,
+    paused: tokio::sync::Notify,
+    pending: Mutex<Option<(Site, ApprovalRequest)>>,
+    diverged: Mutex<Option<String>>,
+    /// The places of the calls this pass made.
+    seen: Mutex<BTreeSet<Site>>,
+}
+
+/// Where the script is among the branches of `parallel`: calls take their places from it.
+struct Branch {
+    path: Vec<u32>,
+    next: AtomicU32,
+}
+
+impl Branch {
+    fn new(path: Vec<u32>) -> Arc<Branch> {
+        Arc::new(Branch {
+            path,
+            next: AtomicU32::new(0),
+        })
+    }
+}
+
+tokio::task_local! {
+    static BRANCH: Arc<Branch>;
+    /// Set while the function of a `step` runs.
+    static IN_STEP: ();
+}
+
+/// The place of the next call of the branch the code asking runs in.
+fn next_site() -> Site {
+    BRANCH
+        .try_with(|branch| {
+            let mut path = branch.path.clone();
+            path.push(branch.next.fetch_add(1, Ordering::SeqCst) + 1);
+            Site(path)
+        })
+        .unwrap_or_else(|_| Site(vec![0]))
+}
+
+fn in_step() -> bool {
+    IN_STEP.try_with(|_| ()).is_ok()
 }
 
 fn runtime(message: impl std::fmt::Display) -> mlua::Error {
@@ -311,6 +371,91 @@ fn runtime(message: impl std::fmt::Display) -> mlua::Error {
 }
 
 impl Run {
+    fn new(
+        ctx: ToolCtx,
+        caller: Arc<ToolCaller>,
+        limits: CodeLimits,
+        width: usize,
+        journal: Option<Arc<Journal>>,
+        deferral: Option<Arc<Deferral>>,
+    ) -> Run {
+        Run {
+            ctx,
+            caller,
+            limits,
+            calls: AtomicUsize::new(0),
+            printed: Mutex::default(),
+            dropped: AtomicUsize::new(0),
+            limit: Mutex::default(),
+            width,
+            turns: tokio::sync::RwLock::default(),
+            journal,
+            deferral,
+            pass: PassState::default(),
+        }
+    }
+
+    /// Ends this pass without a result: the call that asked never returns, and no other starts.
+    async fn halt(&self) -> Result<Value, String> {
+        self.pass.stopping.store(true, Ordering::SeqCst);
+        self.pass.paused.notify_one();
+        std::future::pending().await
+    }
+
+    /// Makes one call whose result steers the script: calls `live` with the call's place, or, in a
+    /// run that can pause, returns what an earlier pass recorded for the place. A call that the
+    /// gate wants approved ends the pass here. `counts` takes one of the script's calls.
+    async fn recorded<F, Fut>(&self, kind: Kind, args: Value, counts: bool, live: F) -> Result<Value, String>
+    where
+        F: FnOnce(Site) -> Fut,
+        Fut: Future<Output = Result<Value, String>>,
+    {
+        if in_step() {
+            return Err(format!("step: {kind} cannot be called inside a step"));
+        }
+        let site = next_site();
+        if counts {
+            self.count()?;
+        }
+        let Some(journal) = &self.journal else {
+            return live(site).await;
+        };
+        locked(&self.pass.seen).insert(site.clone());
+        match journal.lookup(&site, &kind, &args) {
+            Lookup::Replay(Outcome::Ok(value)) => return Ok(value),
+            Lookup::Replay(Outcome::Err(text)) => return Err(text),
+            Lookup::Diverged(text) => {
+                locked(&self.pass.diverged).get_or_insert(text);
+                return self.halt().await;
+            }
+            Lookup::Live | Lookup::Approved => {}
+        }
+        if self.pass.stopping.load(Ordering::SeqCst) {
+            return self.halt().await;
+        }
+        journal.begin(site.clone(), kind, args);
+        self.pass.in_flight.fetch_add(1, Ordering::SeqCst);
+        let result = live(site.clone()).await;
+        self.pass.in_flight.fetch_sub(1, Ordering::SeqCst);
+        self.pass.settled.notify_one();
+        let call_id = format!("{}.{site}", self.ctx.call_id);
+        if let Some(request) = self.deferral.as_ref().and_then(|d| d.take_pending(&call_id)) {
+            journal.pend(&site);
+            locked(&self.pass.pending).get_or_insert((site, request));
+            return self.halt().await;
+        }
+        let outcome = match &result {
+            Ok(value) => Outcome::Ok(value.clone()),
+            Err(text) => Outcome::Err(text.clone()),
+        };
+        if let Err(why) = journal.applied(&site, outcome)
+            && let Some(deferral) = &self.deferral
+        {
+            deferral.block(why);
+        }
+        result
+    }
+
     /// Called by the VM at every loop iteration and function call of the script.
     fn interrupt(&self) -> mlua::Result<VmState> {
         if self.ctx.cancel.is_cancelled() {
@@ -357,7 +502,15 @@ impl Run {
             return Err(format!("`{name}` cannot be called from a script"));
         }
         let input = tool_input(lua, args).map_err(|e| format!("tools.{name}: {}", describe(&e)))?;
-        Ok(self.gated(name, input).await?.text_content())
+        let live = input.clone();
+        let text = self
+            .recorded(Kind::Tool(name.to_string()), input, true, |site| async move {
+                self.gated(name, live, &site)
+                    .await
+                    .map(|output| Value::String(output.text_content()))
+            })
+            .await?;
+        Ok(text.as_str().unwrap_or_default().to_string())
     }
 
     /// Takes one of the script's calls; `Err` when it has used them up.
@@ -372,14 +525,13 @@ impl Run {
         Ok(number)
     }
 
-    /// One counted call of tool `name` through the gate, under a call id of its own. A call
-    /// that may run beside others does; one that may not (an edit, a command) waits until no
-    /// other call of the script is running.
-    async fn gated(&self, name: &str, input: Value) -> Result<ToolOutput, String> {
-        let number = self.count()?;
+    /// One call of tool `name` through the gate, under the call id of its place. A call that
+    /// may run beside others does; one that may not (an edit, a command) waits until no other
+    /// call of the script is running.
+    async fn gated(&self, name: &str, input: Value, site: &Site) -> Result<ToolOutput, String> {
         self.ctx.update.send(activity(name, &input));
         let ctx = ToolCtx {
-            call_id: format!("{}.{number}", self.ctx.call_id),
+            call_id: format!("{}.{site}", self.ctx.call_id),
             ..self.ctx.clone()
         };
         let shares = self
@@ -428,9 +580,12 @@ impl Run {
             .iter()
             .any(|tool| tool.name() == TOOL_SEARCH);
         if held_back {
-            let _ = self
-                .gated(TOOL_SEARCH, json!({ "query": query, "limit": limit }))
-                .await;
+            let site = next_site();
+            if self.count().is_ok() {
+                let _ = self
+                    .gated(TOOL_SEARCH, json!({ "query": query, "limit": limit }), &site)
+                    .await;
+            }
         }
         let tools = self.callable();
         let saved = self.saved();
@@ -592,34 +747,47 @@ impl Run {
         let Some(team) = team else {
             return Err(runtime(format!("{NAME}: this agent cannot start agents")));
         };
-        let output = self
-            .gated(TASK, json!({ "agents": [agent], "wait": true }))
+        let recorded = self
+            .recorded(Kind::Agent, agent.clone(), true, |site| async move {
+                let output = self
+                    .gated(TASK, json!({ "agents": [agent], "wait": true }), &site)
+                    .await
+                    .map_err(|why| why.trim_start_matches("task: ").to_string())?;
+                let finished = output
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.pointer("/agents/0/id"))
+                    .and_then(Value::as_str)
+                    .and_then(|id| team.result(id))
+                    .ok_or_else(|| "the agent left no result".to_string())?;
+                if finished.state != MemberState::Done {
+                    return Err(format!(
+                        "agent `{}` {}: {}",
+                        finished.id, finished.state, finished.report
+                    ));
+                }
+                let value = match finished.json.as_deref().map(serde_json::from_str::<Value>) {
+                    Some(Ok(value)) => value,
+                    _ => Value::String(finished.report),
+                };
+                Ok(json!([value, finished.id]))
+            })
             .await
-            .map_err(|why| runtime(format!("{NAME}: {}", why.trim_start_matches("task: "))))?;
-        let finished = output
-            .details
-            .as_ref()
-            .and_then(|details| details.pointer("/agents/0/id"))
-            .and_then(Value::as_str)
-            .and_then(|id| team.result(id))
-            .ok_or_else(|| runtime(format!("{NAME}: the agent left no result")))?;
-        if finished.state != MemberState::Done {
-            return Err(runtime(format!(
-                "{NAME}: agent `{}` {}: {}",
-                finished.id, finished.state, finished.report
-            )));
-        }
-        let value = match finished.json.as_deref().map(serde_json::from_str::<Value>) {
-            Some(Ok(value)) => to_lua(lua, &value)?,
-            _ => mlua::Value::String(lua.create_string(&finished.report)?),
-        };
-        Ok((value, finished.id))
+            .map_err(|why| runtime(format!("{NAME}: {why}")))?;
+        let id = recorded[1].as_str().unwrap_or_default().to_string();
+        Ok((to_lua(lua, &recorded[0])?, id))
     }
 
     /// `parallel`: runs every function of `calls` at once, at most `width` at a time, and
     /// returns what each returned first under the key its function had. All of them are
     /// waited for; the first failure is then raised.
     async fn parallel(&self, lua: &Lua, calls: Table) -> mlua::Result<Table> {
+        if in_step() {
+            return Err(runtime("step: parallel cannot be called inside a step"));
+        }
+        // The branches take their calls' places from this one's, so that a replay finds each call
+        // where it was whatever order the branches ran in.
+        let site = next_site();
         let mut keys = Vec::new();
         let mut functions: Vec<Function> = Vec::new();
         for pair in calls.pairs::<mlua::Value, mlua::Value>() {
@@ -633,14 +801,17 @@ impl Run {
             keys.push(key);
             functions.push(function);
         }
-        let results: Vec<mlua::Result<mlua::Value>> = futures::stream::iter(
-            functions
-                .into_iter()
-                .map(|function| function.call_async::<mlua::Value>(())),
-        )
-        .buffered(self.width)
-        .collect()
-        .await;
+        let results: Vec<mlua::Result<mlua::Value>> =
+            futures::stream::iter(functions.into_iter().enumerate().map(|(i, function)| {
+                let mut path = site.0.clone();
+                path.push(i as u32 + 1);
+                BRANCH.scope(Branch::new(path), async move {
+                    function.call_async::<mlua::Value>(()).await
+                })
+            }))
+            .buffered(self.width)
+            .collect()
+            .await;
         let out = lua.create_table()?;
         let mut failure = None;
         for (key, result) in keys.into_iter().zip(results) {
@@ -671,7 +842,7 @@ impl Run {
 
     /// `store`: records `value` under `key` where the conversation is now, so that later
     /// scripts on this branch of the session find it. `nil` forgets the key.
-    fn store(&self, lua: &Lua, key: String, value: mlua::Value) -> mlua::Result<()> {
+    async fn store(&self, lua: &Lua, key: String, value: mlua::Value) -> mlua::Result<()> {
         const NAME: &str = "store";
         if key.is_empty() || key.len() > MAX_KEY_BYTES {
             return Err(runtime(format!(
@@ -691,27 +862,58 @@ impl Run {
                  large data in a file and store its path"
             )));
         }
-        self.session(NAME)?.append(EntryKind::Custom {
-            custom_type: STORE_ENTRY.to_string(),
-            data: json!({ "key": key, "value": value }),
-        });
+        // On a replay the call is not repeated: the session gets the entry once.
+        self.recorded(Kind::Store, json!([key, value]), false, |_| async {
+            self.session(NAME)
+                .map_err(|e| describe(&e))?
+                .append(EntryKind::Custom {
+                    custom_type: STORE_ENTRY.to_string(),
+                    data: json!({ "key": key, "value": value }),
+                });
+            Ok(Value::Null)
+        })
+        .await
+        .map_err(runtime)?;
         Ok(())
     }
 
     /// `load`: what was last stored under `key` on this branch of the session, or nil.
-    fn load(&self, lua: &Lua, key: &str) -> mlua::Result<mlua::Value> {
-        let stored = self.session("load")?.latest(None, |entry| match &entry.kind {
-            EntryKind::Custom { custom_type, data }
-                if custom_type == STORE_ENTRY && data.get("key").and_then(Value::as_str) == Some(key) =>
-            {
-                Some(data.get("value").cloned().unwrap_or(Value::Null))
-            }
-            _ => None,
-        });
-        match stored {
-            Some(value) => to_lua(lua, &value),
-            None => Ok(mlua::Value::Nil),
-        }
+    async fn load(&self, lua: &Lua, key: &str) -> mlua::Result<mlua::Value> {
+        let stored = self
+            .recorded(Kind::Load, json!(key), false, |_| async {
+                let session = self.session("load").map_err(|e| describe(&e))?;
+                let stored = session.latest(None, |entry| match &entry.kind {
+                    EntryKind::Custom { custom_type, data }
+                        if custom_type == STORE_ENTRY
+                            && data.get("key").and_then(Value::as_str) == Some(key) =>
+                    {
+                        Some(data.get("value").cloned().unwrap_or(Value::Null))
+                    }
+                    _ => None,
+                });
+                Ok(stored.unwrap_or(Value::Null))
+            })
+            .await
+            .map_err(runtime)?;
+        to_lua(lua, &stored)
+    }
+
+    /// `step`: runs `function` and returns its value; in a background run the value is kept, so
+    /// that when the script runs again after an approval it is the same one.
+    async fn step(&self, lua: &Lua, name: String, function: Function) -> mlua::Result<mlua::Value> {
+        let value = self
+            .recorded(Kind::Step(name.clone()), Value::Null, false, |_| async {
+                let returned = IN_STEP
+                    .scope((), function.call_async::<mlua::Value>(()))
+                    .await
+                    .map_err(|e| describe(&e))?;
+                from_lua(lua, returned).map_err(|_| {
+                    format!("step `{name}`: the value must be nil, a boolean, a number, a string or a table")
+                })
+            })
+            .await
+            .map_err(runtime)?;
+        to_lua(lua, &value)
     }
 }
 
@@ -794,21 +996,46 @@ fn install(lua: &Lua, run: &Arc<Run>, depth: usize) -> mlua::Result<()> {
     let classify = lua.create_async_function(move |lua, args: (String, Vec<String>, Option<Table>)| {
         let state = state.clone();
         async move {
-            state.count().map_err(runtime)?;
-            state.ctx.update.send("classify".to_string());
-            let (services, agent, cancel) = (&state.ctx.services, &state.ctx.agent, state.ctx.cancel.clone());
-            crate::models::judge(&lua, services, agent, "classify", args, cancel).await
+            let options = match &args.2 {
+                Some(options) => from_lua(&lua, mlua::Value::Table(options.clone())).unwrap_or(Value::Null),
+                None => Value::Null,
+            };
+            let recorded = json!([args.0, args.1, options]);
+            let answer = state
+                .recorded(Kind::Classify, recorded, true, |_| async {
+                    state.ctx.update.send("classify".to_string());
+                    let (services, agent, cancel) =
+                        (&state.ctx.services, &state.ctx.agent, state.ctx.cancel.clone());
+                    let table = crate::models::judge(&lua, services, agent, "classify", args, cancel)
+                        .await
+                        .map_err(|e| describe(&e))?;
+                    from_lua(&lua, mlua::Value::Table(table)).map_err(|e| describe(&e))
+                })
+                .await
+                .map_err(runtime)?;
+            to_lua(&lua, &answer)
         }
     })?;
     lua.globals().set("classify", classify)?;
 
     let state = run.clone();
-    let store =
-        lua.create_function(move |lua, (key, value): (String, mlua::Value)| state.store(lua, key, value))?;
+    let store = lua.create_async_function(move |lua, (key, value): (String, mlua::Value)| {
+        let state = state.clone();
+        async move { state.store(&lua, key, value).await }
+    })?;
     lua.globals().set("store", store)?;
     let state = run.clone();
-    let load = lua.create_function(move |lua, key: String| state.load(lua, &key))?;
+    let load = lua.create_async_function(move |lua, key: String| {
+        let state = state.clone();
+        async move { state.load(&lua, &key).await }
+    })?;
     lua.globals().set("load", load)?;
+    let state = run.clone();
+    let step = lua.create_async_function(move |lua, (name, function): (String, Function)| {
+        let state = state.clone();
+        async move { state.step(&lua, name, function).await }
+    })?;
+    lua.globals().set("step", step)?;
 
     let state = run.clone();
     let print = lua.create_function(move |_, values: MultiValue| state.print(values))?;
@@ -851,11 +1078,24 @@ impl Future for Script<'_> {
     }
 }
 
-/// Runs `code` in a fresh sandboxed VM and returns what it printed and returned, or its error
-/// after what it printed.
-async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
+/// How one pass of a script ended.
+enum PassEnd {
+    Finished(String),
+    Failed(String),
+    /// A call needs the user's approval: the pass stopped there.
+    Paused {
+        site: Site,
+        request: ApprovalRequest,
+        printed: String,
+    },
+    /// The script did not repeat its earlier calls.
+    Diverged(String),
+}
+
+/// A VM with the globals of a script, and `code` loaded as its function.
+fn prepare(run: &Arc<Run>, code: String) -> Result<(Lua, Function), String> {
     let lua = Lua::new();
-    install(&lua, &run, 0).map_err(|e| describe(&e))?;
+    install(&lua, run, 0).map_err(|e| describe(&e))?;
     lua.sandbox(true).map_err(|e| describe(&e))?;
     let watched = run.clone();
     lua.set_interrupt(move |_| watched.interrupt());
@@ -865,22 +1105,53 @@ async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
         .set_mode(ChunkMode::Text)
         .into_function()
         .map_err(|e| describe(&e))?;
+    Ok((lua, function))
+}
 
+/// Runs `code` in a fresh sandboxed VM and returns what it printed and returned, or its error
+/// after what it printed.
+async fn execute(run: Arc<Run>, code: String) -> PassEnd {
+    BRANCH.scope(Branch::new(Vec::new()), run_pass(run, code)).await
+}
+
+async fn run_pass(run: Arc<Run>, code: String) -> PassEnd {
+    let (lua, function) = match prepare(&run, code) {
+        Ok(prepared) => prepared,
+        Err(why) => return PassEnd::Failed(why),
+    };
     let mut script = Script {
         call: function.call_async(()),
         run: &run,
         left: run.limits.script_time,
     };
+    enum Woke {
+        Returned(mlua::Result<MultiValue>),
+        Cancelled,
+        Halted,
+    }
     let cancel: CancellationToken = run.ctx.cancel.clone();
-    let finished = tokio::select! {
-        returned = &mut script => Some(returned),
-        _ = cancel.cancelled() => None,
+    let woke = tokio::select! {
+        returned = &mut script => Woke::Returned(returned),
+        _ = cancel.cancelled() => Woke::Cancelled,
+        _ = run.pass.paused.notified() => Woke::Halted,
     };
-    let returned = match finished {
-        Some(returned) => returned,
-        None => match tokio::time::timeout(CANCEL_GRACE, &mut script).await {
+    let returned = match woke {
+        Woke::Returned(returned) => Some(returned),
+        Woke::Cancelled => Some(match tokio::time::timeout(CANCEL_GRACE, &mut script).await {
             Ok(returned) => returned,
             Err(_) => Err(mlua::Error::runtime("cancelled")),
+        }),
+        // The calls that are running settle (and are recorded) before the VM is dropped: the
+        // script is polled until then, so that a sibling's side effect is not repeated.
+        Woke::Halted => loop {
+            if run.pass.in_flight.load(Ordering::SeqCst) == 0 {
+                break None;
+            }
+            tokio::select! {
+                returned = &mut script => break Some(returned),
+                _ = run.pass.settled.notified() => {}
+                _ = cancel.cancelled() => break None,
+            }
         },
     };
     drop(script);
@@ -892,19 +1163,40 @@ async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
             "[{dropped} more bytes of printed output were dropped]\n"
         ));
     }
+    if let Some(text) = locked(&run.pass.diverged).take() {
+        return PassEnd::Diverged(text);
+    }
+    if let Some((site, request)) = locked(&run.pass.pending).take() {
+        return PassEnd::Paused {
+            site,
+            request,
+            printed: out,
+        };
+    }
     match returned {
-        Ok(values) => {
+        Some(Ok(values)) => {
+            if let Some(text) = run
+                .journal
+                .as_ref()
+                .and_then(|journal| journal.unreached(&locked(&run.pass.seen)))
+            {
+                return PassEnd::Diverged(text);
+            }
             for value in values {
                 if let Some(text) = returned_text(&lua, value) {
                     out.push_str(&text);
                     out.push('\n');
                 }
             }
-            Ok(out.trim_end().to_string())
+            PassEnd::Finished(out.trim_end().to_string())
         }
-        Err(e) => {
+        Some(Err(e)) => {
             out.push_str(&format!("script error: {}", describe(&e)));
-            Err(out)
+            PassEnd::Failed(out)
+        }
+        None => {
+            out.push_str("script error: cancelled");
+            PassEnd::Failed(out)
         }
     }
 }
@@ -983,43 +1275,124 @@ impl LuauEngine for LuauEval {
             .services
             .get::<Team>()
             .map_or(PARALLEL, |team| team.max_parallel());
-        let run = Arc::new(Run {
-            ctx: job_ctx,
-            caller,
-            limits: self.limits,
-            calls: AtomicUsize::new(0),
-            printed: Mutex::default(),
-            dropped: AtomicUsize::new(0),
-            limit: Mutex::default(),
-            width,
-            turns: tokio::sync::RwLock::default(),
-        });
-        let (engine, owner) = (LuauEval { limits: self.limits }, ctx.clone());
+        // A script pauses only when somebody can answer; otherwise what needs approval is refused.
+        let ui = ctx.services.get::<Ui>().filter(|ui| ui.0.present());
+        let pause = background.pause && ui.is_some();
+        let deferral = Deferral::new(pause);
+        let journal = pause.then(|| Arc::new(Journal::default()));
+        let (engine, owner, limits) = (LuauEval { limits: self.limits }, ctx.clone(), self.limits);
+        let job_id = id.clone();
         tokio::spawn(async move {
             let runtime = tokio::runtime::Handle::current();
-            let state = run.clone();
-            let mut work =
-                tokio::task::spawn_blocking(move || runtime.block_on(unattended(execute(state, code))));
             let mut timed_out = false;
-            let limit = async {
-                if max.is_zero() {
-                    std::future::pending::<()>().await;
-                } else {
-                    tokio::time::sleep(max).await;
+            let mut paused = 0usize;
+            // Time spent running passes; time spent waiting for an answer does not count.
+            let mut spent = Duration::ZERO;
+            let (mut text, mut end) = loop {
+                let run = Arc::new(Run::new(
+                    job_ctx.clone(),
+                    caller.clone(),
+                    limits,
+                    width,
+                    journal.clone(),
+                    Some(deferral.clone()),
+                ));
+                let (state, scope, rt, source) = (run, deferral.clone(), runtime.clone(), code.clone());
+                let started = Instant::now();
+                let mut work = tokio::task::spawn_blocking(move || {
+                    rt.block_on(deferring(scope, execute(state, source)))
+                });
+                let limit = async {
+                    if max.is_zero() {
+                        std::future::pending::<()>().await;
+                    } else {
+                        tokio::time::sleep(max.saturating_sub(spent)).await;
+                    }
+                };
+                let finished = tokio::select! {
+                    finished = &mut work => finished,
+                    _ = limit => {
+                        timed_out = true;
+                        token.cancel();
+                        (&mut work).await
+                    }
+                };
+                spent += started.elapsed();
+                let (site, mut request, printed) = match finished {
+                    Ok(PassEnd::Finished(text)) => break (text, TaskEnd::Finished),
+                    Ok(PassEnd::Failed(text)) | Ok(PassEnd::Diverged(text)) => break (text, TaskEnd::Failed),
+                    Err(_) => break ("the script could not be run".to_string(), TaskEnd::Failed),
+                    Ok(PassEnd::Paused {
+                        site,
+                        request,
+                        printed,
+                    }) => (site, request, printed),
+                };
+                if timed_out || token.is_cancelled() {
+                    break (printed, TaskEnd::Killed);
                 }
-            };
-            let finished = tokio::select! {
-                finished = &mut work => finished,
-                _ = limit => {
-                    timed_out = true;
-                    token.cancel();
-                    (&mut work).await
+                let Some(ui) = ui.clone() else {
+                    break (
+                        format!("{} needed approval and nobody answered", request.tool),
+                        TaskEnd::Failed,
+                    );
+                };
+                paused += 1;
+                let tool = request.tool.clone();
+                let call_id = format!("{}.{site}", job_ctx.call_id);
+                request.job = Some(job_id.clone());
+                let earlier = journal.as_ref().map_or(0, |journal| journal.replayed());
+                let replay = format!(
+                    "approving runs the script again from the start; its {earlier} earlier calls are replayed, not repeated"
+                );
+                request.note = Some(match request.note.take() {
+                    Some(note) => format!("{note}; {replay}"),
+                    None => replay,
+                });
+                job.set_waiting(Some(format!("approval of {tool}")));
+                let waited = async {
+                    if background.pause_max.is_zero() {
+                        std::future::pending::<()>().await;
+                    } else {
+                        tokio::time::sleep(background.pause_max).await;
+                    }
+                };
+                let answer = tokio::select! {
+                    answer = ui.0.approval(request) => Some(answer),
+                    _ = token.cancelled() => None,
+                    _ = waited => {
+                        job.set_waiting(None);
+                        break (
+                            format!(
+                                "waited {} s for approval of {tool} (tools.eval.background_pause_secs)",
+                                background.pause_max.as_secs()
+                            ),
+                            TaskEnd::Failed,
+                        );
+                    }
+                };
+                job.set_waiting(None);
+                match answer {
+                    None => break (String::new(), TaskEnd::Killed),
+                    Some(Some(
+                        decision @ (ApprovalDecision::AllowOnce
+                        | ApprovalDecision::AllowSession
+                        | ApprovalDecision::Always),
+                    )) => deferral.decide(&call_id, &tool, decision),
+                    Some(Some(ApprovalDecision::Deny { feedback })) => {
+                        let mut text = format!("the user denied {tool} (call {site})");
+                        if let Some(feedback) = feedback.filter(|feedback| !feedback.trim().is_empty()) {
+                            text.push_str(&format!(": {feedback}"));
+                        }
+                        break (text, TaskEnd::Failed);
+                    }
+                    Some(None) => {
+                        break (
+                            format!("{tool} needed approval and nobody answered"),
+                            TaskEnd::Failed,
+                        );
+                    }
                 }
-            };
-            let (mut text, mut end) = match finished {
-                Ok(Ok(text)) => (text, TaskEnd::Finished),
-                Ok(Err(text)) => (text, TaskEnd::Failed),
-                Err(_) => ("the script could not be run".to_string(), TaskEnd::Failed),
             };
             if timed_out {
                 end = TaskEnd::TimedOut;
@@ -1042,6 +1415,11 @@ stopped after {} (tools.eval.background_max_secs)",
                 TaskEnd::Killed => "killed",
             };
             let text = engine.bounded(&owner, text);
+            let label = match paused {
+                0 => label,
+                1 => format!("{label} (paused once)"),
+                n => format!("{label} (paused {n} times)"),
+            };
             wake_agent(
                 &owner.services,
                 &owner.agent,
@@ -1065,17 +1443,7 @@ stopped after {} (tools.eval.background_max_secs)",
             .services
             .get::<Team>()
             .map_or(PARALLEL, |team| team.max_parallel());
-        let run = Arc::new(Run {
-            ctx: ctx.clone(),
-            caller,
-            limits: self.limits,
-            calls: AtomicUsize::new(0),
-            printed: Mutex::default(),
-            dropped: AtomicUsize::new(0),
-            limit: Mutex::default(),
-            width,
-            turns: tokio::sync::RwLock::default(),
-        });
+        let run = Arc::new(Run::new(ctx.clone(), caller, self.limits, width, None, None));
         // On a thread of its own: a script that computes for a while must not hold up the
         // threads every other agent and the interface run on.
         let runtime = tokio::runtime::Handle::current();
@@ -1084,12 +1452,14 @@ stopped after {} (tools.eval.background_max_secs)",
         let calls = run.calls.load(Ordering::SeqCst).min(self.limits.tool_calls);
         let details = json!({ "tool_calls": calls });
         match finished {
-            Ok(Ok(text)) if text.is_empty() => {
+            Ok(PassEnd::Finished(text)) if text.is_empty() => {
                 ToolOutput::text("(the script printed and returned nothing)").with_details(details)
             }
-            Ok(Ok(text)) => ToolOutput::text(self.bounded(ctx, text)).with_details(details),
-            Ok(Err(text)) => ToolOutput::error(self.bounded(ctx, text)).with_details(details),
-            Err(_) => ToolOutput::error("the script could not be run"),
+            Ok(PassEnd::Finished(text)) => ToolOutput::text(self.bounded(ctx, text)).with_details(details),
+            Ok(PassEnd::Failed(text)) | Ok(PassEnd::Diverged(text)) => {
+                ToolOutput::error(self.bounded(ctx, text)).with_details(details)
+            }
+            Ok(PassEnd::Paused { .. }) | Err(_) => ToolOutput::error("the script could not be run"),
         }
     }
 }
