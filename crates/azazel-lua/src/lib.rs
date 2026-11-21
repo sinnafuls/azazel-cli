@@ -11,6 +11,7 @@ mod confine;
 mod convert;
 mod host;
 mod models;
+mod replay;
 mod script;
 
 use std::path::PathBuf;
