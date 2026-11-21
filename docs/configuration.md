@@ -177,6 +177,7 @@ thinking = "low"
 | | `login_max_tokens` | `300000` | On a subscription login, old tool results are elided and the context summarised as if the model's window held at most this many tokens, since every request counts against the usage window by its size; `0` uses the model's whole window |
 | `[team]` | `max_parallel` | `4` | Sub-agents running at once; see [team](team.md) |
 | | `max_depth` | `2` | How deep agents may spawn agents |
+| | `wait_secs` | `300` | Seconds a `task` call waits for its agents before it returns and they report as messages; `0` waits for all of them |
 | | `max_turns` | `200` | Requests per task for a sub-agent whose definition sets no `max-turns`; `0` is no limit |
 | | `agent_retention_days` | `14` | Days a finished sub-agent stays in the [agent hub](tui.md#the-agent-hub); after that its transcript file is deleted at the next start. `0` keeps them as long as the session |
 | | `coordinator` | `false` | The lead only plans and delegates; see [coordinator mode](team.md#coordinator-mode) |
