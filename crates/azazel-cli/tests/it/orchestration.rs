@@ -449,7 +449,8 @@ fn two_workers(wait: bool) -> Value {
     })
 }
 
-const WORKER: &str = "---\nname: worker\ndescription: Does what it is told.\ntools: read\n---\nYou are a worker.\n";
+const WORKER: &str =
+    "---\nname: worker\ndescription: Does what it is told.\ntools: read\n---\nYou are a worker.\n";
 
 /// Every request of `model` the sandbox recorded, with its messages as one string.
 fn messages_of(sandbox: &Sandbox, model: &str) -> Vec<String> {
@@ -476,7 +477,8 @@ fn a_task_call_that_finds_no_free_slot_returns_at_once_and_the_parent_hears_when
             text("last"),
         ],
         "w1": [{ "delay_ms": 1500, "reply": { "text": "one done" } }],
-        "w2": [text("two done")],
+        // Slow enough that the lead is idle again after hearing that it started.
+        "w2": [{ "delay_ms": 800, "reply": { "text": "two done" } }],
     });
     let output = sandbox.print(&script, &["--set", "team.max_parallel=1", "--mode", "auto", "go"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -484,7 +486,8 @@ fn a_task_call_that_finds_no_free_slot_returns_at_once_and_the_parent_hears_when
     let lead = messages_of(&sandbox, "lead");
     // The call came back before worker-1 was done, naming who runs and who waits.
     assert!(
-        lead[1].contains("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees)."),
+        lead[1]
+            .contains("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees)."),
         "{}",
         lead[1]
     );
@@ -517,7 +520,8 @@ fn a_queued_agent_is_stopped_before_it_starts_and_wait_false_names_it_queued() {
 
     let lead = messages_of(&sandbox, "lead");
     assert!(
-        lead[1].contains("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees)."),
+        lead[1]
+            .contains("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees)."),
         "{}",
         lead[1]
     );
