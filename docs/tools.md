@@ -731,9 +731,12 @@ local hits = tools.grep{ pattern = "TODO", path = "src" }
 return tools.read{ path = "src/main.rs" }
 ```
 
-`eval`'s description lists those tools as one-line signatures, as many as fit in about 6000 characters, and
-the rest by name; `tools.describe(name)` gives the arguments of any of them. A script can also call a tool
-that is in the list. Tools that need a person's decision (`ask_user`, `task`) stay direct calls.
+`eval`'s description lists those tools by name only, with the tools of each MCP server counted on one line
+(`mcp__github (40 tools)`); `tools.search(query)` finds a tool and `tools.describe(name)` gives its arguments.
+With `code_first_listing = "signatures"` the description lists one-line signatures instead, as many as fit in
+about 6000 characters, and the rest by name; use it to measure what each listing costs. The description is
+built once and stays the same for the whole session, so the provider's prompt cache holds. A script can also
+call a tool that is in the list. Tools that need a person's decision (`ask_user`, `task`) stay direct calls.
 
 - The list and the description are fixed for the session, so the provider's prompt cache stays valid. An MCP
   server that connects after the description was built is not in it; reach its tools with `tools.search` or
@@ -892,6 +895,7 @@ background_max_secs = 7200            # longest a background Luau script may run
 |---|---|---|
 | `disabled` | `[]` | Tools removed for every agent, by name (also MCP and extension tools) |
 | `code_first` | `false` | Full schemas only for a core of tools; the rest are called from Luau `eval` scripts; see [code-first mode](#code-first-mode) |
+| `code_first_listing` | `"names"` | How `eval`'s description lists the tools code-first mode hides: `names` (by name, MCP tools counted per server) or `signatures` (one-line signatures); see [code-first mode](#code-first-mode) |
 | `defer` | MCP tools and seldom used built-in tools | Tools kept out of the prompt until the model searches for them; see [deferred tools](#deferred-tools) |
 | `max_result_bytes` | `50000` | Size above which a result is cut and spilled to an artifact |
 | `shell_timeout_secs` | `120` | Timeout of a `shell` call without `timeout_secs` |
