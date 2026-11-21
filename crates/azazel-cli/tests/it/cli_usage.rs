@@ -267,3 +267,32 @@ fn browser_open_says_it_waits_for_the_window_before_it_does() {
         stderr(&output)
     );
 }
+
+#[test]
+fn scripts_list_show_and_delete_work_on_the_saved_scripts_of_the_user() {
+    let sandbox = Sandbox::new();
+    let dir = sandbox.dir.path().join("home/scripts");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("hello.luau"),
+        "---\ndescription: Say hello\n---\nreturn \"hi\"\n",
+    )
+    .unwrap();
+
+    let listed = sandbox.azazel(&["scripts", "list"]);
+    assert!(listed.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&listed.stdout).trim(),
+        "hello  (user)  Say hello"
+    );
+    let shown = String::from_utf8_lossy(&sandbox.azazel(&["scripts", "show", "hello"]).stdout).into_owned();
+    assert!(
+        shown.contains("description: Say hello") && shown.contains("return \"hi\""),
+        "{shown}"
+    );
+    assert!(sandbox.azazel(&["scripts", "delete", "hello"]).status.success());
+    assert!(!dir.join("hello.luau").exists());
+    let missing = sandbox.azazel(&["scripts", "show", "hello"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("there is no saved script `hello`"));
+}

@@ -835,3 +835,31 @@ fn job_kill_stops_a_background_script_and_the_lead_is_told() {
     assert!(woken.contains("[lua-1: killed]"), "{woken}");
     assert_eq!(sandbox.results()[1], "stopping lua-1");
 }
+
+#[cfg(feature = "lua")]
+#[test]
+fn a_scripted_eval_runs_a_saved_script_with_input_and_the_description_names_tools_run() {
+    let sandbox = Sandbox::new();
+    std::fs::write(sandbox.project().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    let saved = sandbox.home().join("scripts");
+    std::fs::create_dir_all(&saved).unwrap();
+    std::fs::write(
+        saved.join("count-lines.luau"),
+        "---\ndescription: Count the lines of a file\n---\n-- input: { path: string }\nlocal n = 0\nfor _ in string.gmatch(tools.read({ path = input.path }), \"[^\\n]+\") do n += 1 end\nreturn n\n",
+    )
+    .unwrap();
+    let code = r#"
+        local n, err = tools.run("count-lines", { path = "a.txt" })
+        local hit = tools.search("count lines of a file", 3)[1]
+        return tostring(n) .. " " .. tostring(err) .. " " .. hit.name .. " " .. hit.kind
+    "#;
+    let script = calls(&[("eval", json!({ "language": "luau", "code": code }))]);
+    let output = sandbox.azazel(&script, &["--mode", "auto"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(sandbox.results(), ["3 nil count-lines script"]);
+    let requests = sandbox.requests();
+    let description = tool(&requests[0], "eval").unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(description.contains("tools.run(name, input)"), "{description}");
+}
