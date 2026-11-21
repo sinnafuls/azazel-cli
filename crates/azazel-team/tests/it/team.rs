@@ -396,8 +396,13 @@ async fn agents_of_one_task_call_run_in_parallel_up_to_the_limit() {
             "{reports}"
         );
     }
-    let (serial, _) = three_nappers(1).await;
-    assert!(serial > Duration::from_millis(800), "took {serial:?}");
+    // With one slot the call does not wait for the queue: it names the agents that wait their turn.
+    let (serial, text) = three_nappers(1).await;
+    assert!(serial < Duration::from_millis(300), "took {serial:?}");
+    assert!(
+        text.starts_with("started: worker-1. queued: worker-2, worker-3"),
+        "{text}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
