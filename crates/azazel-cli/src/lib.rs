@@ -61,6 +61,7 @@ pub mod rules;
 pub mod running;
 #[cfg(feature = "detach")]
 pub mod schedule;
+pub mod scripts_cli;
 pub mod secrets;
 pub mod sessions;
 pub mod settings;
@@ -374,6 +375,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return code;
         }
         Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
+        Some(Sub::Scripts { action }) => return scripts_cli::run(action, &paths, trusted),
         #[cfg(feature = "lsp")]
         Some(Sub::Lsp { action }) => return lsp_cli::run(action, &paths, trusted).await,
         #[cfg(feature = "browser")]

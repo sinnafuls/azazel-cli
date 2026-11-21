@@ -573,6 +573,11 @@ pub enum Sub {
         #[command(subcommand)]
         action: RulesAction,
     },
+    /// List, show and delete the saved Luau scripts that `eval` scripts run with `tools.run`
+    Scripts {
+        #[command(subcommand)]
+        action: ScriptsAction,
+    },
     /// Serve one session to another program: JSON lines on standard input and output
     Rpc {
         /// Instead of a session of its own, connect standard input and output to this
@@ -778,6 +783,22 @@ pub enum BrowserAction {
     Open {
         /// An http or https address to open the window on
         url: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ScriptsAction {
+    /// Show every saved script and where it comes from
+    List,
+    /// Print one script with its description and source
+    Show {
+        /// The script's name
+        name: String,
+    },
+    /// Delete one script's file
+    Delete {
+        /// The script's name
+        name: String,
     },
 }
 
