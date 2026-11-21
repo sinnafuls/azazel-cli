@@ -1173,6 +1173,7 @@ const LIGHT_COMMANDS: &[&str] = &[
     "migrate",
     "pkg",
     "skills",
+    "scripts",
     "lsp",
     "browser",
     "rules",
