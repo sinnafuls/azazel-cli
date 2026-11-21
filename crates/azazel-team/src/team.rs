@@ -940,7 +940,11 @@ impl Inner {
                     member.state = MemberState::Running {
                         activity: "starting".to_string(),
                     };
-                    (member.notify_parent, member.info.parent.clone(), member.started.elapsed())
+                    (
+                        member.notify_parent,
+                        member.info.parent.clone(),
+                        member.started.elapsed(),
+                    )
                 })
         };
         if let Some((notify, parent, waited)) = waited {

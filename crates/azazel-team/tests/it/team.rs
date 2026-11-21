@@ -1531,9 +1531,10 @@ fn two_workers(bench: &Bench, wait: bool, nap_ms: u64) {
         { "agent": "worker", "prompt": "second", "model": "mock/w2" }
     ]);
     bench.lead_calls("t1", "task", json!({ "agents": agents, "wait": wait }));
-    bench
-        .mock
-        .push("w1", MockStep::tools("", &[("n", "nap", json!({ "ms": nap_ms }))]));
+    bench.mock.push(
+        "w1",
+        MockStep::tools("", &[("n", "nap", json!({ "ms": nap_ms }))]),
+    );
     bench.mock.push("w1", MockStep::text("one done"));
     bench.mock.push("w2", MockStep::text("two done"));
 }
@@ -1559,21 +1560,41 @@ async fn a_task_call_with_no_free_slot_returns_at_once_and_the_start_of_the_queu
     let calls = bench.run("go").await;
     assert!(!calls[0].1, "{}", calls[0].2);
     assert!(calls[0].3 < Duration::from_millis(500), "waited {:?}", calls[0].3);
-    assert!(calls[0].2.starts_with("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees). "), "{}", calls[0].2);
-    assert!(calls[0].2.contains("agent_wait") && calls[0].2.contains("agent_stop"), "{}", calls[0].2);
+    assert!(
+        calls[0].2.starts_with(
+            "started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees). "
+        ),
+        "{}",
+        calls[0].2
+    );
+    assert!(
+        calls[0].2.contains("agent_wait") && calls[0].2.contains("agent_stop"),
+        "{}",
+        calls[0].2
+    );
     assert_eq!(bench.state("worker-2"), MemberState::Queued);
 
     // Both go on in the background; the lead hears that worker-2 started, and both reports.
     until_state(&bench, "worker-2", MemberState::is_finished).await;
     let started = Instant::now();
     while !lead_inbox(&bench).contains("one done") || !lead_inbox(&bench).contains("two done") {
-        assert!(started.elapsed() < Duration::from_secs(10), "{}", lead_inbox(&bench));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{}",
+            lead_inbox(&bench)
+        );
         bench.until_idle().await;
     }
     let inbox = lead_inbox(&bench);
     let start = inbox.find("<agent-started id=\"worker-2\"").expect(&inbox);
-    assert!(inbox.find("<agent-result id=\"worker-1\"").unwrap() < start, "{inbox}");
-    assert!(start < inbox.find("<agent-result id=\"worker-2\"").unwrap(), "{inbox}");
+    assert!(
+        inbox.find("<agent-result id=\"worker-1\"").unwrap() < start,
+        "{inbox}"
+    );
+    assert!(
+        start < inbox.find("<agent-result id=\"worker-2\"").unwrap(),
+        "{inbox}"
+    );
     assert!(!inbox.contains("<agent-started id=\"worker-1\""), "{inbox}");
 }
 
@@ -1583,13 +1604,25 @@ async fn wait_false_names_the_started_and_the_queued_agents_apart() {
     two_workers(&bench, false, 300);
     bench.mock.push("lead", MockStep::text("ok"));
     let calls = bench.run("go").await;
-    assert!(calls[0].2.starts_with("started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees). "), "{}", calls[0].2);
+    assert!(
+        calls[0].2.starts_with(
+            "started: worker-1. queued: worker-2 (1 of 1 slots busy; it starts when one frees). "
+        ),
+        "{}",
+        calls[0].2
+    );
     // With a slot for each there is nothing queued to name.
     let mut roomy = Bench::new(4, false).await;
     two_workers(&roomy, false, 50);
     roomy.mock.push("lead", MockStep::text("ok"));
     let calls = roomy.run("go").await;
-    assert!(calls[0].2.starts_with("started: worker-1, worker-2. The call did not wait."), "{}", calls[0].2);
+    assert!(
+        calls[0]
+            .2
+            .starts_with("started: worker-1, worker-2. The call did not wait."),
+        "{}",
+        calls[0].2
+    );
     assert!(!calls[0].2.contains("queued:"), "{}", calls[0].2);
 }
 
