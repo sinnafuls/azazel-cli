@@ -84,6 +84,15 @@ const EDITOR: &str =
 /// Its result is typed by the definition itself.
 const COUNTER: &str = "---\nname: counter\ndescription: Counts things.\ntools: nap\noutput-schema:\n  type: object\n  \
                        properties:\n    count:\n      type: integer\n  required: [count]\n---\nYou count.\n";
+/// Starts workers of its own.
+const BOSS: &str = "---
+name: boss
+description: Hands work on.
+spawns: [worker]
+tools: nap
+---
+You delegate.
+";
 const FRAGILE: &str = "---\nname: fragile\ndescription: Has a fallback model.\nmodel: [\"mock/a\", \"mock/b\"]\n\
                        tools: nap\n---\nYou answer.\n";
 
@@ -128,6 +137,7 @@ impl Bench {
             ("editor", EDITOR),
             ("fragile", FRAGILE),
             ("counter", COUNTER),
+            ("boss", BOSS),
         ] {
             std::fs::write(agents.join(format!("{name}.md")), text).unwrap();
         }
@@ -1651,4 +1661,27 @@ async fn stopping_a_queued_agent_cancels_it_before_it_starts() {
     assert!(bench.mock.requests_for("w2").is_empty());
     until_state(&bench, "worker-1", |state| *state == MemberState::Done).await;
     assert!(bench.mock.requests_for("w2").is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_parent_waiting_for_its_queued_child_does_not_keep_the_only_slot() {
+    let bench = Bench::new(1, false).await;
+    spawn_for_lead(&bench, "boss", "delegate", "boss").await;
+    let agents = json!([{ "agent": "worker", "prompt": "child work", "model": "mock/kid" }]);
+    bench.mock.push(
+        "boss",
+        MockStep::tools("", &[("t", "task", json!({ "agents": agents, "wait": false }))]),
+    );
+    bench.mock.push(
+        "boss",
+        MockStep::tools("", &[("w", "agent_wait", json!({ "timeout_secs": 60 }))]),
+    );
+    // The start of the queued child reaches the boss as a message and wakes it once more.
+    for _ in 0..3 {
+        bench.mock.push("boss", MockStep::text("all handed in"));
+    }
+    bench.mock.push("kid", MockStep::text("child done"));
+    until_state(&bench, "worker-1", |state| *state == MemberState::Done).await;
+    until_state(&bench, "boss-1", MemberState::is_finished).await;
+    assert_eq!(bench.state("boss-1"), MemberState::Done);
 }

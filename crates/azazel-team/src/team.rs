@@ -367,6 +367,9 @@ struct Member {
     mail: bool,
     /// It found every slot taken and has not got one yet.
     queued: bool,
+    /// The `team.max_parallel` slot it works in; lent while it waits for agents of its own, so
+    /// that they can run, and dropped when it rests.
+    slot: Option<OwnedSemaphorePermit>,
     worktree: Option<Worktree>,
     patch: Option<PathBuf>,
     stop: CancellationToken,
@@ -972,6 +975,7 @@ impl Inner {
         // Messages sent while it was queued go with its prompt, so its first request has them.
         // The roster is held meanwhile: a later message finds the handle and comes after.
         self.update(&id, |member| {
+            member.slot = Some(slot);
             let mut content = UserInput::text(prompt).content;
             for input in std::mem::take(&mut member.pending) {
                 content.extend(input.content);
@@ -983,7 +987,6 @@ impl Inner {
             };
         });
 
-        let mut slot: Option<OwnedSemaphorePermit> = Some(slot);
         let mut said = String::new();
         while let Some(event) = events.recv().await {
             if let Some(member) = self.members().iter_mut().find(|member| member.info.id == id) {
@@ -995,10 +998,6 @@ impl Inner {
             });
             match event {
                 AgentEvent::AgentStart => {
-                    // A revived agent works even when every slot is taken; it takes one if it can.
-                    if slot.is_none() {
-                        slot = self.semaphore.clone().try_acquire_owned().ok();
-                    }
                     said.clear();
                     // Picked up again with a message: the earlier result no longer stands.
                     if let Some(typed) = &typed
@@ -1007,6 +1006,10 @@ impl Inner {
                         typed.reset();
                     }
                     self.update(&id, |member| {
+                        // A revived agent works even when every slot is taken; it takes one if it can.
+                        if member.slot.is_none() {
+                            member.slot = self.semaphore.clone().try_acquire_owned().ok();
+                        }
                         member.mail = false;
                         member.finished = None;
                         member.state = MemberState::Running {
@@ -1033,7 +1036,7 @@ impl Inner {
                     });
                 }
                 AgentEvent::Idle { stop: reason } => {
-                    slot = None;
+                    self.update(&id, |member| member.slot = None);
                     let stopped = reason == StopReason::Aborted || self.stop_requested(&id);
                     let said = std::mem::take(&mut said);
                     let json = typed.as_ref().and_then(|typed| typed.json());
@@ -1059,13 +1062,29 @@ impl Inner {
                     self.finish(&id, state, report, json).await;
                 }
                 AgentEvent::Failed { error } => {
-                    slot = None;
+                    self.update(&id, |member| member.slot = None);
                     self.finish(&id, MemberState::Failed(error.clone()), error, None)
                         .await;
                 }
                 _ => {}
             }
         }
+    }
+
+    /// Lends the slot of sub-agent `id` to the others while it waits for agents of its own: a
+    /// parent that kept it would starve the children queued behind it, and none would ever finish.
+    fn lend_slot(&self, id: &str) {
+        self.update(id, |member| member.slot = None);
+    }
+
+    /// Takes a slot back for `id` after a wait; with every slot taken it goes on without, as a
+    /// revived agent does.
+    fn reclaim_slot(&self, id: &str) {
+        self.update(id, |member| {
+            if member.slot.is_none() && member.active() {
+                member.slot = self.semaphore.clone().try_acquire_owned().ok();
+            }
+        });
     }
 
     fn stop_requested(&self, id: &str) -> bool {
@@ -1375,6 +1394,7 @@ impl Team {
                 MemberState::Queued
             },
             queued: slot.is_none(),
+            slot: None,
             handle: None,
             report: None,
             json: None,
@@ -1419,7 +1439,7 @@ impl Team {
     /// Waits until every agent in `ids` has finished and returns their results in that order.
     /// `None` when `cancel` fired first; the agents are stopped then.
     pub async fn wait_all(&self, ids: &[String], cancel: &CancellationToken) -> Option<Vec<Finished>> {
-        match self.wait_batch(ids, None, cancel).await {
+        match self.wait_batch(None, ids, None, cancel).await {
             WaitAll::Finished(results) => Some(results),
             _ => None,
         }
@@ -1430,10 +1450,29 @@ impl Team {
     /// the agents still running go on, their results reaching `caller` as messages.
     pub async fn wait_for(&self, caller: &AgentInfo, ids: &[String], cancel: &CancellationToken) -> WaitAll {
         let steering = self.inner.handle_of(&caller.id).map(|handle| handle.steering());
-        self.wait_batch(ids, steering, cancel).await
+        self.wait_batch(Some(caller), ids, steering, cancel).await
     }
 
+    /// Waits for `ids`; a sub-agent `caller` lends its slot meanwhile.
     async fn wait_batch(
+        &self,
+        caller: Option<&AgentInfo>,
+        ids: &[String],
+        steering: Option<watch::Receiver<u64>>,
+        cancel: &CancellationToken,
+    ) -> WaitAll {
+        let lent = caller.filter(|caller| caller.id != LEAD);
+        if let Some(caller) = lent {
+            self.inner.lend_slot(&caller.id);
+        }
+        let outcome = self.wait_batch_inner(ids, steering, cancel).await;
+        if let Some(caller) = lent {
+            self.inner.reclaim_slot(&caller.id);
+        }
+        outcome
+    }
+
+    async fn wait_batch_inner(
         &self,
         ids: &[String],
         mut steering: Option<watch::Receiver<u64>>,
@@ -1533,6 +1572,9 @@ impl Team {
             .push(entry.clone());
         let deadline = Instant::now() + timeout;
         let mut steering = inner.handle_of(&caller.id).map(|handle| handle.steering());
+        if caller.id != LEAD {
+            inner.lend_slot(&caller.id);
+        }
         let outcome = loop {
             if steering.as_mut().is_some_and(|rx| *rx.borrow_and_update() > 0) {
                 break WaitOutcome::Steered;
@@ -1587,9 +1629,14 @@ impl Team {
                 _ = tokio::time::timeout(POLL, inner.changed.notified()) => {}
             }
         };
-        let mut waiters = inner.waiters.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(at) = waiters.iter().position(|waiter| *waiter == entry) {
-            waiters.remove(at);
+        {
+            let mut waiters = inner.waiters.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = waiters.iter().position(|waiter| *waiter == entry) {
+                waiters.remove(at);
+            }
+        }
+        if caller.id != LEAD {
+            inner.reclaim_slot(&caller.id);
         }
         Ok(outcome)
     }
