@@ -365,6 +365,8 @@ struct Member {
     notify_parent: bool,
     /// A message was sent to this agent that it has not been handed yet.
     mail: bool,
+    /// It found every slot taken and has not got one yet.
+    queued: bool,
     worktree: Option<Worktree>,
     patch: Option<PathBuf>,
     stop: CancellationToken,
@@ -894,7 +896,7 @@ impl Inner {
 
     /// The life of one sub-agent: wait for a slot, start, then follow what it does until it is
     /// shut down.
-    async fn run_member(self: Arc<Self>, id: String, prompt: String) {
+    async fn run_member(self: Arc<Self>, id: String, prompt: String, slot: Option<OwnedSemaphorePermit>) {
         let Some((stop, typed)) = self
             .members()
             .iter()
@@ -907,10 +909,15 @@ impl Inner {
         if self.deps.routing.mode != ModelRouting::Off {
             self.route(&id, &prompt).await;
         }
-        let slot = tokio::select! {
-            permit = self.semaphore.clone().acquire_owned() => permit.ok(),
-            _ = stop.cancelled() => None,
+        let slot = match slot {
+            Some(slot) => Some(slot),
+            None => tokio::select! {
+                permit = self.semaphore.clone().acquire_owned() => permit.ok(),
+                _ = stop.cancelled() => None,
+            },
         };
+        // Stopped between being spawned and getting here, with a slot already in hand.
+        let slot = slot.filter(|_| !stop.is_cancelled());
         let Some(slot) = slot else {
             return self
                 .finish(
@@ -921,6 +928,30 @@ impl Inner {
                 )
                 .await;
         };
+        // An agent that had to wait is no longer queued, and its parent is told if it asked for
+        // its results as messages.
+        let waited = {
+            let mut members = self.members();
+            members
+                .iter_mut()
+                .find(|member| member.info.id == id && member.queued)
+                .map(|member| {
+                    member.queued = false;
+                    member.state = MemberState::Running {
+                        activity: "starting".to_string(),
+                    };
+                    (member.notify_parent, member.info.parent.clone(), member.started.elapsed())
+                })
+        };
+        if let Some((notify, parent, waited)) = waited {
+            self.announce();
+            if notify && let Some(parent) = parent.as_deref().and_then(|parent| self.handle_of(parent)) {
+                parent.follow_up(UserInput::text(format!(
+                    "<agent-started id=\"{id}\" queued=\"{}s\">it has a slot and is working</agent-started>",
+                    waited.as_secs()
+                )));
+            }
+        }
         let handle = match self.build(&id).await {
             Ok(handle) => handle,
             Err(why) => {
@@ -1323,13 +1354,23 @@ impl Team {
             .paths
             .agent_transcripts_dir(&session.id())
             .join(format!("{id}.jsonl"));
+        // Taken here, not in the agent's own task, so that the caller learns at once whether the
+        // agent has to wait.
+        let slot = inner.semaphore.clone().try_acquire_owned().ok();
         inner.members().push(Member {
             info,
             def,
             model: request.model,
             grant: request.tools,
             typed,
-            state: MemberState::Queued,
+            state: if slot.is_some() {
+                MemberState::Running {
+                    activity: "starting".to_string(),
+                }
+            } else {
+                MemberState::Queued
+            },
+            queued: slot.is_none(),
             handle: None,
             report: None,
             json: None,
@@ -1353,8 +1394,22 @@ impl Team {
         // The member holds the id now.
         drop(reservation);
         inner.announce();
-        tokio::spawn(inner.clone().run_member(id.clone(), prompt));
+        tokio::spawn(inner.clone().run_member(id.clone(), prompt, slot));
         Ok(id)
+    }
+
+    /// Whether agent `id` is still waiting for one of the `team.max_parallel` slots.
+    pub fn is_queued(&self, id: &str) -> bool {
+        self.inner
+            .members()
+            .iter()
+            .any(|member| member.info.id == id && member.queued && member.state == MemberState::Queued)
+    }
+
+    /// How many of the `team.max_parallel` slots are taken.
+    pub fn slots_busy(&self) -> usize {
+        self.max_parallel()
+            .saturating_sub(self.inner.semaphore.available_permits())
     }
 
     /// Waits until every agent in `ids` has finished and returns their results in that order.
@@ -1428,7 +1483,7 @@ impl Team {
 
     /// Ends a wait for `ids` early: what finished is returned, and the rest report to their
     /// parent as messages when they are done.
-    fn leave_running(&self, ids: &[String]) -> WaitAll {
+    pub(crate) fn leave_running(&self, ids: &[String]) -> WaitAll {
         let mut members = self.inner.members();
         let mut finished = Vec::new();
         let mut running = Vec::new();

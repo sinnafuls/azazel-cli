@@ -192,7 +192,8 @@ impl Tool for TaskTool {
          to report back. All agents of one call run in parallel. With `wait` (the default) the call returns \
          every agent's report; with `wait: false` it returns their ids at once and each report arrives later \
          as a message. Give an agent a `schema` when you need its result as data: it then reports a JSON \
-         value that matches the schema instead of prose."
+         value that matches the schema instead of prose. When an agent has to wait for a free slot the call \
+         returns at once and names the queued agents."
     }
 
     fn schema(&self) -> Value {
@@ -260,9 +261,15 @@ impl Tool for TaskTool {
             Err(why) => return ToolOutput::error(why),
         };
         let mut ids = Vec::new();
+        let mut queued = Vec::new();
         for request in requests {
             match team.spawn(&ctx.agent, request, !input.wait).await {
-                Ok(id) => ids.push(id),
+                Ok(id) => {
+                    if team.is_queued(&id) {
+                        queued.push(id.clone());
+                    }
+                    ids.push(id);
+                }
                 Err(why) => {
                     // All or nothing: a half-started batch would leave the caller guessing.
                     for id in &ids {
@@ -272,12 +279,21 @@ impl Tool for TaskTool {
                 }
             }
         }
-        if !input.wait {
-            return ToolOutput::text(format!(
-                "started: {}. Each result arrives as a message when it is ready; `agent_wait` blocks until \
-                 the next one.",
-                ids.join(", ")
-            ));
+        // With a slot short, waiting would block the caller behind agents that are not running
+        // yet: the call returns, and every agent of it reports as a message.
+        if !input.wait || !queued.is_empty() {
+            // Agents of a `wait: true` call were not set to report as messages; now they are.
+            let (finished, running) = match team.leave_running(&ids) {
+                WaitAll::Steered { finished, running } => (finished, running),
+                _ => (Vec::new(), ids.clone()),
+            };
+            let started: Vec<String> = running.into_iter().filter(|id| !queued.contains(id)).collect();
+            let mut out = placement_text(&started, &queued, team.slots_busy(), team.max_parallel());
+            for finished in &finished {
+                out.push_str("\n\n");
+                out.push_str(&result_section(finished));
+            }
+            return ToolOutput::text(out);
         }
         match team.wait_for(&ctx.agent, &ids, &ctx.cancel).await {
             WaitAll::Finished(results) => {
@@ -290,6 +306,30 @@ impl Tool for TaskTool {
             WaitAll::Cancelled => ToolOutput::error("cancelled; the agents this call started were stopped"),
         }
     }
+}
+
+/// Which agents of a `task` call run and which wait for a slot, and what the caller can do.
+fn placement_text(started: &[String], queued: &[String], busy: usize, slots: usize) -> String {
+    let mut out = String::new();
+    if !started.is_empty() {
+        out.push_str(&format!("started: {}. ", started.join(", ")));
+    }
+    if !queued.is_empty() {
+        let (it, starts) = if queued.len() == 1 {
+            ("it", "starts")
+        } else {
+            ("they", "start")
+        };
+        out.push_str(&format!(
+            "queued: {} ({busy} of {slots} slots busy; {it} {starts} when one frees). ",
+            queued.join(", ")
+        ));
+    }
+    out.push_str(
+        "The call did not wait. Each result arrives as a message when it is ready, and so does the start \
+         of a queued agent. `agent_wait` blocks until the next one, `agent_stop` cancels an agent, or carry on.",
+    );
+    out
 }
 
 /// What a wait that steering input ended says: what finished, and what goes on in the background.
