@@ -5,6 +5,17 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-21
+
+### Added
+
+- The Browser tab of `azazel remote` has an **Open** button while no browser runs: a control device starts the agents' browser on a blank page (`browser_open`) and can take it over before the agent has opened anything.
+- **Forward** beside Back and Reload while you hold the browser (`browser_input` kind `forward`).
+
+### Changed
+
+- In a narrow pane the Browser tab's address field takes its own line under Back, Forward and Reload, so a long address can be read.
+
 ## [0.17.0] - 2026-11-20
 
 ### Added
