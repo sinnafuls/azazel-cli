@@ -296,6 +296,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `redact_email` | `true` | Show e-mail addresses as `j***@example.com` in `/usage`, `azazel usage` (`--json` included) and `/account` |
 | | `ledger` | `true` | Append every answered model request (time, provider, model, project, session, agent or purpose, tokens, estimated cost) to `~/.azazel/usage/YYYY-MM.jsonl`, the history `azazel stats` and `/stats` read. Session and agent retention never delete it |
 | `[accounts]` | `order` | `{}` | Provider id to account labels in the order work moves through them when the account in use runs out, such as `{ anthropic = ["work", "default"] }`. Accounts that are not listed follow: the default one, then the rest by label; see [several accounts](models-and-logins.md#several-accounts) |
+| `[screen]` | `allow_apps` | `[]` | Applications the `screen` tool may send mouse and keyboard input to, by program file or app name, case ignored (`["notepad.exe", "MyGame"]`); input is refused while another application has the focus. Empty permits any application; see [safety](screen-and-playtesting.md#safety) |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
 | | `screenshot_scale` | `1.0` | Scale screenshots by this (0.1 to 1) before the model gets them, never below 512 pixels on the long side; `0.5` costs about a quarter of the tokens; see [the browser](web-and-browser.md#screenshots-and-snapshots-that-cost-less) |

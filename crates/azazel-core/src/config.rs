@@ -588,6 +588,11 @@ config_table!(AccountsConfig {
     order: BTreeMap<String, Vec<String>> = BTreeMap::new(),
 });
 config_table!(CompatConfig { claude: bool = true });
+config_table!(ScreenConfig {
+    /// Applications the `screen` tool may send mouse and keyboard input to, by program file or
+    /// app name; empty permits any application.
+    allow_apps: Vec<String> = Vec::new(),
+});
 config_table!(BrowserConfig {
     path: String = String::new(),
     headless: bool = true,
@@ -951,6 +956,7 @@ pub struct Config {
     pub debug: DebugConfig,
     pub tui: TuiConfig,
     pub compat: CompatConfig,
+    pub screen: ScreenConfig,
     pub browser: BrowserConfig,
     pub update: UpdateConfig,
     pub session: SessionConfig,
@@ -1034,6 +1040,7 @@ impl Default for Config {
             debug: DebugConfig::default(),
             tui: TuiConfig::default(),
             compat: CompatConfig::default(),
+            screen: ScreenConfig::default(),
             browser: BrowserConfig::default(),
             update: UpdateConfig::default(),
             session: SessionConfig::default(),
@@ -1061,7 +1068,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-pub const TABLES: [&str; 43] = [
+pub const TABLES: [&str; 44] = [
     "roles",
     "providers",
     "models",
@@ -1084,6 +1091,7 @@ pub const TABLES: [&str; 43] = [
     "debug",
     "tui",
     "compat",
+    "screen",
     "browser",
     "update",
     "hooks",

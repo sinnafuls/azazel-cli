@@ -24,6 +24,14 @@ use serde_json::{Value, json};
 
 use crate::page::{self, ALT, CONTROL, META, SHIFT};
 
+mod abort;
+mod hook;
+mod lock;
+mod safety;
+mod scope;
+
+use safety::{Run, Safety};
+
 pub const NO_CAPTURE: &str = "capture first: coordinates refer to the last capture";
 
 const MAX_WAIT_MS: u64 = 10_000;
@@ -973,9 +981,9 @@ fn one_coordinate_space() {
 }
 
 /// The `screen` tool.
-#[derive(Default)]
 pub struct ScreenTool {
     state: Arc<State>,
+    safety: Arc<Safety>,
 }
 
 const DESCRIPTION: &str = "Operate the desktop: list windows, capture a window or display, zoom into a \
@@ -1068,7 +1076,10 @@ impl ScreenTool {
     }
 
     /// The actions that finish quickly and block while they run.
-    fn act(state: &State, input: &Input, store: Option<&ArtifactStore>) -> Done {
+    fn act(state: &State, input: &Input, store: Option<&ArtifactStore>, run: &Run) -> Done {
+        if safety::is_input(&input.action) {
+            run.allow_input()?;
+        }
         match input.action.as_str() {
             "windows" => say(list_windows()?),
             "capture" => Self::capture(state, input, store.ok_or("there is nowhere to save the capture")?),
@@ -1151,7 +1162,7 @@ impl ScreenTool {
                 let end = state.screen(pick, Some(to[0]), Some(to[1]), "drag")?;
                 let duration = Duration::from_millis(input.duration_ms.unwrap_or(300)).min(MAX_DRAG);
                 let steps = (duration.as_millis() / 16).max(1) as i32;
-                let begun = inject(|enigo| {
+                let (begun, stopped) = inject(|enigo| {
                     let begin = match start {
                         Some(start) => {
                             enigo.move_mouse(start.0, start.1, Coordinate::Abs)?;
@@ -1163,13 +1174,22 @@ impl ScreenTool {
                     enigo.button(Button::Left, Direction::Press)?;
                     // Applications follow a drag by the moves in between, not by its ends.
                     let moved = (1..=steps).try_for_each(|step| {
-                        std::thread::sleep(duration / steps as u32);
+                        if run.pause(duration / steps as u32) {
+                            return Err(enigo::InputError::Simulate("stopped"));
+                        }
                         let along = |a: i32, b: i32| a + (b - a) * step / steps;
                         enigo.move_mouse(along(begin.0, end.0), along(begin.1, end.1), Coordinate::Abs)
                     });
+                    // The button comes up whether the drag finished or was stopped.
                     enigo.button(Button::Left, Direction::Release)?;
-                    moved.map(|()| begin)
+                    match moved {
+                        Err(enigo::InputError::Simulate("stopped")) => Ok((begin, true)),
+                        other => other.map(|()| (begin, false)),
+                    }
                 })?;
+                if stopped {
+                    return Err(run.why_stopped());
+                }
                 say(format!(
                     "dragged from screen {},{} to {},{}",
                     begun.0, begun.1, end.0, end.1
@@ -1204,23 +1224,29 @@ impl ScreenTool {
                 let modifiers = held_modifiers(parsed.modifiers);
                 let hold = Duration::from_millis(input.hold_ms.unwrap_or(0).min(MAX_WAIT_MS));
                 let times = key_repeats(input.repeat, hold)?;
-                inject(|enigo| {
+                run.expect_escape(keys, hold * times);
+                let stopped = inject(|enigo| {
                     holding(enigo, &modifiers, |enigo| {
                         for time in 0..times {
-                            if time > 0 {
-                                std::thread::sleep(KEY_GAP);
+                            if time > 0 && run.pause(KEY_GAP) {
+                                return Ok(true);
                             }
                             let pressed = enigo.key(key, Direction::Press);
-                            if pressed.is_ok() {
-                                std::thread::sleep(hold);
-                            }
-                            // Released even when the press failed, so no key stays down.
+                            let stopped = pressed.is_ok() && run.pause(hold);
+                            // Released even when the press failed or the hold was cut short, so
+                            // no key stays down.
                             let released = enigo.key(key, Direction::Release);
                             pressed.and(released)?;
+                            if stopped {
+                                return Ok(true);
+                            }
                         }
-                        Ok(())
+                        Ok(false)
                     })
                 })?;
+                if stopped {
+                    return Err(run.why_stopped());
+                }
                 say(if times > 1 {
                     format!("pressed {keys} {times} times")
                 } else {
@@ -1448,7 +1474,8 @@ impl Tool for ScreenTool {
             },
             _ => {
                 let state = self.state.clone();
-                tokio::task::spawn_blocking(move || Self::act(&state, &input, store.as_deref()))
+                let run = Run::new(&self.safety, ctx);
+                tokio::task::spawn_blocking(move || Self::act(&state, &input, store.as_deref(), &run))
                     .await
                     .unwrap_or_else(|e| Err(e.to_string()))
             }
@@ -1465,7 +1492,12 @@ impl Tool for ScreenTool {
 }
 
 /// Registers the `screen` tool.
-pub struct ScreenExt;
+pub struct ScreenExt {
+    /// The azazel home, where the lock between sessions is kept.
+    pub home: PathBuf,
+    /// `[screen] allow_apps`.
+    pub allow_apps: Vec<String>,
+}
 
 impl azazel_core::Extension for ScreenExt {
     fn id(&self) -> &str {
@@ -1473,7 +1505,18 @@ impl azazel_core::Extension for ScreenExt {
     }
 
     fn register(&self, r: &mut azazel_core::Registrar) -> Result<(), azazel_core::ExtError> {
-        r.tool(Arc::new(ScreenTool::default()));
+        let safety = Arc::new(Safety::new(&self.home, self.allow_apps.clone()));
+        for kind in [
+            azazel_core::EventKind::SessionEnd,
+            azazel_core::EventKind::UserPrompt,
+            azazel_core::EventKind::Stop,
+        ] {
+            r.on(kind, Arc::new(safety::Lifecycle(safety.clone())));
+        }
+        r.tool(Arc::new(ScreenTool {
+            state: Arc::default(),
+            safety,
+        }));
         Ok(())
     }
 }

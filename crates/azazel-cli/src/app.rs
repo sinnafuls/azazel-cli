@@ -1045,7 +1045,10 @@ impl App {
             logins: stored.clone(),
         })?;
         #[cfg(feature = "screen")]
-        registry.load(&azazel_browser::screen::ScreenExt)?;
+        registry.load(&azazel_browser::screen::ScreenExt {
+            home: paths.home.clone(),
+            allow_apps: config.screen.allow_apps.clone(),
+        })?;
         #[cfg(feature = "media")]
         registry.load(&azazel_media::MediaExt {
             media: Arc::new(azazel_media::Media::from_config(&config, &paths, credentials.clone()).await),

@@ -456,6 +456,10 @@ settings! {
         "browser.live_quality": Number, "Live view quality", "JPEG quality of the live view (20 to 90); lower sends less data.";
         "browser.live_max_width": Number, "Live view width", "Width in pixels the live view is scaled down to (320 to 1920).";
     }
+    Tools / "Screen" {
+        "screen.allow_apps": List, "Apps screen input may go to",
+            "Program files or app names (notepad.exe, Notepad) the screen tool may send mouse and keyboard input to; empty permits any application.";
+    }
     Tools / "Media" {
         "media.output_dir": Text, "Output directory", "Where generated files go, relative to the project.";
         "media.models.image": Text, "Image model", "The model for images, as backend:model id.";
