@@ -371,4 +371,61 @@ describe('treeOrder', () => {
 				.sort()
 		).toEqual(['a', 'b', 'c', 'lead']);
 	});
+
+	it('settles the tool cards of an agent that stopped, failed or was stopped from the roster (issue #9)', () => {
+		const start = (agent: string, id: string, name: string): AnyFrame[] =>
+			[
+				{ type: 'agent_start', agent },
+				{ type: 'message_start', agent },
+				{ type: 'stream', agent, event: { type: 'tool_call_start', index: 0, id, name } },
+				{ type: 'stream', agent, event: { type: 'tool_call_start', index: 1, id: id + 'b', name } }
+			] as unknown as AnyFrame[];
+		const status = (m: ReturnType<typeof emptyModel>, agent: string) =>
+			m.items
+				.filter((i): i is ToolItem => i.kind === 'tool' && i.agent === agent)
+				.map((t) => t.status);
+
+		// Aborted while the calls were still being written: they never start, never end.
+		let m = [...start('w-1', 'c1', 'read'), ...start('w-2', 'c2', 'shell')].reduce(
+			reduce,
+			emptyModel()
+		);
+		m = reduce(m, {
+			type: 'tool_start',
+			agent: 'w-2',
+			call_id: 'c2',
+			name: 'shell',
+			input: {}
+		} as AnyFrame);
+		expect(status(m, 'w-1')).toEqual(['pending', 'pending']);
+		m = reduce(m, { type: 'idle', agent: 'w-1', stop: 'aborted' } as AnyFrame);
+		expect(status(m, 'w-1')).toEqual(['stopped', 'stopped']);
+		expect(status(m, 'w-2')).toEqual(['running', 'pending']);
+
+		// A roster that reports the agent as stopped settles it even when no idle frame arrived.
+		const member = (id: string, state: string) => ({
+			id,
+			def: 'worker',
+			depth: 1,
+			state,
+			elapsed_ms: 0,
+			tokens: 0
+		});
+		m = reduce(m, { type: 'roster', members: [member('w-2', 'running')] } as AnyFrame);
+		expect(status(m, 'w-2')).toEqual(['running', 'pending']);
+		m = reduce(m, { type: 'roster', members: [member('w-2', 'stopped')] } as AnyFrame);
+		expect(status(m, 'w-2')).toEqual(['stopped', 'stopped']);
+
+		// A call that ended keeps its result.
+		m = [...start('w-3', 'c3', 'read')].reduce(reduce, emptyModel());
+		m = reduce(m, {
+			type: 'tool_end',
+			agent: 'w-3',
+			call_id: 'c3',
+			output: { content: [], is_error: false },
+			duration_ms: 1
+		} as AnyFrame);
+		m = reduce(m, { type: 'failed', agent: 'w-3', error: 'boom' } as AnyFrame);
+		expect(status(m, 'w-3')).toEqual(['done', 'stopped']);
+	});
 });

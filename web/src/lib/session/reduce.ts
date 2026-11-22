@@ -3,7 +3,8 @@
 import type { AnyFrame, Block, Member, Row, SnapshotRemote, State } from '$lib/protocol';
 import { profileNotice } from '$lib/profiles';
 
-export type ToolStatus = 'pending' | 'running' | 'done' | 'error';
+/** `stopped`: the agent ended (stopped, failed or finished) before the call did. */
+export type ToolStatus = 'pending' | 'running' | 'done' | 'error' | 'stopped';
 
 export interface UserItem {
 	kind: 'user';
@@ -355,6 +356,18 @@ function closeStreaming(m: Model, agent: string): Model {
 	}));
 }
 
+/** An agent that is over has no call in flight: one still shown as pending or running lost its end
+ * (the agent was stopped while the model wrote it, or while it ran). */
+function settleAgent(m: Model, agent: string): Model {
+	const open = (i: Item) =>
+		i.kind === 'tool' && i.agent === agent && (i.status === 'pending' || i.status === 'running');
+	if (!m.items.some(open)) return m;
+	return {
+		...m,
+		items: m.items.map((i) => (open(i) ? { ...(i as ToolItem), status: 'stopped' as const } : i))
+	};
+}
+
 function setRun(m: Model, agent: string, run: AgentRun): Model {
 	return { ...m, runs: { ...m.runs, [agent]: run } };
 }
@@ -410,10 +423,16 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 			}));
 		}
 		case 'idle':
-			return setRun(closeStreaming(base, agent), agent, { busy: false, stop: f.stop as string });
+			return setRun(settleAgent(closeStreaming(base, agent), agent), agent, {
+				busy: false,
+				stop: f.stop as string
+			});
 		case 'failed':
 			return addNotice(
-				setRun(closeStreaming(base, agent), agent, { busy: false, stop: 'error' }),
+				setRun(settleAgent(closeStreaming(base, agent), agent), agent, {
+					busy: false,
+					stop: 'error'
+				}),
 				agent,
 				'error',
 				f.error as string
@@ -472,8 +491,16 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 				'info',
 				`Context compacted: ${f.tokens_before as number} → ${f.tokens_after as number} tokens`
 			);
-		case 'roster':
-			return { ...base, roster: f.members as Member[], rosterAt: Date.now() };
+		case 'roster': {
+			// The roster is the last word on an agent that ended without a frame of its own getting here.
+			const members = f.members as Member[];
+			const over = members.filter((r) => ['done', 'failed', 'stopped'].includes(r.state));
+			return over.reduce((acc, r) => settleAgent(acc, r.id), {
+				...base,
+				roster: members,
+				rosterAt: Date.now()
+			});
+		}
 		case 'approval_request': {
 			const frame = frame0(f) as Extract<AnyFrame, { type: 'approval_request' }>;
 			const id = frame.request_id;

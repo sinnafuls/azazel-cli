@@ -84,6 +84,8 @@
 				<Spinner class="size-3.5 text-brand" aria-label="running" />
 			{:else if failed}
 				<Badge variant="destructive">Failed</Badge>
+			{:else if tool.status === 'stopped'}
+				<Badge variant="secondary">Stopped</Badge>
 			{:else if tool.durationMs !== undefined}
 				<span class="num">{duration(tool.durationMs)}</span>
 			{/if}
