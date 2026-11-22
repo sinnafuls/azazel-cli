@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-11-22
+
 ### Fixed
 
 - Long sessions no longer slow the interactive UI: typing and the agent's activity kept up only in fresh sessions, because every frame copied the whole conversation to find the session's profile and scanned it for its name and pin. These are now kept up to date as the session grows.
