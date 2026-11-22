@@ -5,6 +5,23 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-22
+
+### Added
+
+- `screen` (desktop control) is safer: pressing Esc while an agent drives the desktop stops the turn and refuses further input in it (Windows; best effort elsewhere), and clicks, drags and key holds stop as soon as the turn is cancelled. Only one session drives the mouse and keyboard at a time; another is told which session holds them. `[screen] allow_apps` (default empty, any app) limits input to the applications listed.
+- `screen` has new actions and options: `zoom` reads a region at full resolution without changing where clicks land, `cursor` reports the pointer, `open` starts an application or opens a file; clicks take `count` (up to a triple click) and `modifiers`, `scroll` takes `dx`, `key` takes `repeat`, and `drag` starts at the pointer when `from` is left out. Long or non-ASCII text is typed through the clipboard, which is restored afterwards.
+- The `screen` tool tells the model that what is on screen is untrusted, to check each action with a new capture, and to ask before anything that cannot be undone.
+
+### Changed
+
+- `screen` captures are sent and saved as JPEG, which costs fewer tokens than PNG. Each window, display and region keeps its own capture, and a pointing action on a window that moved or changed size since its capture asks for a new capture instead of clicking in the wrong place.
+
+### Fixed
+
+- `screen` `focus` on Windows no longer fails, or leaves input going to another window, when Windows refuses the switch to the foreground; it retries and checks the window is in front. A click, drag, scroll or key that names its `window` brings that window to the front first, so the first click is no longer lost to activating it.
+- `azazel remote`: the tool cards of a sub-agent that was stopped, failed or finished no longer show Running forever; they show Stopped ([#9](https://github.com/sinnafuls/azazel-cli/issues/9)).
+
 ## [0.20.0] - 2026-11-21
 
 ### Fixed

@@ -1107,6 +1107,13 @@ impl ScreenTool {
     fn act(state: &State, input: &Input, store: Option<&ArtifactStore>, run: &Run) -> Done {
         if safety::is_input(&input.action) {
             run.allow_input()?;
+            // Input to a window that is not in front goes to the one that is, or only activates
+            // it: a pointing action that names its window brings it to the front first.
+            if let Some(selector) = &input.window
+                && input.action != "open"
+            {
+                focus(&find_window(selector)?)?;
+            }
         }
         match input.action.as_str() {
             "windows" => say(list_windows()?),
