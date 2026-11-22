@@ -566,10 +566,30 @@ fn list_windows() -> Result<String, String> {
 #[cfg(windows)]
 fn focus(window: &xcap::Window) -> Result<(), String> {
     use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VK_MENU,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic, SW_RESTORE,
         SetForegroundWindow, ShowWindow,
     };
+    const KEYEVENTF_KEYDOWN: KEYBD_EVENT_FLAGS = 0;
+    fn alt(flags: KEYBD_EVENT_FLAGS) {
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VK_MENU,
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        // SAFETY: one fully initialised INPUT, and its size, as SendInput requires.
+        unsafe { SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) };
+    }
     let hwnd = window.id().map_err(|e| e.to_string())? as usize as windows_sys::Win32::Foundation::HWND;
     // SAFETY: these calls take a window handle by value and tolerate a stale one (they fail);
     // the thread ids come from the system, and the attachment made here is undone before
@@ -583,12 +603,20 @@ fn focus(window: &xcap::Window) -> Result<(), String> {
         let this = GetCurrentThreadId();
         let front = GetWindowThreadProcessId(GetForegroundWindow(), std::ptr::null_mut());
         let attached = front != 0 && front != this && AttachThreadInput(this, front, 1) != 0;
-        let brought = SetForegroundWindow(hwnd) != 0;
+        let mut brought = SetForegroundWindow(hwnd) != 0;
         BringWindowToTop(hwnd);
         if attached {
             AttachThreadInput(this, front, 0);
         }
-        brought
+        if !brought || GetForegroundWindow() != hwnd {
+            // A program that is not in front may still switch the foreground right after a key
+            // event of its own: hold Alt for the moment of the switch, which opens no menu.
+            alt(KEYEVENTF_KEYDOWN);
+            brought = SetForegroundWindow(hwnd) != 0;
+            alt(KEYEVENTF_KEYUP);
+            BringWindowToTop(hwnd);
+        }
+        brought && GetForegroundWindow() == hwnd
     };
     if brought {
         Ok(())
