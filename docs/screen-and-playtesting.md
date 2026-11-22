@@ -89,6 +89,15 @@ allow = ["screen"]                                   # every action
 
 Input goes to whatever is under the pointer or has the focus, so an agent with `screen` can operate any application on the desktop. Keep the mode on `manual` unless you are watching, and see [permissions](permissions.md).
 
+### Safety
+
+Input actions (`click`, `move`, `drag`, `scroll`, `key`, `type`) are guarded; `windows`, `capture`, `focus`, `wait` and `record` are not.
+
+- **Esc stops it.** While the agent drives the desktop, and for the rest of the turn after it started, a press of Esc anywhere on the desktop cancels the turn. The key still reaches the application you pressed it in. Later `screen` input calls in that turn fail with a message that says so; your next request lifts it. An Esc the tool sends itself with `key` does not count. Held keys and buttons are released when an action stops. Windows only so far: on macOS and Linux there is no Esc watch yet, and input is not refused for lack of one. If the watch cannot start on Windows, input is refused.
+- **One session at a time.** The first input action takes `~/.azazel/screen.lock`, which names the process and the session. Another azazel session that tries input meanwhile gets an error naming the holder. The lock is released when the agent stops, at the end of the session, and on Esc; a lock whose process is gone is taken over.
+- **Cancelling.** An aborted turn stops before the next input call, between the steps of a `drag` and during `hold_ms` of `key`.
+- **Which applications.** `[screen] allow_apps` lists applications that may receive input, by program file or app name, case ignored (`allow_apps = ["notepad.exe", "MyGame"]`). When it is not empty, each input action first checks the application that has the focus and is refused if it is not listed, with the name it found. Empty, the default, permits any application. Use `focus` to bring a listed window forward.
+
 ### Platform notes
 
 - **Windows.** The process declares itself DPI-aware so that window positions, capture pixels and input coordinates agree on scaled displays.
