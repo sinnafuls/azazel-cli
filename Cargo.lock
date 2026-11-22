@@ -931,6 +931,7 @@ dependencies = [
 name = "azazel-browser"
 version = "0.20.0"
 dependencies = [
+ "arboard",
  "async-trait",
  "azazel-agent",
  "azazel-ai",

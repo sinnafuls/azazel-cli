@@ -14,9 +14,10 @@ expect_used = "deny"
 [features]
 # Lets the tests of other crates put a picture into the live view without a browser.
 test-support = []
-screen = ["dep:enigo", "dep:image", "dep:jiff", "dep:xcap", "dep:windows-sys"]
+screen = ["dep:arboard", "dep:enigo", "dep:image", "dep:jiff", "dep:xcap", "dep:windows-sys"]
 
 [dependencies]
+arboard = { workspace = true, optional = true }
 async-trait.workspace = true
 azazel-agent.workspace = true
 azazel-ai.workspace = true

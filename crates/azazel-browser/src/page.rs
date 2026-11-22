@@ -493,6 +493,17 @@ fn named(name: &str) -> Option<(&'static str, &'static str, u32, Option<&'static
     })
 }
 
+/// The modifier bit a name stands for (`ctrl`, `Cmd`, `option`, …), case ignored.
+pub fn modifier_bit(name: &str) -> Option<u8> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "alt" | "option" => ALT,
+        "control" | "ctrl" => CONTROL,
+        "meta" | "cmd" | "command" | "super" | "win" => META,
+        "shift" => SHIFT,
+        _ => return None,
+    })
+}
+
 /// Parses `Enter`, `a`, `Control+A`, `Shift+ArrowDown`, `F5`: modifiers joined to one key by `+`.
 pub fn parse_keys(keys: &str) -> Result<Key, String> {
     let keys = keys.trim();
@@ -507,13 +518,8 @@ pub fn parse_keys(keys: &str) -> Result<Key, String> {
     }
     let mut modifiers = 0u8;
     for modifier in modifier_part.split('+').filter(|m| !m.is_empty()) {
-        modifiers |= match modifier.to_ascii_lowercase().as_str() {
-            "alt" | "option" => ALT,
-            "control" | "ctrl" => CONTROL,
-            "meta" | "cmd" | "command" | "super" | "win" => META,
-            "shift" => SHIFT,
-            _ => return Err(format!("unknown modifier `{modifier}` in `{keys}`")),
-        };
+        modifiers |=
+            modifier_bit(modifier).ok_or_else(|| format!("unknown modifier `{modifier}` in `{keys}`"))?;
     }
     let types = modifiers & (ALT | CONTROL | META) == 0;
 
