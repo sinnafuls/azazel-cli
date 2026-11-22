@@ -695,7 +695,7 @@ Offered to the lead only, and only while a goal is open. See [goals](goals.md).
 | Tool | Input | Behaviour |
 |---|---|---|
 | `browser` | `action` plus `url`, `tab`, `ref`, `selector`, `x`, `y`, `text`, `submit`, `keys`, `hold_ms`, `dy`, `for`, `timeout_ms`, `poll_ms`, `expression`, `full_page`, `width`, `height`, `filter`, `ref_user`, `ref_password`, `reason` | Drives a Chromium browser. Actions: `open`, `navigate`, `back`, `reload`, `snapshot`, `click`, `hover`, `type`, `key`, `scroll`, `wait`, `eval`, `screenshot`, `resize`, `console`, `network`, `tabs`, `close`, `fill_login` (types a login stored with `azazel secrets add-site`), `handoff` (shows the browser to you and waits) |
-| `screen` | `action` plus `window`, `display`, `region`, `x`, `y`, `button`, `double`, `from`, `to`, `duration_ms`, `dy`, `keys`, `hold_ms`, `text`, `ms`, `seconds`, `fps` | Captures and operates the desktop. Actions: `windows`, `capture`, `focus`, `click`, `move`, `drag`, `scroll`, `key`, `type`, `wait`, `record` |
+| `screen` | `action` plus `window`, `display`, `capture_id`, `region`, `x`, `y`, `button`, `double`, `count`, `modifiers`, `from`, `to`, `duration_ms`, `dx`, `dy`, `keys`, `repeat`, `hold_ms`, `text`, `app`, `args`, `ms`, `seconds`, `fps` | Captures and operates the desktop. Actions: `windows`, `capture`, `zoom`, `cursor`, `focus`, `open`, `click`, `move`, `drag`, `scroll`, `key`, `type`, `wait`, `record` |
 
 See [web and browser](web-and-browser.md) and [screen and playtesting](screen-and-playtesting.md).
 
