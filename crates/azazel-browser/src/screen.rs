@@ -1001,11 +1001,11 @@ fn holding<T>(
 ) -> enigo::InputResult<T> {
     let pressed = modifiers.iter().try_for_each(|m| enigo.key(*m, Direction::Press));
     let done = pressed.and_then(|()| f(enigo));
-    let released = modifiers
-        .iter()
-        .rev()
-        .map(|m| enigo.key(*m, Direction::Release))
-        .fold(Ok(()), |all, one| all.and(one));
+    // Every modifier is released, whichever fails.
+    let mut released = Ok(());
+    for modifier in modifiers.iter().rev() {
+        released = released.and(enigo.key(*modifier, Direction::Release));
+    }
     let done = done?;
     released?;
     Ok(done)
