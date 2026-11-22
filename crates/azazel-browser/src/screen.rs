@@ -1525,19 +1525,304 @@ mod tests {
         }
     }
 
+    const WINDOW: Target = Target::Window(7);
+    const DISPLAY: Target = Target::Display(0);
+
+    fn placed(x: i32, y: i32, width: u32, height: u32) -> Placement {
+        Placement {
+            origin: (x, y),
+            extent: (width, height),
+        }
+    }
+
+    /// The mapping of a capture of `base` shown at `shown`.
+    fn whole(base: Placement, shown: (u32, u32)) -> Mapping {
+        Mapping {
+            origin: base.origin,
+            extent: base.extent,
+            shown,
+        }
+    }
+
+    fn on(target: Target) -> Pick {
+        Pick {
+            id: None,
+            target: Some(target),
+        }
+    }
+
     #[test]
     fn pointing_before_any_capture_is_refused() {
         let state = State::default();
-        assert_eq!(
-            state.screen(Some(1.0), Some(1.0), "click").unwrap_err(),
-            NO_CAPTURE
-        );
-        assert_eq!(
-            state.screen(Some(1.0), None, "click").unwrap_err(),
-            "`click` needs `x` and `y`"
+        let nowhere = |_: Target| Err("unused".to_string());
+        let screen = |x, y| state.screen_with(Pick::default(), x, y, "click", nowhere);
+        assert_eq!(screen(Some(1.0), Some(1.0)).unwrap_err(), NO_CAPTURE);
+        assert_eq!(screen(Some(1.0), None).unwrap_err(), "`click` needs `x` and `y`");
+    }
+
+    #[test]
+    fn every_target_keeps_its_own_mapping() {
+        let state = State::default();
+        let (window, display) = (placed(100, 50, 800, 600), placed(0, 0, 1920, 1080));
+        let first = state.captures().add(WINDOW, window, whole(window, (400, 300)));
+        let second = state.captures().add(DISPLAY, display, whole(display, (960, 540)));
+        let now = |target: Target| Ok(if target == WINDOW { window } else { display });
+        let at = |pick: Pick| state.screen_with(pick, Some(10.0), Some(10.0), "click", now);
+
+        // Capturing the display afterwards does not take the window's mapping away.
+        assert_eq!(at(on(WINDOW)), Ok((120, 70)));
+        assert_eq!(at(on(DISPLAY)), Ok((20, 20)));
+        // Without a target the latest capture answers; an id names one exactly.
+        assert_eq!(at(Pick::default()), Ok((20, 20)));
+        let by_id = |id| Pick {
+            id: Some(id),
+            target: None,
+        };
+        assert_eq!(at(by_id(first)), Ok((120, 70)));
+        assert_eq!(at(by_id(second)), Ok((20, 20)));
+        // The latest capture of a target wins over an older one.
+        state.captures().add(WINDOW, window, whole(window, (800, 600)));
+        assert_eq!(at(on(WINDOW)), Ok((110, 60)));
+
+        assert!(at(by_id(99)).unwrap_err().contains("capture again"));
+        let error = at(on(Target::Display(3))).unwrap_err();
+        assert!(error.contains("no capture of display 3"), "{error}");
+    }
+
+    #[test]
+    fn old_captures_are_forgotten_past_the_limit() {
+        let mut captures = Captures::default();
+        let base = placed(0, 0, 10, 10);
+        for _ in 0..MAX_CAPTURES + 2 {
+            captures.add(WINDOW, base, whole(base, (10, 10)));
+        }
+        assert_eq!(captures.items.len(), MAX_CAPTURES);
+        assert!(captures.find(Some(1), None).is_err());
+        assert!(captures.find(Some(3), None).is_ok());
+    }
+
+    #[test]
+    fn a_window_that_moved_or_resized_is_refused() {
+        let state = State::default();
+        let base = placed(100, 50, 800, 600);
+        state.captures().add(WINDOW, base, whole(base, (800, 600)));
+        let click = |now: Result<Placement, String>| {
+            state.screen_with(Pick::default(), Some(5.0), Some(5.0), "click", move |_| {
+                now.clone()
+            })
+        };
+        assert_eq!(click(Ok(base)), Ok((105, 55)));
+        for moved in [placed(110, 50, 800, 600), placed(100, 50, 801, 600)] {
+            let error = click(Ok(moved)).unwrap_err();
+            assert!(
+                error.contains("moved or was resized since capture 1; capture again"),
+                "{error}"
+            );
+        }
+        let error = click(Err("no window".to_string())).unwrap_err();
+        assert!(
+            error.contains("cannot be found now") && error.contains("capture again"),
+            "{error}"
         );
     }
 
+    #[test]
+    fn zoom_selects_a_region_without_changing_the_mapping() {
+        let state = State::default();
+        // A window at (100, 50) of 800×600, shown at half size.
+        let base = placed(100, 50, 800, 600);
+        let mapping = whole(base, (400, 300));
+        state.captures().add(WINDOW, base, mapping);
+        let before = state.captures().find(None, Some(WINDOW)).unwrap();
+
+        // Pixels 40,30 of the capture, 100×60 of them, are 80,60 in the window, 200×120.
+        let region = mapping.region_in_target([40, 30, 100, 60], base.origin).unwrap();
+        assert_eq!(region, [80, 60, 200, 120]);
+        // Odd sizes round outwards, so that a character on the edge is not cut.
+        let odd = Mapping {
+            shown: (300, 300),
+            ..mapping
+        };
+        assert_eq!(
+            odd.region_in_target([1, 1, 1, 1], base.origin).unwrap(),
+            // One pixel is 2.67 units wide, 2 tall; its edges at 2.67 and 5.33 round out to 2 and 6.
+            [2, 2, 4, 2]
+        );
+        // A capture of a region of the window: the region is placed inside the whole window.
+        let part = Mapping {
+            origin: (140, 80),
+            extent: (200, 100),
+            shown: (200, 100),
+        };
+        assert_eq!(
+            part.region_in_target([10, 20, 50, 40], base.origin).unwrap(),
+            [50, 50, 50, 40]
+        );
+
+        for bad in [[0, 0, 0, 5], [390, 0, 20, 5], [0, 295, 5, 10]] {
+            let error = mapping.region_in_target(bad, base.origin).unwrap_err();
+            assert!(
+                error.contains("does not lie within the last capture, which is 400×300"),
+                "{error}"
+            );
+        }
+        // Nothing above touched what the captures hold.
+        assert_eq!(state.captures().find(None, Some(WINDOW)).unwrap(), before);
+        assert_eq!(state.captures().items.len(), 1);
+    }
+
+    #[test]
+    fn the_pointer_is_reported_in_pixels_of_the_capture() {
+        let mapping = Mapping {
+            origin: (100, 50),
+            extent: (800, 600),
+            shown: (400, 300),
+        };
+        assert_eq!(mapping.to_pixels(100, 50), Some((0, 0)));
+        assert_eq!(mapping.to_pixels(500, 350), Some((200, 150)));
+        assert_eq!(mapping.to_pixels(899, 649), Some((399, 299)));
+        for off in [(99, 50), (900, 50), (100, 650), (-5, -5)] {
+            assert_eq!(mapping.to_pixels(off.0, off.1), None, "{off:?}");
+        }
+    }
+
+    #[test]
+    fn clicks_and_modifiers_are_parsed() {
+        assert_eq!(click_count(None, false), Ok(1));
+        assert_eq!(click_count(None, true), Ok(2));
+        assert_eq!(click_count(Some(3), false), Ok(3));
+        assert_eq!(click_count(Some(1), true), Ok(1));
+        for bad in [0, 4] {
+            assert!(click_count(Some(bad), false).unwrap_err().contains("1 to 3"));
+        }
+        let names = |list: &[&str]| modifier_bits(&list.iter().map(|n| n.to_string()).collect::<Vec<_>>());
+        assert_eq!(names(&[]), Ok(0));
+        assert_eq!(names(&["shift", "Ctrl"]), Ok(SHIFT | CONTROL));
+        assert_eq!(names(&["alt", "cmd"]), Ok(ALT | META));
+        assert!(
+            names(&["hyper"])
+                .unwrap_err()
+                .contains("unknown modifier `hyper`")
+        );
+        assert_eq!(
+            held_modifiers(names(&["meta", "shift"]).unwrap()),
+            [enigo::Key::Shift, enigo::Key::Meta]
+        );
+    }
+
+    #[test]
+    fn scrolling_takes_either_axis() {
+        assert_eq!(scroll_turns(None, Some(3)), Ok(vec![(Axis::Vertical, 3)]));
+        assert_eq!(scroll_turns(Some(-2), None), Ok(vec![(Axis::Horizontal, -2)]));
+        assert_eq!(
+            scroll_turns(Some(2), Some(-1)),
+            Ok(vec![(Axis::Vertical, -1), (Axis::Horizontal, 2)])
+        );
+        assert!(scroll_turns(None, None).unwrap_err().contains("`dy` or `dx`"));
+        assert!(scroll_turns(Some(0), Some(0)).is_err());
+    }
+
+    #[test]
+    fn key_repeats_are_bounded() {
+        let none = Duration::ZERO;
+        assert_eq!(key_repeats(None, none), Ok(1));
+        assert_eq!(key_repeats(Some(MAX_REPEAT), none), Ok(MAX_REPEAT));
+        assert!(key_repeats(Some(0), none).is_err());
+        assert!(key_repeats(Some(MAX_REPEAT + 1), none).is_err());
+        // 100 presses of 1 s each would keep the machine busy for minutes.
+        let error = key_repeats(Some(100), Duration::from_secs(1)).unwrap_err();
+        assert!(error.contains("under 30 s"), "{error}");
+        assert_eq!(key_repeats(Some(3), Duration::from_secs(1)), Ok(3));
+    }
+
+    #[test]
+    fn long_or_non_ascii_text_goes_through_the_clipboard() {
+        assert!(!wants_paste("hello, world"));
+        assert!(!wants_paste(&"a".repeat(PASTE_OVER)));
+        assert!(wants_paste(&"a".repeat(PASTE_OVER + 1)));
+        assert!(wants_paste("héllo"));
+        assert!(wants_paste("日本語"));
+        assert!(same_text("a\r\nb", "a\nb"));
+    }
+
+    #[test]
+    fn the_schema_lists_the_new_actions_and_parameters() {
+        let schema = ScreenTool::default().schema();
+        let actions: Vec<&str> = schema["properties"]["action"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        for action in ["zoom", "cursor", "open"] {
+            assert!(actions.contains(&action), "{action}");
+        }
+        for key in ["capture_id", "count", "modifiers", "dx", "repeat", "app", "args"] {
+            assert!(schema["properties"][key].is_object(), "{key}");
+        }
+        assert_eq!(schema["properties"]["count"]["maximum"], MAX_CLICKS);
+        // Every field the schema offers is one the input accepts.
+        let input: Input = serde_json::from_value(json!({
+            "action": "click", "count": 3, "modifiers": ["shift"], "dx": 1, "repeat": 2,
+            "capture_id": 4, "app": "x", "args": ["y"]
+        }))
+        .unwrap();
+        assert_eq!(
+            (input.count, input.repeat, input.capture_id),
+            (Some(3), Some(2), Some(4))
+        );
+        assert!(DESCRIPTION.contains("untrusted") && DESCRIPTION.contains("zoom"));
+    }
+
+    #[test]
+    fn a_screenshot_as_jpeg_is_far_smaller_than_as_png() {
+        // A game-like frame: a smooth gradient with grain, which PNG cannot squeeze.
+        let screen = RgbaImage::from_fn(1920, 1080, |x, y| {
+            let grain = (x.wrapping_mul(2654435761) ^ y.wrapping_mul(40503)) >> 13 & 7;
+            let channel = |base: u32| (base + grain).min(255) as u8;
+            Rgba([channel(x * 200 / 1920), channel(y * 200 / 1080), channel(90), 255])
+        });
+        let (jpeg, shown) = shown_jpeg(&screen).unwrap();
+        assert_eq!(shown, (1568, 882));
+        assert_eq!(&jpeg[..3], [0xFF, 0xD8, 0xFF]);
+        let decoded = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (1568, 882));
+        let full = png(&screen).unwrap();
+        let resized = image::imageops::resize(&screen, shown.0, shown.1, FilterType::Triangle);
+        let sent_before = png(&resized).unwrap();
+        assert!(jpeg.len() * 2 < sent_before.len(), "{} bytes", jpeg.len());
+        eprintln!(
+            "1920x1080: before saved png {} + sent png {}; after one jpeg {}",
+            full.len(),
+            sent_before.len(),
+            jpeg.len()
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a desktop"]
+    fn a_real_display_can_be_captured_and_the_pointer_found() {
+        let grab = grab(None, None, None).unwrap();
+        assert!(grab.image.width() > 0);
+        let state = State::default();
+        let shown = (grab.image.width(), grab.image.height());
+        state
+            .captures()
+            .add(grab.target, grab.base, whole(grab.base, shown));
+        assert!(state.current(Pick::default(), placement).is_ok());
+        assert!(pointer().is_ok());
+    }
+
+    #[test]
+    #[ignore = "needs a desktop and changes the clipboard"]
+    fn a_real_clipboard_is_restored() {
+        let mut clipboard = arboard::Clipboard::new().unwrap();
+        clipboard.set_text("before").unwrap();
+        let saved = Saved::read(&mut clipboard);
+        clipboard.set_text("pasted").unwrap();
+        saved.restore(&mut clipboard).unwrap();
+        assert_eq!(clipboard.get_text().unwrap(), "before");
+    }
     #[test]
     fn frames_for_the_contact_sheet_span_the_recording() {
         assert_eq!(evenly_spaced(0, 9), Vec::<usize>::new());
