@@ -1790,7 +1790,12 @@ mod tests {
 
     #[test]
     fn the_schema_lists_the_new_actions_and_parameters() {
-        let schema = ScreenTool::default().schema();
+        let home = tempfile::tempdir().unwrap();
+        let tool = ScreenTool {
+            state: Arc::default(),
+            safety: Arc::new(Safety::new(home.path(), Vec::new())),
+        };
+        let schema = tool.schema();
         let actions: Vec<&str> = schema["properties"]["action"]["enum"]
             .as_array()
             .unwrap()
