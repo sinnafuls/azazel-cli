@@ -454,6 +454,37 @@ struct Inner {
     entries: Vec<Entry>,
     index: HashMap<String, usize>,
     leaf: Option<String>,
+    /// The newest `session_info` name and `pin` of the file, kept as entries arrive: the UI
+    /// asks for them on every frame, and a scan of a long session on each would be slow.
+    name: Option<String>,
+    pinned: bool,
+    /// The profile the branch ending at an entry last switched to (the entry's id, then the
+    /// raw value). A branch never changes once written, so the answer for an entry holds for
+    /// good, and the next look walks only up to it.
+    profile_memo: Option<(String, Option<String>)>,
+}
+
+impl Inner {
+    /// What the entries so far say of the name and the pin, newest first.
+    fn settings(entries: &[Entry]) -> (Option<String>, bool) {
+        let name = entries.iter().rev().find_map(|e| match &e.kind {
+            EntryKind::SessionInfo { name } => Some(name.clone()),
+            _ => None,
+        });
+        let pinned = entries.iter().rev().find_map(|e| match &e.kind {
+            EntryKind::Pin { pinned } => Some(*pinned),
+            _ => None,
+        });
+        (name, pinned.unwrap_or(false))
+    }
+
+    fn note(&mut self, kind: &EntryKind) {
+        match kind {
+            EntryKind::SessionInfo { name } => self.name = Some(name.clone()),
+            EntryKind::Pin { pinned } => self.pinned = *pinned,
+            _ => {}
+        }
+    }
 }
 
 pub struct SessionStore {
@@ -519,6 +550,9 @@ impl SessionStore {
                 entries: Vec::new(),
                 index: HashMap::new(),
                 leaf: None,
+                name: None,
+                pinned: false,
+                profile_memo: None,
             }),
         })
     }
@@ -539,6 +573,7 @@ impl SessionStore {
             .rev()
             .find(|entry| !entry.kind.is_journal())
             .map(|entry| entry.id.clone());
+        let (name, pinned) = Inner::settings(&entries);
         Ok(SessionStore {
             inner: Mutex::new(Inner {
                 path: path.to_path_buf(),
@@ -547,6 +582,9 @@ impl SessionStore {
                 entries,
                 index,
                 leaf,
+                name,
+                pinned,
+                profile_memo: None,
             }),
         })
     }
@@ -560,6 +598,7 @@ impl SessionStore {
             .enumerate()
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
+        let (name, pinned) = Inner::settings(&entries);
         SessionStore {
             inner: Mutex::new(Inner {
                 path,
@@ -568,6 +607,9 @@ impl SessionStore {
                 entries,
                 index,
                 leaf,
+                name,
+                pinned,
+                profile_memo: None,
             }),
         }
     }
@@ -709,6 +751,7 @@ impl SessionStore {
         }
         let position = inner.entries.len();
         inner.index.insert(id.clone(), position);
+        inner.note(&entry.kind);
         inner.entries.push(entry);
         if !aside {
             inner.leaf = Some(id.clone());
@@ -905,6 +948,7 @@ impl SessionStore {
             }
             let position = inner.entries.len();
             inner.index.insert(entry.id.clone(), position);
+            inner.note(&entry.kind);
             inner.entries.push(entry);
         }
         Ok(())
@@ -961,23 +1005,12 @@ impl SessionStore {
 
     /// The most recent `session_info` name.
     pub fn name(&self) -> Option<String> {
-        self.lock().entries.iter().rev().find_map(|e| match &e.kind {
-            EntryKind::SessionInfo { name } => Some(name.clone()),
-            _ => None,
-        })
+        self.lock().name.clone()
     }
 
     /// Whether the session is pinned.
     pub fn pinned(&self) -> bool {
-        self.lock()
-            .entries
-            .iter()
-            .rev()
-            .find_map(|e| match &e.kind {
-                EntryKind::Pin { pinned } => Some(*pinned),
-                _ => None,
-            })
-            .unwrap_or(false)
+        self.lock().pinned
     }
 
     /// The label of each labelled entry. The newest label of an entry counts; an empty one
@@ -998,24 +1031,24 @@ impl SessionStore {
 
     /// The model chain the branch ending at `leaf` last switched to.
     pub fn last_chain(&self, leaf: Option<&str>) -> Option<Vec<ModelSpec>> {
-        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
-            EntryKind::ModelChange { chain } if !chain.is_empty() => Some(chain),
+        self.latest(leaf, |e| match &e.kind {
+            EntryKind::ModelChange { chain } if !chain.is_empty() => Some(chain.clone()),
             _ => None,
         })
     }
 
     /// The thinking level the branch ending at `leaf` last switched to.
     pub fn last_thinking(&self, leaf: Option<&str>) -> Option<String> {
-        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
-            EntryKind::ThinkingChange { level } => Some(level),
+        self.latest(leaf, |e| match &e.kind {
+            EntryKind::ThinkingChange { level } => Some(level.clone()),
             _ => None,
         })
     }
 
     /// The primary agent the branch ending at `leaf` last switched to.
     pub fn last_agent(&self, leaf: Option<&str>) -> Option<String> {
-        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
-            EntryKind::AgentChange { agent } => Some(agent),
+        self.latest(leaf, |e| match &e.kind {
+            EntryKind::AgentChange { agent } => Some(agent.clone()),
             _ => None,
         })
     }
@@ -1023,33 +1056,62 @@ impl SessionStore {
     /// The profile the branch ending at `leaf` last switched to; `None` when it never did, or
     /// when its last change says it is on no named profile again.
     pub fn last_profile(&self, leaf: Option<&str>) -> Option<String> {
-        self.branch(leaf)
-            .into_iter()
-            .rev()
-            .find_map(|e| match e.kind {
-                EntryKind::ProfileChange { profile } => Some(profile),
+        let found = match leaf {
+            Some(_) => self.latest(leaf, |e| match &e.kind {
+                EntryKind::ProfileChange { profile } => Some(profile.clone()),
                 _ => None,
-            })
-            .filter(|profile| !profile.is_empty())
+            }),
+            None => self.current_profile(),
+        };
+        found.filter(|profile| !profile.is_empty())
+    }
+
+    /// [`SessionStore::last_profile`] for the current leaf, which the status line asks for on
+    /// every frame: walks from the leaf only as far as the entry it answered for last time.
+    fn current_profile(&self) -> Option<String> {
+        let mut inner = self.lock();
+        let leaf = inner.leaf.clone()?;
+        let mut cursor = Some(leaf.as_str());
+        let mut walked = 0;
+        let mut found = None;
+        while let Some(&i) = cursor.and_then(|id| inner.index.get(id)) {
+            let entry = &inner.entries[i];
+            if let Some((id, known)) = &inner.profile_memo
+                && *id == entry.id
+            {
+                found = known.clone();
+                break;
+            }
+            if let EntryKind::ProfileChange { profile } = &entry.kind {
+                found = Some(profile.clone());
+                break;
+            }
+            walked += 1;
+            if walked > inner.entries.len() {
+                break; // a parent cycle in a damaged file
+            }
+            cursor = entry.parent_id.as_deref();
+        }
+        inner.profile_memo = Some((leaf, found.clone()));
+        found
     }
 
     /// The last message you sent on the branch ending at `leaf`, skipping those `skip` says the
     /// UI wrote for you (notes about a command you ran, for example).
     pub fn last_prompt(&self, leaf: Option<&str>, skip: &dyn Fn(&str) -> bool) -> Option<Entry> {
-        self.branch(leaf)
-            .into_iter()
-            .rev()
-            .find(|entry| match &entry.kind {
-                EntryKind::Message { message } => {
-                    message.role == Role::User
-                        && !skip(&message.text())
-                        && message
-                            .content
-                            .iter()
-                            .any(|block| !matches!(block, azazel_ai::Block::ToolResult { .. }))
-                }
-                _ => false,
-            })
+        self.latest(leaf, |entry| match &entry.kind {
+            EntryKind::Message { message }
+                if message.role == Role::User
+                    && !skip(&message.text())
+                    && message
+                        .content
+                        .iter()
+                        .any(|block| !matches!(block, azazel_ai::Block::ToolResult { .. })) =>
+            {
+                Some(entry.clone())
+            }
+            _ => None,
+        })
     }
 
     /// What `/session` reports, counted over the whole file.
@@ -1593,6 +1655,136 @@ mod tests {
 
     fn texts(context: &[ContextEntry]) -> Vec<String> {
         context.iter().map(|c| c.message.text()).collect()
+    }
+
+    /// `cargo test -p azazel-core --release --lib session::tests::bench_long -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_long_session() {
+        let dir = tempfile::tempdir().unwrap();
+        for count in [100usize, 30_000] {
+            let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+            store.append(EntryKind::SessionInfo { name: "early".into() });
+            let blob = "x".repeat(3000);
+            for i in 0..count {
+                store.message(&Message::user(format!("question {i}")));
+                store.message(&calling(&[("c1", "read")]));
+                store.message(&Message {
+                    role: Role::Tool,
+                    content: vec![Block::tool_result("c1", blob.clone(), false)],
+                    meta: None,
+                });
+            }
+            let reopened = SessionStore::open(&store.path()).unwrap();
+            let total = reopened.entries().len();
+            let time = |label: &str, f: &dyn Fn()| {
+                let first = std::time::Instant::now();
+                f();
+                eprintln!(
+                    "{count} turns ({total} entries) {label}: {:?} first call",
+                    first.elapsed()
+                );
+                let start = std::time::Instant::now();
+                let n = 20;
+                for _ in 0..n {
+                    f();
+                }
+                eprintln!(
+                    "{count} turns ({total} entries) {label}: {:?} per call",
+                    start.elapsed() / n
+                );
+            };
+            time("name", &|| {
+                std::hint::black_box(reopened.name());
+            });
+            time("pinned", &|| {
+                std::hint::black_box(reopened.pinned());
+            });
+            time("last_profile", &|| {
+                std::hint::black_box(reopened.last_profile(None));
+            });
+            time("last_thinking", &|| {
+                std::hint::black_box(reopened.last_thinking(None));
+            });
+            time("append", &|| {
+                reopened.append(EntryKind::Pin { pinned: false });
+            });
+        }
+    }
+
+    #[test]
+    fn name_and_pin_follow_the_newest_entry_in_every_way_a_store_is_filled() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        assert_eq!((store.name(), store.pinned()), (None, false));
+        let first = store.message(&Message::user("hello"));
+        store.append(EntryKind::SessionInfo { name: "one".into() });
+        store.append(EntryKind::SessionInfo { name: "two".into() });
+        store.append(EntryKind::Pin { pinned: true });
+        store.append(EntryKind::Pin { pinned: false });
+        store.append(EntryKind::Pin { pinned: true });
+        // The name is the newest in the file, whatever branch the leaf is on.
+        store.set_leaf(Some(&first));
+        store.message(&assistant("another branch"));
+        assert_eq!((store.name().as_deref(), store.pinned()), (Some("two"), true));
+        store.append(EntryKind::Pin { pinned: false });
+        assert!(!store.pinned());
+        store.append(EntryKind::Pin { pinned: true });
+
+        let reopened = SessionStore::open(&store.path()).unwrap();
+        assert_eq!(
+            (reopened.name().as_deref(), reopened.pinned()),
+            (Some("two"), true)
+        );
+        reopened.append(EntryKind::SessionInfo { name: "three".into() });
+        assert_eq!(reopened.name().as_deref(), Some("three"));
+
+        let mirror = SessionStore::mirror(store.header(), store.entries(), store.leaf(), store.path());
+        assert_eq!((mirror.name().as_deref(), mirror.pinned()), (Some("two"), true));
+        mirror.append(EntryKind::Pin { pinned: false });
+        assert!(!mirror.pinned());
+
+        let copy = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        copy.extend(store.entries()).unwrap();
+        assert_eq!((copy.name().as_deref(), copy.pinned()), (Some("two"), true));
+    }
+
+    #[test]
+    fn the_profile_of_the_current_branch_stays_right_as_the_leaf_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        assert_eq!(store.last_profile(None), None);
+        let first = store.message(&Message::user("hello"));
+        assert_eq!(store.last_profile(None), None);
+        store.append(EntryKind::ProfileChange {
+            profile: "fast".into(),
+        });
+        store.message(&assistant("one"));
+        assert_eq!(store.last_profile(None).as_deref(), Some("fast"));
+        store.append(EntryKind::ProfileChange {
+            profile: "deep".into(),
+        });
+        store.append(EntryKind::RunStarted {
+            run_id: "r".into(),
+            request_id: None,
+        });
+        assert_eq!(store.last_profile(None).as_deref(), Some("deep"));
+        // Another branch from before any switch, then back.
+        let deep = store.leaf();
+        store.set_leaf(Some(&first));
+        assert_eq!(store.last_profile(None), None);
+        store.message(&assistant("other"));
+        assert_eq!(store.last_profile(None), None);
+        store.set_leaf(deep.as_deref());
+        assert_eq!(store.last_profile(None).as_deref(), Some("deep"));
+        // An empty name says no named profile; the older one is not looked up past it.
+        store.append(EntryKind::ProfileChange {
+            profile: String::new(),
+        });
+        assert_eq!(store.last_profile(None), None);
+        assert_eq!(store.last_profile(Some(&first)), None);
+        let reopened = SessionStore::open(&store.path()).unwrap();
+        assert_eq!(reopened.last_profile(None), None);
     }
 
     #[test]
