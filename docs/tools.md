@@ -724,8 +724,9 @@ See [mcp](mcp.md).
 ### Code-first mode
 
 With `[tools] code_first = true` the model gets full schemas for a small core only: `read`, `edit`, `write`,
-`shell`, `eval`, `ask_user`, `todo` and `task`, plus `patch` where it replaces `edit`, `plan_submit`, and the
-goal and report tools of runs that must end themselves. Every other tool (search, web, LSP, MCP, memory, the
+`shell`, `eval`, `ask_user`, `todo` and `task`, plus `patch` where it replaces `edit`, `plan_submit`, the
+goal and report tools of runs that must end themselves, and `screen`, whose captures are pictures a script
+cannot hand back to the model. Every other tool (search, web, LSP, MCP, memory, the
 browser, and so on) is left out of the tool list and called from a Luau script in `eval`:
 
 ```lua

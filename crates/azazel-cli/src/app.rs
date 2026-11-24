@@ -419,11 +419,14 @@ pub(crate) fn eval_luau(eval: &azazel_core::config::EvalConfig) -> bool {
 }
 
 /// Whether `name` keeps its full schema in code-first mode: the core tools, `patch` where it takes
-/// the place of `edit`, and the tools that end a goal, a plan or a typed run, which an agent must
-/// be able to call itself.
+/// the place of `edit`, the tools that end a goal, a plan or a typed run, which an agent must
+/// be able to call itself, and `screen`, whose captures are pictures a script cannot hand back to
+/// the model: hidden, models drove the desktop from scripts of their own, without its Esc abort,
+/// lock or `allow_apps`.
 fn code_first_core(name: &str) -> bool {
     azazel_core::config::CODE_FIRST_CORE.contains(&name)
         || name == "patch"
+        || name == "screen"
         || name == "plan_submit"
         || name == azazel_team::REPORT_TOOL
         || azazel_team::goal::GOAL_TOOLS.contains(&name)

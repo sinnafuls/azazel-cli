@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-11-24
+
+### Fixed
+
+- With `[tools] code_first = true` the `screen` tool stays in the tool list. Hidden behind `eval`, models could not get its captures back as pictures, so they drove the desktop from scripts of their own, without its Esc abort, session lock or `[screen] allow_apps`.
+
 ## [0.21.2] - 2026-11-24
 
 ### Fixed

@@ -165,8 +165,16 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     assert!(tool(&sandbox.requests()[0], "eval").is_some());
 }
 
-/// What code-first mode keeps in the tool list besides the core: tools an agent must have to end.
-const NEVER_HIDDEN: [&str; 5] = ["patch", "plan_submit", "report", "goal_done", "goal_blocked"];
+/// What code-first mode keeps in the tool list besides the core: tools an agent must have to end,
+/// and `screen`, whose pictures a script cannot return.
+const NEVER_HIDDEN: [&str; 6] = [
+    "patch",
+    "plan_submit",
+    "report",
+    "goal_done",
+    "goal_blocked",
+    "screen",
+];
 
 #[cfg(feature = "lua")]
 #[test]
@@ -220,6 +228,11 @@ fn code_first_run(listing: &str) {
     for hidden in ["glob", "grep"] {
         assert!(!names.contains(&hidden.to_string()), "{hidden} in {names:?}");
     }
+    #[cfg(feature = "screen")]
+    assert!(
+        names.contains(&"screen".to_string()),
+        "screen missing from {names:?}"
+    );
     for name in &names {
         let core = azazel_core::config::CODE_FIRST_CORE.contains(&name.as_str());
         assert!(
