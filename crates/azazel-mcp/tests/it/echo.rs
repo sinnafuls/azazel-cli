@@ -364,6 +364,30 @@ async fn a_server_tool_is_listed_called_and_called_again_after_the_server_was_ki
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_refuses_unknown_protocol_versions_still_connects() {
+    let shared = tempfile::tempdir().unwrap();
+    let pid_file = shared.path().join("pid");
+    let mut bench = Bench::with(Setup {
+        defer_threshold: 40,
+        entry: json!({
+            "lifecycle": "eager",
+            "env": { "MCP_ECHO_PID_FILE": &pid_file, "MCP_ECHO_STRICT": "1" }
+        }),
+        idle_timeout: None,
+        cache_dir: None,
+        pid_file: Some(pid_file),
+    })
+    .await;
+    bench.mock.push(
+        "a",
+        MockStep::tools("", &[("c1", "mcp__echo__echo", json!({ "text": "hi" }))]),
+    );
+    bench.mock.push("a", MockStep::text("done"));
+    assert_eq!(bench.run("say hi").await, ["hi"]);
+    bench.manager.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn with_too_many_tools_they_are_found_through_tool_search() {
     let mut bench = Bench::new(1).await;
     bench.mock.push(

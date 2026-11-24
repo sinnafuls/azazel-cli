@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-11-24
+
+### Fixed
+
+- MCP servers that check the protocol version (Cue4ParseMcp 1.2.0 among them) connect again. azazel asked for version 2026-07-28 in its `initialize` handshake, which such servers refuse with error -32022, so their tools never appeared; it now asks for 2025-11-25, the newest version that uses `initialize`.
+
 ## [0.21.1] - 2026-11-22
 
 ### Fixed

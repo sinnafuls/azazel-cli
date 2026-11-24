@@ -1,15 +1,16 @@
 //! A small MCP server over stdio for tests: tools `echo` and `add`, resource `mem://greeting`,
 //! prompt `greet`. When `MCP_ECHO_PID_FILE` is set, the process id is written there at startup so
-//! a test can kill the server.
+//! a test can kill the server. When `MCP_ECHO_STRICT` is set, an `initialize` asking for a
+//! protocol version newer than 2025-11-25 is refused with -32022, as some deployed servers do.
 
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
-    GetPromptResponse, GetPromptResult, JsonObject, ListPromptsResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
-    ServerConfig, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode, GetPromptRequestParams,
+    GetPromptResponse, GetPromptResult, InitializeRequestParams, InitializeResult, JsonObject,
+    ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
+    PromptMessage, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    Resource, ResourceContents, Role, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -32,6 +33,23 @@ impl ServerHandler for Echo {
             .build();
         ServerConfig::new(capabilities)
             .with_instructions("Echo fixture: `echo` returns its text, `add` sums two integers.")
+    }
+
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        let known = ProtocolVersion::known_up_to(&ProtocolVersion::V_2025_11_25);
+        if std::env::var_os("MCP_ECHO_STRICT").is_some() && !known.contains(&request.protocol_version) {
+            return Err(ErrorData::new(
+                ErrorCode(-32022),
+                format!("unsupported protocol version {}", request.protocol_version),
+                None,
+            ));
+        }
+        context.peer.set_peer_info(request.clone());
+        self.negotiate_initialize(&request)
     }
 
     async fn list_tools(

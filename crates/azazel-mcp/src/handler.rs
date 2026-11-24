@@ -14,8 +14,9 @@ use futures::StreamExt;
 use rmcp::model::{
     ClientCapabilities, ClientConfig, CreateMessageRequestParams, CreateMessageResult, ElicitRequestParams,
     ElicitResult, ElicitationAction, ElicitationCapability, FormElicitationCapability, Implementation,
-    ListRootsResult, LoggingLevel, LoggingMessageNotificationParam, ProgressNotificationParam, Root,
-    RootsCapabilities, SamplingCapability, SamplingMessage, SamplingMessageContentBlock,
+    ListRootsResult, LoggingLevel, LoggingMessageNotificationParam, ProgressNotificationParam,
+    ProtocolVersion, Root, RootsCapabilities, SamplingCapability, SamplingMessage,
+    SamplingMessageContentBlock,
 };
 use rmcp::service::{NotificationContext, RequestContext, RoleClient};
 use rmcp::{ClientHandler, ErrorData};
@@ -95,10 +96,13 @@ impl ClientHandler for Handler {
         capabilities.sampling = Some(SamplingCapability::default());
         capabilities.elicitation =
             Some(ElicitationCapability::new().with_form(FormElicitationCapability::new()));
+        // The handshake is `initialize`, which no version from 2026-07-28 on has: asking for the
+        // SDK's latest there makes servers that check the version refuse to start (-32022).
         ClientConfig::new(
             capabilities,
             Implementation::new("azazel", env!("CARGO_PKG_VERSION")),
         )
+        .with_protocol_version(ProtocolVersion::LATEST_WITH_INITIALIZE)
     }
 
     async fn list_roots(&self, _: RequestContext<RoleClient>) -> Result<ListRootsResult, ErrorData> {
