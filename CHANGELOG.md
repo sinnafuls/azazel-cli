@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-11-25
+
+### Fixed
+
+- An MCP server that could not be reached when the session started (a local server started later, such as a reverse-engineering tool's) no longer stays out of the session for good. azazel keeps trying it every 60 seconds, and tries it again at once at the start of each turn, when one of its tools is called and when `tool_search` runs, so its tools appear without `/mcp reconnect` or a restart.
+
 ## [0.21.3] - 2026-11-24
 
 ### Fixed

@@ -29,6 +29,9 @@ use crate::{convert, oauth};
 
 /// Seconds between attempts to reach a server that failed or went away.
 const RETRY_DELAYS: [u64; 5] = [1, 2, 4, 8, 16];
+/// Seconds between attempts once those delays are used up: a local server is often started after
+/// the session, and giving up for good left its tools out of the whole session.
+const RETRY_LATER: u64 = 60;
 /// A connection that lasted this long counts as healthy: its loss starts the delays over.
 const STABLE_AFTER: Duration = Duration::from_secs(30);
 /// How long a call waits for a server that is (re)connecting.
@@ -564,13 +567,15 @@ async fn supervise(weak: Weak<Inner>, name: String) {
             }
         };
         failures += 1;
-        let Some(delay) = RETRY_DELAYS.get(failures - 1) else {
-            if let Some(inner) = weak.upgrade() {
+        let delay = match RETRY_DELAYS.get(failures - 1) {
+            Some(delay) => *delay,
+            None => {
+                let Some(inner) = weak.upgrade() else { return };
                 inner.update(&name, |entry| entry.state = State::Failed(problem));
+                RETRY_LATER
             }
-            return;
         };
-        tokio::time::sleep(Duration::from_secs(*delay)).await;
+        tokio::time::sleep(Duration::from_secs(delay)).await;
     }
 }
 
@@ -619,6 +624,19 @@ impl Inner {
                 entry.task = Some(tokio::spawn(supervise(me, name.to_string())));
             }
         });
+    }
+
+    /// Tries every server that failed again at once, with the delays starting over.
+    fn revive_failed(self: &Arc<Self>) {
+        let failed: Vec<String> = self
+            .read()
+            .iter()
+            .filter(|(_, entry)| matches!(entry.state, State::Failed(_)))
+            .map(|(name, _)| name.clone())
+            .collect();
+        for name in failed {
+            self.spawn(&name);
+        }
     }
 
     /// Brings a server that may run to where it belongs once the session's servers are up:
@@ -712,8 +730,10 @@ impl Inner {
         after: u64,
     ) -> Result<(Peer<RoleClient>, Duration, u64, InUse), String> {
         let deadline = Instant::now() + READY_WAIT;
+        // A failed server is tried once more before the call gives up: it may have come up since.
+        let mut revived = false;
         loop {
-            let asleep = {
+            let (asleep, revive) = {
                 let servers = self.read();
                 let Some(entry) = servers.get(server) else {
                     return Err(format!("no MCP server named `{server}`"));
@@ -727,8 +747,9 @@ impl Inner {
                             InUse::new(&entry.activity),
                         ));
                     }
-                    (State::Ready | State::Connecting, _) => false,
-                    (State::Idle, _) if entry.on_demand() => true,
+                    (State::Ready | State::Connecting, _) => (false, false),
+                    (State::Idle, _) if entry.on_demand() => (true, false),
+                    (State::Failed(_), _) if !revived => (false, true),
                     (State::NeedsAuth, _) => {
                         return Err(format!(
                             "MCP server `{server}` needs a login: the user can run /mcp login {server}"
@@ -739,6 +760,10 @@ impl Inner {
             };
             if asleep {
                 self.wake(server);
+            }
+            if revive {
+                revived = true;
+                self.spawn(server);
             }
             if Instant::now() >= deadline {
                 return Err(format!("MCP server `{server}` is still connecting"));
@@ -1054,6 +1079,15 @@ impl McpManager {
     pub async fn wait_startup(&self) {
         if !self.0.waited.swap(true, Ordering::SeqCst) {
             self.settle(self.0.options.startup_wait).await;
+        }
+    }
+
+    /// Tries the servers that failed again. With a `wait`, returns once none is connecting or the
+    /// wait is over, so what they offer is known.
+    pub async fn retry_failed(&self, wait: Duration) {
+        self.0.revive_failed();
+        if !wait.is_zero() {
+            self.settle(wait).await;
         }
     }
 

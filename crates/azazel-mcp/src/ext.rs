@@ -2,6 +2,7 @@
 //! scheme, prompt commands, `/mcp`, and the `mcp` part of the system prompt.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_agent::{Access, AgentInfo, Offer, Tool, ToolCtx, ToolOutput, ToolSource};
@@ -19,6 +20,8 @@ use crate::manager::{McpManager, State};
 /// Hits `tool_search` returns when the caller does not say how many.
 const DEFAULT_SEARCH_LIMIT: usize = 8;
 const MAX_SEARCH_LIMIT: usize = 25;
+/// How long `tool_search` waits for servers that failed and are tried again.
+const SEARCH_RETRY_WAIT: Duration = Duration::from_secs(3);
 
 /// The tool that finds MCP tools; offered only while there are too many of them to list.
 pub const TOOL_SEARCH: &str = "tool_search";
@@ -74,6 +77,9 @@ impl Tool for ToolSearchTool {
             .get("limit")
             .and_then(Value::as_u64)
             .map_or(DEFAULT_SEARCH_LIMIT, |n| (n as usize).clamp(1, MAX_SEARCH_LIMIT));
+        // A failed server's tools are not offered: try it again, briefly, so a server started
+        // after the session can be found.
+        self.0.retry_failed(SEARCH_RETRY_WAIT).await;
         let hits = self.0.search(query, limit);
         if hits.is_empty() {
             return ToolOutput::text(format!("no MCP tool matches `{query}`; try other words"));
@@ -402,6 +408,8 @@ struct StartupWait(McpManager);
 impl EventHandler for StartupWait {
     async fn handle(&self, _: &mut Event, _: &ExtCtx) -> Outcome {
         self.0.wait_startup().await;
+        // A server that was down may be up now; its tools join a later request once it answers.
+        self.0.retry_failed(Duration::ZERO).await;
         Outcome::Continue
     }
 }

@@ -364,6 +364,39 @@ async fn a_server_tool_is_listed_called_and_called_again_after_the_server_was_ki
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_failed_at_startup_is_tried_again_on_the_next_turn() {
+    let shared = tempfile::tempdir().unwrap();
+    let pid_file = shared.path().join("pid");
+    // The server's program is not there yet, as when a local server starts after the session.
+    let later = shared
+        .path()
+        .join(format!("mcp-echo-later{}", std::env::consts::EXE_SUFFIX));
+    let mut bench = Bench::with(Setup {
+        defer_threshold: 40,
+        entry: json!({ "lifecycle": "eager", "command": &later }),
+        idle_timeout: None,
+        cache_dir: None,
+        pid_file: Some(pid_file),
+    })
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !matches!(bench.state().0, State::Failed(_)) {
+        assert!(Instant::now() < deadline, "the server is {:?}", bench.state());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    std::fs::copy(FIXTURE.as_path(), &later).unwrap();
+    bench.mock.push("a", MockStep::text("ok"));
+    bench.run("hello").await;
+    bench.until(State::Ready).await;
+    assert_eq!(
+        bench.call("mcp__echo__echo", json!({ "text": "back" })).await,
+        "back"
+    );
+    bench.manager.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_server_that_refuses_unknown_protocol_versions_still_connects() {
     let shared = tempfile::tempdir().unwrap();
     let pid_file = shared.path().join("pid");
