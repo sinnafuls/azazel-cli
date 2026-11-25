@@ -1531,10 +1531,11 @@ impl Core {
             call_id: call_id.to_string(),
             cwd: self.cwd.clone(),
             cancel: cancel.clone(),
-            update: UpdateSink::new(move |text| {
+            update: UpdateSink::live(move |text, replace| {
                 hub.emit(AgentEvent::ToolUpdate {
                     call_id: update_id.clone(),
                     text,
+                    replace,
                 })
             }),
             services: self.services.clone(),

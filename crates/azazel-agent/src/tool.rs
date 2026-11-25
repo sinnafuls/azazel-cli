@@ -293,19 +293,38 @@ impl ToolOutput {
 /// Progress text from a running tool, shown live and never sent to the model.
 #[derive(Clone, Default)]
 pub struct UpdateSink {
-    sink: Option<Arc<dyn Fn(String) + Send + Sync>>,
+    sink: Option<Arc<dyn Fn(String, bool) + Send + Sync>>,
 }
 
 impl UpdateSink {
+    /// A sink that takes lines of progress. A [`replace`](Self::replace)d view is not a line and
+    /// does not reach it.
     pub fn new(sink: impl Fn(String) + Send + Sync + 'static) -> Self {
+        Self::live(move |text, replace| {
+            if !replace {
+                sink(text);
+            }
+        })
+    }
+
+    /// A sink that takes lines and live views; the flag is true for a view.
+    pub fn live(sink: impl Fn(String, bool) + Send + Sync + 'static) -> Self {
         UpdateSink {
             sink: Some(Arc::new(sink)),
         }
     }
 
+    /// One more line of progress.
     pub fn send(&self, text: impl Into<String>) {
         if let Some(sink) = &self.sink {
-            sink(text.into());
+            sink(text.into(), false);
+        }
+    }
+
+    /// The last lines of what the tool prints, whole: they take the place of what was shown.
+    pub fn replace(&self, text: impl Into<String>) {
+        if let Some(sink) = &self.sink {
+            sink(text.into(), true);
         }
     }
 }

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap, KillOnDrop};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -445,6 +445,74 @@ pub fn lower(_command: &mut CommandWrap, _priority: ProcessPriority) {}
 /// Receives each output line of a running command.
 pub type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Receives the live view of a running command: its last [`LIVE_LINES`] lines, partial line
+/// included, as one text. Called at most once per [`LIVE_INTERVAL`].
+pub type LiveSink = Arc<dyn Fn(String) + Send + Sync>;
+
+/// Lines of output the live view keeps; the card of a running call shows as many.
+pub const LIVE_LINES: usize = 10;
+
+/// The least time between two calls of a [`LiveSink`]: about twelve redraws a second.
+pub const LIVE_INTERVAL: Duration = Duration::from_millis(80);
+
+/// The tail of an output stream as a terminal would show it, in bounded memory: a `\r` takes the
+/// line back to its start (a progress bar keeps its last state), a line that is not finished
+/// is part of the view, and only the last `max` lines are kept.
+#[derive(Debug)]
+pub struct LiveTail {
+    max: usize,
+    lines: VecDeque<String>,
+    current: String,
+    chars: usize,
+    /// A `\r` was seen and the next character other than `\n` starts the line over.
+    returned: bool,
+}
+
+impl LiveTail {
+    pub fn new(max: usize) -> Self {
+        LiveTail {
+            max,
+            lines: VecDeque::new(),
+            current: String::new(),
+            chars: 0,
+            returned: false,
+        }
+    }
+
+    pub fn push(&mut self, chunk: &str) {
+        for c in chunk.chars() {
+            match c {
+                '\r' => self.returned = true,
+                '\n' => {
+                    self.returned = false;
+                    if self.lines.len() == self.max {
+                        self.lines.pop_front();
+                    }
+                    self.lines.push_back(std::mem::take(&mut self.current));
+                    self.chars = 0;
+                }
+                c => {
+                    if std::mem::take(&mut self.returned) {
+                        self.current.clear();
+                        self.chars = 0;
+                    }
+                    if self.chars < MAX_LINE_CHARS {
+                        self.current.push(c);
+                        self.chars += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The kept lines and the one being written, joined by newlines; at most `max` lines.
+    pub fn render(&self) -> String {
+        let open = (!self.current.is_empty()).then_some(self.current.as_str());
+        let all: Vec<&str> = self.lines.iter().map(String::as_str).chain(open).collect();
+        all[all.len().saturating_sub(self.max)..].join("\n")
+    }
+}
+
 pub struct RunOptions {
     pub cwd: PathBuf,
     /// Added to the inherited environment.
@@ -455,6 +523,8 @@ pub struct RunOptions {
     pub stdin: Option<Vec<u8>>,
     /// Called with each output line as it arrives.
     pub on_line: Option<LineSink>,
+    /// Called with the tail of the output while the command runs, see [`LiveSink`].
+    pub on_live: Option<LiveSink>,
     /// Lines to keep from the start and the end of the output.
     pub keep: (usize, usize),
     /// Cancelling this lets go of the command instead of ending it: [`run`] returns at once and
@@ -473,6 +543,7 @@ impl RunOptions {
             cancel: CancellationToken::new(),
             stdin: None,
             on_line: None,
+            on_live: None,
             keep: (100, 300),
             detach: None,
             priority: ProcessPriority::Normal,
@@ -592,25 +663,66 @@ pub fn no_prompts_env() -> Vec<(String, String)> {
 
 /// Forwards the lines of `pipe` to `tx`. Ends at end of stream or when the receiver is gone.
 pub fn pump_lines(pipe: impl AsyncRead + Unpin + Send + 'static, tx: mpsc::UnboundedSender<String>) {
+    pump(pipe, tx, None);
+}
+
+/// [`pump_lines`] that also sends what it reads to `live` as it arrives, a line finished or
+/// not, so that a program that prints a prompt or a progress bar can be watched.
+fn pump(
+    mut pipe: impl AsyncRead + Unpin + Send + 'static,
+    tx: mpsc::UnboundedSender<String>,
+    live: Option<mpsc::UnboundedSender<String>>,
+) {
     tokio::spawn(async move {
-        let mut reader = BufReader::new(pipe);
-        let mut raw = Vec::new();
+        let mut buf = [0u8; 8192];
+        let mut line = Vec::new();
+        let mut split = Vec::new();
+        let send = |raw: &[u8]| {
+            let text = String::from_utf8_lossy(raw);
+            let line = text.trim_end_matches(['\n', '\r']);
+            // A carriage return redraws a progress line; keep its final state.
+            let line = line.rsplit('\r').next().unwrap_or(line);
+            tx.send(line.to_string()).is_ok()
+        };
         loop {
-            raw.clear();
-            match reader.read_until(b'\n', &mut raw).await {
+            let n = match pipe.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&raw);
-                    let line = text.trim_end_matches(['\n', '\r']);
-                    // A carriage return redraws a progress line; keep its final state.
-                    let line = line.rsplit('\r').next().unwrap_or(line);
-                    if tx.send(line.to_string()).is_err() {
-                        break;
+                Ok(n) => n,
+            };
+            let chunk = &buf[..n];
+            if let Some(live) = &live {
+                split.extend_from_slice(chunk);
+                let text = take_utf8(&mut split);
+                if !text.is_empty() {
+                    // The view may be gone (the command was let go of) while the lines go on.
+                    let _ = live.send(text);
+                }
+            }
+            for piece in chunk.split_inclusive(|byte| *byte == b'\n') {
+                line.extend_from_slice(piece);
+                if piece.ends_with(b"\n") {
+                    if !send(&line) {
+                        return;
                     }
+                    line.clear();
                 }
             }
         }
+        if !line.is_empty() {
+            send(&line);
+        }
     });
+}
+
+/// The text at the start of `pending`, leaving a character cut off at its end for the next read.
+fn take_utf8(pending: &mut Vec<u8>) -> String {
+    let cut = match std::str::from_utf8(pending) {
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        _ => pending.len(),
+    };
+    let text = String::from_utf8_lossy(&pending[..cut]).into_owned();
+    pending.drain(..cut);
+    text
 }
 
 /// How long output is drained after the shell itself has exited; a grandchild that inherited the
@@ -642,13 +754,20 @@ pub async fn run_program(program: &Path, args: &[String], options: RunOptions) -
         });
     }
     let (tx, mut rx) = mpsc::unbounded_channel();
+    let (live_tx, mut live_rx) = mpsc::unbounded_channel();
+    let watched = options.on_live.is_some();
     if let Some(stdout) = child.stdout().take() {
-        pump_lines(stdout, tx.clone());
+        pump(stdout, tx.clone(), watched.then(|| live_tx.clone()));
     }
     if let Some(stderr) = child.stderr().take() {
-        pump_lines(stderr, tx.clone());
+        pump(stderr, tx.clone(), watched.then(|| live_tx.clone()));
     }
-    drop(tx);
+    drop((tx, live_tx));
+    let mut tail = LiveTail::new(LIVE_LINES);
+    let mut changed = false;
+    let mut live_open = watched;
+    let mut clock = tokio::time::interval(LIVE_INTERVAL);
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     let mut output = OutputBuffer::new(options.keep.0, options.keep.1);
     let take = |line: String, output: &mut OutputBuffer| {
@@ -683,6 +802,19 @@ pub async fn run_program(program: &Path, args: &[String], options: RunOptions) -
                 Some(line) => take(line, &mut output),
                 None => pipes_open = false,
             },
+            chunk = live_rx.recv(), if live_open => match chunk {
+                Some(chunk) => {
+                    tail.push(&chunk);
+                    changed = true;
+                }
+                None => live_open = false,
+            },
+            _ = clock.tick(), if changed => {
+                changed = false;
+                if let Some(on_live) = &options.on_live {
+                    on_live(tail.render());
+                }
+            }
             status = child.wait() => break status.ok(),
             _ = &mut deadline => {
                 timed_out = true;

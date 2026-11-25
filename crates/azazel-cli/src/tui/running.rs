@@ -176,9 +176,14 @@ pub(super) fn track(tools: &mut Vec<RunningTool>, event: &AgentEvent) -> Option<
                 None => tools.push(running),
             }
         }
-        AgentEvent::ToolUpdate { call_id, text } => {
+        AgentEvent::ToolUpdate { call_id, text, replace } => {
             if let Some(tool) = tools.iter_mut().find(|tool| tool.call_id == *call_id) {
-                tool.tail.push(text.clone());
+                if *replace {
+                    tool.tail.clear();
+                    tool.tail.extend(text.lines().map(str::to_string));
+                } else {
+                    tool.tail.push(text.clone());
+                }
                 let excess = tool.tail.len().saturating_sub(tool_card::MAX_OUTPUT_LINES);
                 tool.tail.drain(..excess);
             }

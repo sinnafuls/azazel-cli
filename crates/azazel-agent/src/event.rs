@@ -105,6 +105,10 @@ pub enum AgentEvent {
     ToolUpdate {
         call_id: String,
         text: String,
+        /// `text` is the last lines the tool printed, partial line included, and replaces what
+        /// was shown; otherwise it is one more line.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
     },
     ToolEnd {
         call_id: String,

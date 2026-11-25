@@ -724,6 +724,10 @@ pub enum Frame {
         agent: String,
         call_id: String,
         text: String,
+        /// `text` is the last lines the tool printed and replaces what was shown; otherwise it
+        /// is one more line.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
     },
     ToolEnd {
         agent: String,

@@ -1355,6 +1355,7 @@ mod tests {
             AgentEvent::ToolUpdate {
                 call_id: "c1".into(),
                 text: "…".into(),
+                replace: true,
             },
             AgentEvent::ToolEnd {
                 call_id: "c1".into(),

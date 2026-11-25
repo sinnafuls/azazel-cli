@@ -420,7 +420,7 @@ impl Tool for EvalTool {
         options.timeout = Some(timeout);
         options.cancel = ctx.cancel.clone();
         options.stdin = Some(input.code.into_bytes());
-        options.on_line = Some(Arc::new(move |line| update.send(line)));
+        options.on_live = Some(Arc::new(move |tail| update.replace(tail)));
         let shown = program
             .file_stem()
             .map(|stem| stem.to_string_lossy().into_owned())

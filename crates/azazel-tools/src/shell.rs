@@ -481,7 +481,10 @@ impl Tool for ShellTool {
         if !cwd.is_dir() {
             return ToolOutput::error(format!("{} is not a directory", cwd.display()));
         }
-        let env = self.env.for_agent(ctx.agent.depth, &cwd);
+        let mut env = self.env.for_agent(ctx.agent.depth, &cwd);
+        // A Python program writes to a pipe in blocks unless told otherwise, and the card of the
+        // running call would stay empty until the block fills or the program ends.
+        env.push(("PYTHONUNBUFFERED".to_string(), "1".to_string()));
         if input.interactive {
             return self.interactive(&input, &cwd, &env, ctx).await;
         }
@@ -510,7 +513,7 @@ impl Tool for ShellTool {
         options.priority = self.env.priority();
         options.timeout = Some(timeout);
         options.cancel = ctx.cancel.clone();
-        options.on_line = Some(Arc::new(move |line| update.send(line)));
+        options.on_live = Some(Arc::new(move |tail| update.replace(tail)));
         options.detach = Some(self.foreground.begin(&ctx.call_id, &input.command));
         let started = Instant::now();
         let result = run(&self.shell, &input.command, options).await;
