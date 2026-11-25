@@ -8,9 +8,24 @@ name: release
 # with whatever archives were uploaded, so a platform whose build failed can be added later by
 # re-running the failed jobs (`gh run rerun <run id> --failed`): every step can run again on an
 # existing release.
+#
+# Two other ways to run it publish nothing:
+# - By hand (`gh workflow run release --ref <branch> -f dry_run=true`): builds every platform and
+#   keeps the archives as workflow artifacts. Use it to try a change to this file or to the build.
+# - A push to main that changes the lockfile, the toolchain or this file: builds only to fill the
+#   dependency cache. A tag can read caches made on main, but not those made on another tag, so
+#   without these runs every release would compile every dependency again.
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths: [Cargo.toml, Cargo.lock, rust-toolchain.toml, .cargo/**, .github/workflows/release.yml]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build every platform and keep the archives as artifacts (a manual run never publishes)
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -21,6 +36,7 @@ defaults:
 
 jobs:
   create:
+    if: ${{ github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,6 +90,8 @@ jobs:
 
   build:
     needs: [create, web]
+    # `create` is skipped outside a tag; a failed one stops the builds as before.
+    if: ${{ !cancelled() && needs.web.result == 'success' && needs.create.result != 'failure' }}
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +104,9 @@ jobs:
             target: aarch64-unknown-linux-gnu
           - runner: macos-latest
             target: aarch64-apple-darwin
-          - runner: macos-latest
+          # The Intel runner builds natively and in parallel with the arm one; before, this target
+          # was cross-compiled on an arm runner, the slowest job of the release.
+          - runner: macos-15-intel
             target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     steps:
@@ -97,22 +117,41 @@ jobs:
           name: web-build
           path: web/build
       - run: rustup show && rustup target add ${{ matrix.target }}
+      # Caches the compiled dependencies (not the workspace's own crates, which change every
+      # release) of this target. Saved by runs on main and by manual runs, restored by all.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          cache-targets: true
+          save-if: ${{ github.ref_type != 'tag' }}
       # Screen capture (the `screen` feature) links against these on Linux.
       - if: runner.os == 'Linux'
         run: >
           sudo apt-get update && sudo apt-get install -y pkg-config libclang-dev libxcb1-dev
           libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev
       - run: cargo xtask dist --target ${{ matrix.target }}
-      - name: Upload
+      - name: Upload to the release
+        if: ${{ github.ref_type == 'tag' }}
         env:
           GH_TOKEN: ${{ github.token }}
         # One archive and its checksum per job; the glob for the other archive kind matches nothing.
         run: gh release upload "$GITHUB_REF_NAME" $(ls dist/azazel-*.zip dist/azazel-*.tar.gz dist/*.sha256 2>/dev/null) --clobber
+      - name: Keep the archive (manual run)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/azazel-*.zip
+            dist/azazel-*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 3
 
   publish:
     needs: [create, build]
     # Also when a platform's build failed or never started: its archive is added by a re-run.
-    if: ${{ !cancelled() && needs.create.result == 'success' }}
+    if: ${{ !cancelled() && github.ref_type == 'tag' && needs.create.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Publish the release

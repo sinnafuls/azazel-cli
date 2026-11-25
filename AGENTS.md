@@ -68,7 +68,7 @@ Other tasks:
 | Command | Does |
 |---|---|
 | `cargo xtask docs-check` | Compares the docs with the code; see [Docs](#docs) |
-| `cargo xtask bench-startup` | Builds the release binary and fails when it is larger than 56 MB, or `azazel --version` takes more than 30 ms, or a scripted `azazel -p hi` more than 150 ms. Prints the size and what it gained since the last run |
+| `cargo xtask bench-startup` | Builds the `dist` profile binary (the one that ships) and fails when it is larger than 58 MB, or `azazel --version` takes more than 30 ms, or a scripted `azazel -p hi` more than 150 ms. Prints the size and what it gained since the last run |
 | `cargo xtask rpc-schema` | Writes `docs/rpc.schema.json` from `azazel-protocol`; run it after changing the protocol |
 | `cargo xtask catalog` | Regenerates from models.dev (needs the network) the model catalogue `crates/azazel-ai/catalog/models.json`, the generated provider rows `crates/azazel-ai/src/providers/generated.rs` and their table in `docs/models-and-logins.md` |
 | `cargo xtask dist [--target <triple>]` | Builds the release archive and its checksum into `dist/`; the release workflow runs it. Fails when the `remote` feature is in the build and `web/build/index.html` is missing |
@@ -201,7 +201,7 @@ That prints `Wrote and verified hello.txt.` and leaves `tmp/live/project/hello.t
   `azazel_ai::tls::client()` or `azazel_ai::tls::client_builder()`; clippy turns `reqwest::Client::new`
   and `reqwest::Client::builder` away. Do not enable a crate's default TLS feature without checking
   `cargo tree -i aws-lc-rs` stays empty.
-- **Release profile.** Everything is built for size (`opt-level = "s"`) except the packages listed under
+- **Release profile.** `[profile.dist]` (thin LTO) is what `cargo xtask dist` and `bench-startup` build; `release` keeps fat LTO for local builds. Everything is built for size (`opt-level = "s"`) except the packages listed under
   `[profile.release.package]` in `Cargo.toml`, which keep `opt-level = 3` because time is spent there. A
   package joins the list with a measurement of what it gains and what it costs in
   `cargo xtask bench-startup`. `LIBSQLITE3_FLAGS` in `.cargo/config.toml` leaves unused parts out of the

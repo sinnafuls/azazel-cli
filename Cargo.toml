@@ -261,6 +261,15 @@ codegen-units = 1
 strip = true
 panic = "unwind" # a panic in one agent or tool task must fail that task, not the whole team
 
+# What ships (`cargo xtask dist`, `cargo xtask bench-startup`): the release profile with thin LTO.
+# Fat LTO with one codegen unit was ~half of every release build's time (the final link is one
+# single-threaded optimisation of the whole program and nothing before it can be cached); thin
+# LTO with one unit per crate costs about 4% in binary size (measured: 53.9 MiB -> 56.2 MiB).
+# `release` keeps fat LTO for local builds.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [profile.release.package]
 # Drawing: the renderer, the width and the boundaries of text, the screen of a terminal.
 azazel-tui = { opt-level = 3 }

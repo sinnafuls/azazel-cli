@@ -24,7 +24,8 @@ const CLOUD_SOURCES: [(&str, &str); 3] = [
 /// The limits `bench-startup` enforces.
 const MAX_VERSION: Duration = Duration::from_millis(30);
 const MAX_PROMPT: Duration = Duration::from_millis(150);
-const MAX_BINARY_BYTES: u64 = 56 * 1024 * 1024;
+// The `dist` profile (thin LTO) measured 56.2 MiB; fat LTO, which `release` keeps, 53.9 MiB.
+const MAX_BINARY_BYTES: u64 = 58 * 1024 * 1024;
 const BENCH_RUNS: usize = 20;
 
 fn main() -> ExitCode {
@@ -199,7 +200,7 @@ fn rpc_schema() -> Result<()> {
     Ok(())
 }
 
-/// Builds the release binary (for `--target <triple>`, else this machine) and packs it with the
+/// Builds the `dist` profile binary (for `--target <triple>`, else this machine) and packs it with the
 /// installer into `dist/azazel-<os>-<arch>.zip` (Windows) or `.tar.gz`, plus `<archive>.sha256`.
 /// The names carry no version, so `releases/latest/download/<name>` always finds the newest.
 fn dist() -> Result<()> {
@@ -212,7 +213,7 @@ fn dist() -> Result<()> {
     };
     require_web_build(&root)?;
     let mut build = Command::new(env!("CARGO"));
-    build.args(["build", "--release", "-p", "azazel-cli"]);
+    build.args(["build", "--profile", "dist", "-p", "azazel-cli"]);
     if let Some(triple) = &target {
         build.args(["--target", triple]);
     }
@@ -232,12 +233,12 @@ fn dist() -> Result<()> {
     let (os, arch, out_dir) = match &target {
         Some(triple) => {
             let (os, arch) = platform_of(triple)?;
-            (os, arch, target_dir(&root).join(triple).join("release"))
+            (os, arch, target_dir(&root).join(triple).join("dist"))
         }
         None => (
             std::env::consts::OS,
             std::env::consts::ARCH.to_string(),
-            target_dir(&root).join("release"),
+            target_dir(&root).join("dist"),
         ),
     };
     let windows = os == "windows";
@@ -304,7 +305,7 @@ fn dist() -> Result<()> {
     Ok(())
 }
 
-/// Builds the release binary and fails when it starts too slowly or is too large: the median of
+/// Builds the `dist` profile binary and fails when it starts too slowly or is too large: the median of
 /// 20 runs of `azazel --version` and of `azazel -p hi` against the scripted provider, and the
 /// size of the binary. The binary is built with the scripted provider compiled in, which makes it
 /// a little larger than the one that ships.
@@ -313,7 +314,8 @@ fn bench_startup() -> Result<()> {
     let built = Command::new(env!("CARGO"))
         .args([
             "build",
-            "--release",
+            "--profile",
+            "dist",
             "--package",
             "azazel-cli",
             "--features",
@@ -326,7 +328,7 @@ fn bench_startup() -> Result<()> {
         bail!("the release build failed");
     }
     let binary = target_dir(&root)
-        .join("release")
+        .join("dist")
         .join(format!("azazel{}", std::env::consts::EXE_SUFFIX));
     let size = std::fs::metadata(&binary)
         .with_context(|| format!("{} is missing", binary.display()))?
