@@ -994,7 +994,8 @@ fn points_of(branch: &[&Entry]) -> Vec<RewindPoint> {
                 EntryKind::Message { message }
                     if message.role == MessageRole::User && !is_note(&message.text()) =>
                 {
-                    prompt = message.text();
+                    // What was typed, not the files and memories added to it.
+                    prompt = crate::retry::typed(&message.text()).to_string();
                     break;
                 }
                 _ => {}

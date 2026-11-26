@@ -14,12 +14,18 @@ const ATTACHED: &str = "\n\n<file path=\"";
 /// How the first message of a session started by `/handoff` starts: the brief, not a prompt.
 pub const HANDOFF_NOTE: &str = "Hand-off brief from session ";
 
-/// A user message as it was typed: without the file blocks its `@path` mentions attached.
+/// How the memories recalled for a prompt, added after everything else, start.
+const RECALLED: &str = "\n\n<memory>\n";
+
+/// A user message as it was typed: without the file blocks its `@path` and `#<n>` mentions
+/// attached, and without the memories recalled for it.
 pub fn typed(sent: &str) -> &str {
-    match sent.find(ATTACHED) {
-        Some(at) => &sent[..at],
-        None => sent,
-    }
+    let end = [ATTACHED, RECALLED]
+        .iter()
+        .filter_map(|start| sent.find(start))
+        .min()
+        .unwrap_or(sent.len());
+    &sent[..end]
 }
 
 /// Whether a user message is a prompt the user wrote, rather than a note the interface wrote
@@ -120,5 +126,14 @@ mod tests {
         assert_eq!(again.parent.as_deref(), Some(reply.as_str()));
         assert_eq!(again.text, "look at @notes.md and @pixel.png");
         assert_eq!(again.images, [image("pasted")]);
+    }
+
+    #[test]
+    fn recalled_memories_and_issue_files_are_not_part_of_what_was_typed() {
+        let sent =
+            "fix #9 please\n\n<file path=\"issue://9\">\nbody\n</file>\n\n<memory>\n- [fact] x\n</memory>";
+        assert_eq!(typed(sent), "fix #9 please");
+        assert_eq!(typed("why\n\n<memory>\n- [gotcha] y\n</memory>"), "why");
+        assert_eq!(typed("plain text"), "plain text");
     }
 }

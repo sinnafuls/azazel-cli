@@ -8,6 +8,7 @@ GitHub are its section here.
 ### Fixed
 
 - The rewind list (Esc twice, `/rewind`) opens at once in long sessions: it used to run one `git diff` per checkpoint before appearing, which took minutes. The rows come from the session alone, and what changed in the files since each checkpoint fills in a moment later, from a single git run in the background.
+- Rewinding to an earlier prompt, or jumping to it in `/tree`, puts back only what you typed: the `<memory>` block recalled for it and the files attached for `#<n>` mentions are no longer copied into the input.
 
 ### Changed
 
