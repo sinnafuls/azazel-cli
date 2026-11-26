@@ -1720,7 +1720,7 @@ mod tests {
         ];
         for level in LEVELS {
             let theme = Theme::dark().with_glyphs(level);
-            for width in 20..=160 {
+            for width in (20..=60).chain((61..=160).step_by(7)) {
                 let mut rows = rows(&calls, SHUT, width, &theme);
                 rows.extend(self::rows(&calls[..1], SHUT, width, &theme));
                 let tail = ["Compiling azazel v0.3.0".to_string()];

@@ -17,12 +17,13 @@ use super::{Schedule, Scheduler, State, Target};
 use crate::running::{self, Lock};
 
 /// How often the watcher looks at what it owns.
-const TICK: Duration = Duration::from_millis(500);
+const TICK: Duration = Duration::from_millis(if cfg!(feature = "test-support") { 100 } else { 500 });
 /// How often the files of a `file:` trigger are looked at. A change runs the prompt once no
-/// further change was seen for this long.
-const FILES_EVERY: Duration = Duration::from_secs(2);
+/// further change was seen for this long. Test builds look more often, so that their tests do
+/// not wait out seconds of intervals.
+const FILES_EVERY: Duration = Duration::from_millis(if cfg!(feature = "test-support") { 400 } else { 2000 });
 /// How often the watcher looks for triggers nobody owns.
-const CLAIM_EVERY: Duration = Duration::from_secs(2);
+const CLAIM_EVERY: Duration = Duration::from_millis(if cfg!(feature = "test-support") { 400 } else { 2000 });
 /// How long `gh` may take to list the runs.
 const GH_LIMIT: Duration = Duration::from_secs(30);
 /// The most changed files a prompt names.

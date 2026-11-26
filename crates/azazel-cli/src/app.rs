@@ -1246,6 +1246,16 @@ impl App {
             max_stalls: config.retry.max_stalls,
             ..RetryPolicy::default()
         };
+        // A scripted run retries at once: the backoff is only time its tests would wait out.
+        #[cfg(feature = "test-support")]
+        let policy = match std::env::var_os("AZAZEL_MOCK_SCRIPT") {
+            Some(_) => RetryPolicy {
+                base_delay: Duration::from_millis(10),
+                max_jitter: Duration::ZERO,
+                ..policy
+            },
+            None => policy,
+        };
         let mut router = Router::new(providers, catalog, config.roles.clone(), policy)
             .with_accounts(credentials.clone())
             .with_virtual(registry.virtual_models.clone());

@@ -712,7 +712,7 @@ fn a_program_that_ends_wakes_the_lead_with_its_last_screen() {
         { "reply": { "tool_calls": [{ "id": "t1", "name": "shell", "input": {
             "command": "echo hello-from-the-terminal", "interactive": true, "wake_on_exit": true
         } }] } },
-        { "delay_ms": 6000, "reply": { "tool_calls": [
+        { "delay_ms": 3000, "reply": { "tool_calls": [
             { "id": "t2", "name": "pty", "input": { "action": "list" } }
         ] } },
         { "reply": { "text": "done" } },

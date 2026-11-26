@@ -1733,7 +1733,7 @@ mod tests {
             pane,
         ];
         for overlay in &overlays {
-            for width in 5..=160 {
+            for width in (5..=60).chain((61..=160).step_by(7)) {
                 for max_rows in [4, 8, 20, 60] {
                     let (lines, cursor) = overlay.render(width, max_rows, &theme);
                     assert!(

@@ -269,7 +269,7 @@ once = true
     // The second reply takes long enough for the hook's result to arrive while the lead works.
     let script = json!({ "lead": [
         call("c1", "write", json!({ "path": "hello.txt", "content": "hello\n" })),
-        { "delay_ms": 6000, "reply": { "tool_calls": [
+        { "delay_ms": 3000, "reply": { "tool_calls": [
             { "id": "c2", "name": "read", "input": { "path": "hello.txt" } }
         ] } },
         text("wrote hello.txt and saw the linter's warnings"),

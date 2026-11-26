@@ -550,7 +550,7 @@ fn a_changed_file_runs_its_trigger_once_in_one_of_the_sessions_that_are_open() {
     let second = sandbox.ok(&["bg", "get ready"]).trim().to_string();
     sandbox.wait_for_state(&first, "idle");
     sandbox.wait_for_state(&second, "idle");
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(1500));
     std::fs::write(sandbox.path("project/notes/new.md"), "new\n").unwrap();
     std::fs::write(sandbox.path("project/notes/skipped.txt"), "not a note\n").unwrap();
 
@@ -563,7 +563,7 @@ fn a_changed_file_runs_its_trigger_once_in_one_of_the_sessions_that_are_open() {
             .then_some(())
     });
     // One of them owns the trigger: the other stays as it was.
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_millis(1500));
     let prompts = sandbox.prompts();
     assert_eq!(
         prompts.iter().filter(|prompt| *prompt == wanted).count(),
@@ -601,7 +601,7 @@ fn a_ci_run_that_fails_while_a_session_is_open_runs_its_trigger() {
         .trim()
         .to_string();
     sandbox.wait_for_state(&host, "idle");
-    std::thread::sleep(Duration::from_secs(4));
+    std::thread::sleep(Duration::from_millis(2500));
     assert_eq!(sandbox.prompts(), ["get ready"]);
 
     // The run that was going fails, and another one passes.
@@ -613,7 +613,7 @@ fn a_ci_run_that_fails_while_a_session_is_open_runs_its_trigger() {
     sandbox.wait("the trigger to run", || {
         (sandbox.prompts().len() == 2).then_some(())
     });
-    std::thread::sleep(Duration::from_secs(3));
+    std::thread::sleep(Duration::from_millis(2000));
     assert_eq!(
         sandbox.prompts(),
         [

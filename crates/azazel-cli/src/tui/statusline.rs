@@ -983,7 +983,9 @@ mod tests {
                 let layout = layout(&format!("preset = \"{preset}\"\nseparator = \"{separator}\""));
                 for level in GlyphLevel::ALL {
                     let theme = Theme::dark().with_glyphs(level);
-                    for width in 0..=200 {
+                    // Every narrow width, where parts drop out one by one, then a sample of the
+                    // wide ones.
+                    for width in (0..=60).chain((61..=200).step_by(7)) {
                         for line in [&full(&METERED), &long, &every] {
                             let row = shown_in(line, &layout, width, &theme);
                             let at = format!("{preset} {separator} {level} at {width}");

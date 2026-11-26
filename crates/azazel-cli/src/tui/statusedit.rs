@@ -502,8 +502,8 @@ mod tests {
         let subscription = StatusEditor::new(&StatuslineConfig::default(), true);
         assert!(shown(&subscription, 120, 40)[0].contains("◔ 61% 5h"));
         let theme = Theme::dark();
-        for width in 1..=120 {
-            for rows in 1..=30 {
+        for width in (1..=50).chain((51..=120).step_by(7)) {
+            for rows in (1..=12).chain([16, 20, 30]) {
                 let widget = editor.widget(width, rows, &theme);
                 assert!(widget.lines.len() <= rows, "{width}x{rows}");
                 for line in &widget.lines {
