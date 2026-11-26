@@ -191,10 +191,28 @@ jobs:
     needs: [web, e2e-binary]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Split by screen size: each size of the layout tests takes about as long as all the other
+    # tests together, and `--shard` split by count in file order, which gave one runner all of them.
+    # The last group takes every test the others do not name, so a new test always runs somewhere.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        include:
+          - group: 1920x1080
+            grep: 'at (1920x1080|724x1360),'
+          - group: 1440x900-zoom200
+            grep: 'at 1440x900-zoom200,'
+          - group: 1440x900
+            grep: 'at 1440x900,'
+          - group: 390x844
+            grep: 'at 390x844,'
+          - group: 768x1024
+            grep: 'at (768x1024|1024x1360),'
+          - group: 1024x768
+            grep: 'at 1024x768,'
+          - group: rest
+            grep-invert: 'at (1920x1080|724x1360|1440x900-zoom200|1440x900|390x844|768x1024|1024x1360|1024x768),'
+    name: e2e (${{ matrix.group }})
     defaults:
       run:
         shell: bash
@@ -210,14 +228,23 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      # The browser is cached; its system libraries are installed every time (they are not cached).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/bun.lock') }}
       - run: bunx playwright install --with-deps chromium
-      - run: bun run test:e2e --shard=${{ matrix.shard }}/4
+      - run: |
+          if [ -n "$GREP" ]; then bun run test:e2e --grep "$GREP"
+          else bun run test:e2e --grep-invert "$GREP_INVERT"; fi
         env:
           AZAZEL_BIN: ${{ runner.temp }}/azazel-bin/azazel
+          GREP: ${{ matrix.grep }}
+          GREP_INVERT: ${{ matrix.grep-invert }}
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report-${{ matrix.shard }}
+          name: playwright-report-${{ matrix.group }}
           path: |
             web/playwright-report
             web/test-results
