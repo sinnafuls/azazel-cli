@@ -98,10 +98,13 @@ jobs:
       # mold links the many test binaries in a fraction of the time ld takes.
       - if: runner.os == 'Linux'
         uses: rui314/setup-mold@v1
+      # The workspace's own crates are cached too: a change rebuilds only the crates it touches and
+      # those above them, not all of them (about two minutes of the test job before).
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.task }}
           cache-on-failure: true
+          cache-workspace-crates: true
       - if: matrix.task != 'test'
         run: cargo fmt --check
       - if: runner.os == 'Linux'
@@ -129,11 +132,12 @@ jobs:
           tool: nextest
       # nextest runs every test in a process of its own, many at once. The docs check is one of
       # them (docs-check's the_docs_of_this_repository_agree_with_the_code), so it needs no build
-      # of its own. nextest leaves doc examples out; `--doc` runs those.
+      # of its own. nextest leaves doc examples out; `--doc` runs those. Most of the slow tests wait
+      # on processes and timers rather than use a core, so it runs three tests per core.
       - if: matrix.task == 'test'
         run: |
           while [ ! -f "$RUNNER_TEMP/disk-freed" ]; do sleep 2; done
-          AZAZEL_TEST_SSH=1 cargo nextest run --workspace --no-fail-fast
+          AZAZEL_TEST_SSH=1 cargo nextest run --workspace --no-fail-fast --test-threads 12
           cargo test --workspace --doc
       - if: matrix.task == 'all'
         run: cargo test --workspace --no-fail-fast
