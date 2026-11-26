@@ -248,6 +248,16 @@ impl AgentHandle {
 
     /// False when the agent has shut down.
     pub fn send(&self, command: AgentCmd) -> bool {
+        // The status shows a new chain at once, not when the agent's task takes the command: a
+        // caller that asks for the state right after setting it would otherwise see the old one.
+        if let AgentCmd::SetModel(chain) = &command {
+            let mut status = locked(&self.status);
+            if status.chain != *chain {
+                status.model = None;
+                status.via = None;
+                status.chain = chain.clone();
+            }
+        }
         self.commands.send(command).is_ok()
     }
 
