@@ -97,7 +97,8 @@ bun run test:e2e    # Playwright against a real `azazel remote`; see below
   `--features test-support,remote` (`cargo build -p azazel-cli --features test-support,remote`; the test uses
   `target/debug/azazel` of `CARGO_TARGET_DIR` or `AZAZEL_BIN`) and `bunx playwright install chromium` once.
 - **CI** builds the page in the `web` job and the Linux Rust job downloads it, so tests and the binary carry
-  the real page; the `e2e` job reuses the test binary of that job. The release workflow builds the page once
+  the real page; the `e2e-binary` job builds the binary the browser tests drive beside it, and the `e2e` job
+  runs those tests on four runners (`--shard`) as soon as that binary is ready. The release workflow builds the page once
   and every platform downloads it before `cargo xtask dist`.
 
 ### Keeping `target/` small
