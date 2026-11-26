@@ -706,6 +706,12 @@ impl SessionStore {
         self.lock().entries.clone()
     }
 
+    /// Runs `read` on every entry, oldest first, without copying them. The store stays locked
+    /// meanwhile, so `read` must be quick.
+    pub fn with_entries<T>(&self, read: impl FnOnce(&[Entry]) -> T) -> T {
+        read(&self.lock().entries)
+    }
+
     pub fn entry(&self, id: &str) -> Option<Entry> {
         let inner = self.lock();
         inner.index.get(id).map(|&i| inner.entries[i].clone())

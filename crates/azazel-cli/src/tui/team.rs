@@ -185,7 +185,9 @@ impl Tui {
         let days = self.env.config.team.agent_retention_days;
         let since = (days > 0)
             .then(|| jiff::Timestamp::now() - jiff::SignedDuration::from_hours(i64::from(days) * 24));
-        self.fleet.recorded = super::fleet::recorded_agents(&self.session.entries(), since);
+        self.fleet.recorded = self
+            .session
+            .with_entries(|entries| super::fleet::recorded_agents(entries, since));
     }
 
     /// Every sub-agent of the session, running and finished; `enter` opens one's chat.

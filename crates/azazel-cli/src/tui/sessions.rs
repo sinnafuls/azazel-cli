@@ -195,35 +195,40 @@ struct TreeRow {
 
 /// The messages `/tree` lists, newest first: what you and the agent said, without tool results.
 fn tree_rows(
-    entries: Vec<Entry>,
+    entries: &[Entry],
     branch: &HashSet<String>,
     labels: &HashMap<String, String>,
     filter: TreeFilter,
 ) -> Vec<TreeRow> {
+    // Only the rows shown are copied out of the store: the filter is applied before the text is.
     entries
-        .into_iter()
+        .iter()
         .rev()
         .filter_map(|entry| {
-            let EntryKind::Message { message } = entry.kind else {
+            let EntryKind::Message { message } = &entry.kind else {
                 return None;
             };
-            let said = message.text();
-            if message.role == MessageRole::Tool || said.trim().is_empty() {
+            if message.role == MessageRole::Tool {
                 return None;
             }
-            let row = TreeRow {
-                is_user: message.role == MessageRole::User,
-                label: labels.get(&entry.id).cloned(),
-                on_branch: branch.contains(&entry.id),
-                id: entry.id,
-                said,
-            };
+            let is_user = message.role == MessageRole::User;
+            let label = labels.get(&entry.id).cloned();
             let shown = match filter {
                 TreeFilter::All => true,
-                TreeFilter::Labelled => row.label.is_some(),
-                TreeFilter::Prompts => row.is_user,
+                TreeFilter::Labelled => label.is_some(),
+                TreeFilter::Prompts => is_user,
             };
-            shown.then_some(row)
+            if !shown {
+                return None;
+            }
+            let said = message.text();
+            (!said.trim().is_empty()).then(|| TreeRow {
+                is_user,
+                label,
+                on_branch: branch.contains(&entry.id),
+                id: entry.id.clone(),
+                said,
+            })
         })
         .collect()
 }
@@ -735,8 +740,10 @@ impl Tui {
     /// Opens `/tree` listing what `filter` lets through, with entry `select` selected.
     fn open_tree_with(&mut self, filter: TreeFilter, select: Option<&str>) {
         let session = &self.session;
-        let branch: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
-        let rows = tree_rows(session.entries(), &branch, &session.labels(), filter);
+        let branch: HashSet<String> =
+            session.with_branch(|path| path.iter().map(|entry| entry.id.clone()).collect());
+        let labels = session.labels();
+        let rows = session.with_entries(|entries| tree_rows(entries, &branch, &labels, filter));
         if rows.is_empty() {
             self.overlay = None;
             return self.info(match filter {
@@ -1235,6 +1242,48 @@ mod tests {
         );
     }
 
+    /// What opening `/tree` and the agent hub cost on a 30k-entry session.
+    /// Run with `cargo test -p azazel-cli --lib entries_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing; writes a 30k-entry session"]
+    fn entries_cost_on_a_30k_entry_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/w"), None).unwrap();
+        for n in 0..10_000 {
+            let mut message = Message::user(format!("prompt {n} {}", "word ".repeat(200)));
+            store.append(EntryKind::Message {
+                message: message.clone(),
+            });
+            message.role = MessageRole::Tool;
+            store.append(EntryKind::Message { message });
+            store.append(EntryKind::Agent {
+                agent_id: format!("a{}", n % 5),
+                def: "scout".to_string(),
+                status: "done".to_string(),
+                transcript: "t.jsonl".to_string(),
+            });
+        }
+        let time = |what: &str, run: &dyn Fn() -> usize| {
+            let started = std::time::Instant::now();
+            let mut shown = 0;
+            for _ in 0..5 {
+                shown = run();
+            }
+            eprintln!("{what}: {:?} per call, {shown} rows", started.elapsed() / 5);
+        };
+        let branch: HashSet<String> = store.branch(None).into_iter().map(|e| e.id).collect();
+        let labels = store.labels();
+        time("tree (all)", &|| {
+            store.with_entries(|e| tree_rows(e, &branch, &labels, TreeFilter::All).len())
+        });
+        time("tree (labelled)", &|| {
+            store.with_entries(|e| tree_rows(e, &branch, &labels, TreeFilter::Labelled).len())
+        });
+        time("hub", &|| {
+            store.with_entries(|e| crate::tui::fleet::recorded_agents(e, None).len())
+        });
+    }
+
     #[test]
     fn the_tree_lists_messages_newest_first_with_labels_and_filters() {
         let dir = tempfile::tempdir().unwrap();
@@ -1255,7 +1304,8 @@ mod tests {
             label: "dead end".to_string(),
         });
         let branch: HashSet<String> = store.branch(None).into_iter().map(|e| e.id).collect();
-        let rows = |filter| tree_rows(store.entries(), &branch, &store.labels(), filter);
+        let labels = store.labels();
+        let rows = |filter| store.with_entries(|entries| tree_rows(entries, &branch, &labels, filter));
 
         let all = rows(TreeFilter::All);
         let shown: Vec<(&str, bool, bool)> = all
