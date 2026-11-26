@@ -46,7 +46,7 @@ The live region, top to bottom:
 |---|---|---|
 | Streaming reply | the agent is working | The unfinished tail of the current reply; finished blocks move to scrollback |
 | Thinking | thinking is shown (`Ctrl+T`) | The last lines of the model's reasoning, in italics |
-| Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 5 output lines, elapsed time. In the [compact style](#compact-style), the group of calls that is still growing instead |
+| Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 12 output lines (live, a line still being written included), elapsed time. In the [compact style](#compact-style), the group of calls that is still growing instead |
 | Roster | sub-agents are active | One line per queued, working or approval-waiting agent; see [team](team.md) |
 | Todo list | the agent has unfinished todos | The lead agent's task list |
 | Widgets | an extension shows some | The lines [extensions](extensions.md#in-the-terminal-ui) set with `azazel.widget`: one row a line, at most 10 rows |
@@ -360,7 +360,7 @@ and shows the worst of their states. An edit keeps its diff under its row; nothi
 
 A group grows above the input while its calls come in and is written to the transcript when the agent says
 something else or the run ends. A call that is still running stands in the same tree with a spinner, the time
-it has been running and, under its row, the last 5 lines it printed. Groups that follow one another stand
+it has been running and, under its row, the last 12 lines it printed. Groups that follow one another stand
 together without a blank row. `Ctrl+O` draws the transcript again with every call as a full card until it is
 pressed again; inside tmux, screen or zellij it writes the calls of the group on screen again as full cards
 instead. The [transcript viewer](#transcript-viewer) always shows full cards.
