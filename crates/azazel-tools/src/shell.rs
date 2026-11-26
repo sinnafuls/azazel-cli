@@ -759,7 +759,7 @@ mod tests {
         env.set(vec![("AZ_GUARD".into(), "on".into())]);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let update = UpdateSink::new(move |line| sink.lock().unwrap().push(line));
+        let update = UpdateSink::live(move |view, _| sink.lock().unwrap().push(view));
         let command = format!("{}; exit 7", echo_env(&shell.shell, "AZ_GUARD"));
         let out = shell
             .call(
@@ -772,6 +772,39 @@ mod tests {
         assert_eq!(out.details.unwrap()["exit_code"], 7);
         assert_eq!(*seen.lock().unwrap(), ["on"]);
         assert!(shell.description().contains(shell.shell.name()));
+    }
+
+    #[tokio::test]
+    async fn the_card_gets_the_output_while_the_command_runs_and_the_result_is_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _, _) = tools(Duration::from_secs(60), dir.path());
+        // The command prints a line, waits until the test has seen it, then prints another: the
+        // view of the first line can only come from the running command.
+        let command = if shell.shell.is_posix() {
+            "echo one; while [ ! -f go ]; do sleep 0.05; done; echo two"
+        } else {
+            "Write-Output one; while (-not (Test-Path go)) { Start-Sleep -Milliseconds 50 }; Write-Output two"
+        };
+        let views = Arc::new(Mutex::new(Vec::new()));
+        let (seen, go) = (views.clone(), dir.path().join("go"));
+        let update = UpdateSink::live(move |text, replace| {
+            if replace && text == "one" {
+                let _ = std::fs::write(&go, "");
+            }
+            seen.lock().unwrap().push((text, replace));
+        });
+        let out = shell
+            .call(
+                json!({"command": command}),
+                &ctx(dir.path(), CancellationToken::new(), update),
+            )
+            .await;
+        assert_eq!(out.text_content(), "one
+two
+exit code: 0");
+        let views = views.lock().unwrap();
+        assert_eq!(views.first(), Some(&("one".to_string(), true)));
+        assert!(views.iter().all(|(_, replace)| *replace));
     }
 
     #[tokio::test]
@@ -808,7 +841,7 @@ mod tests {
         };
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
-        let update = UpdateSink::new(move |line| sink.lock().unwrap().push(line));
+        let update = UpdateSink::live(move |view, _| sink.lock().unwrap().push(view));
         let context = ctx(dir.path(), CancellationToken::new(), update);
         let foreground = shell.foreground.clone();
         assert!(!foreground.background("c1"), "nothing runs yet");
