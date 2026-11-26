@@ -65,16 +65,8 @@ impl Client {
         stdin.flush().unwrap();
     }
 
-    /// The next line, which must be JSON: nothing else may appear on standard output.
-    fn next(&self) -> Value {
-        let line = self
-            .lines
-            .recv_timeout(Duration::from_secs(60))
-            .expect("a protocol line within a minute");
-        serde_json::from_str(&line).unwrap_or_else(|e| panic!("not a protocol line ({e}): {line}"))
-    }
-
     /// Reads up to the first line `wanted` accepts; returns the lines before it and that line.
+    /// Every line must be JSON: nothing else may appear on standard output.
     fn until(&self, wanted: impl Fn(&Value) -> bool) -> (Vec<Value>, Value) {
         let mut before = Vec::new();
         loop {
