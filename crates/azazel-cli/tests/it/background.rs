@@ -580,6 +580,11 @@ fn a_background_session_killed_in_a_tool_call_is_listed_and_goes_on_when_attache
         assert!(started.elapsed() < LIMIT, "the call never started");
         std::thread::sleep(Duration::from_millis(25));
     }
+    // The log is written beside the session file, a moment later on a busy machine.
+    while !text(&sandbox.run(&["logs", &id])).0.contains("→ test_wait") {
+        assert!(started.elapsed() < LIMIT, "the call never reached the log");
+        std::thread::sleep(Duration::from_millis(25));
+    }
     kill_process(row["pid"].as_u64().unwrap());
 
     // It is still listed, as what it is; the session can be told from one that runs.
