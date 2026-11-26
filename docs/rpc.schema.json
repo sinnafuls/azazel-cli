@@ -1693,6 +1693,10 @@
             },
             "text": {
               "type": "string"
+            },
+            "replace": {
+              "type": "boolean",
+              "description": "`text` is the last lines the tool printed and replaces what was shown; otherwise it\nis one more line."
             }
           },
           "required": [

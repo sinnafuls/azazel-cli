@@ -205,7 +205,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 | `stream` | `event`: one of `start`, `text_delta` (`index`, `delta`), `thinking_delta` (`index`, `delta`), `tool_call_start` (`index`, `id`, `name`), `tool_call_delta` (`index`, `delta`), `block_end` (`index`, `block`) |
 | `message_end` | `message`: the complete assistant message |
 | `tool_start` | `call_id`, `name`, `input` |
-| `tool_update` | `call_id`, `text` (progress output) |
+| `tool_update` | `call_id`, `text` (progress output), `replace` (when true, `text` is the last lines the tool printed and replaces what was shown; otherwise it is one more line; omitted when false) |
 | `tool_end` | `call_id`, `output` (`content`, `is_error`, `details?`), `duration_ms` |
 | `turn_end` | |
 | `retry` | `attempt`, `model`, `stalled_secs?`, `max_attempts?`, `delay_ms?`, `error?`: the message in progress was discarded and the same model is asked again; `stalled_secs` is there when the model had sent nothing for that long ([stalls](models-and-logins.md#stalls)); `max_attempts` is how many times the model is asked in all before the chain moves on (absent when unlimited), `delay_ms` the wait before it is asked again, `error` why the attempt failed |

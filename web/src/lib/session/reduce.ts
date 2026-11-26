@@ -409,7 +409,7 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 			return upsertTool(base, agent, f.call_id as string, '', (t) => ({
 				...t,
 				status: t.status === 'pending' ? 'running' : t.status,
-				live: t.live ? `${t.live}\n${f.text as string}` : (f.text as string)
+				live: f.replace || !t.live ? (f.text as string) : `${t.live}\n${f.text as string}`
 			}));
 		case 'tool_end': {
 			const o = toolOutput(f.output);
