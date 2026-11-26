@@ -78,7 +78,12 @@ impl Client {
     fn until(&self, wanted: impl Fn(&Value) -> bool) -> (Vec<Value>, Value) {
         let mut before = Vec::new();
         loop {
-            let line = self.next();
+            // A line that never comes fails with what did come, so that a rare hang can be read.
+            let Ok(line) = self.lines.recv_timeout(Duration::from_secs(60)) else {
+                panic!("no awaited protocol line within a minute; the lines before it: {before:#?}");
+            };
+            let line: Value =
+                serde_json::from_str(&line).unwrap_or_else(|e| panic!("not a protocol line ({e}): {line}"));
             if wanted(&line) {
                 return (before, line);
             }
