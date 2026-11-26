@@ -1118,8 +1118,8 @@ impl Tui {
             ("tui.mouse", toml::Value::Boolean(on)) => tui.mouse = *on,
             ("tui.complete_ignored", toml::Value::Boolean(on)) => {
                 tui.complete_ignored = *on;
-                // The file list of `@` is read again on its next use.
-                self.files = None;
+                // The file list of `@` is read again.
+                self.load_files();
             }
             ("tui.queue_mode", toml::Value::String(mode)) => {
                 if let Ok(mode) = mode.parse() {

@@ -254,6 +254,8 @@ struct Completion {
     slash: bool,
     /// Completing the directory of `/cd`.
     dirs: bool,
+    /// The one row "indexing…" of `@`, shown until the project's files have been listed.
+    indexing: bool,
 }
 
 /// Results of work the UI started in the background.
@@ -431,7 +433,11 @@ pub struct Tui {
     words_loaded: bool,
     /// The request for the user's next message.
     predictor: ghost::Predictor,
+    /// The files `@` completes; `None` until the listing started by [`Tui::load_files`] is in.
     files: Option<Vec<String>>,
+    /// The number of the listing in flight, so that one started before a settings change
+    /// does not overwrite the one started after it.
+    files_walk: Arc<std::sync::atomic::AtomicU64>,
     busy: bool,
     /// The session in which `/handoff` was offered for `[session] handoff_at`.
     handoff_offered: Option<String>,
@@ -652,7 +658,6 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     }
     let branch = backend.branch();
     let session = backend.session().await;
-    backend.list_files(internal_tx.clone());
     let editor_config = env.config.editor.clone();
     let tui_config = env.config.tui.clone();
     let (status, status_problems) = statusbar::StatusBar::new(&env.config.statusline);
@@ -721,6 +726,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         words_loaded: false,
         predictor: Default::default(),
         files: None,
+        files_walk: Arc::default(),
         busy: false,
         handoff_offered: None,
         busy_since: Instant::now(),
@@ -758,6 +764,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         tui.warn(&problem);
     }
     tui.backend.started().await;
+    tui.load_files();
     tui.watch_triggers();
     // A session that is already at work when the UI opens on it shows as working.
     if tui.backend.status().busy {
@@ -1590,7 +1597,14 @@ impl Tui {
     async fn on_internal(&mut self, done: Internal) {
         let (output, status) = match done {
             Internal::Shell { output, status } => (output, status),
-            Internal::Files(files) => return self.files = Some(files),
+            Internal::Files(files) => {
+                self.files = Some(files);
+                if self.completion.as_ref().is_some_and(|c| c.indexing) {
+                    self.completion = None;
+                    self.refresh_completion();
+                }
+                return;
+            }
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
             Internal::Request(request) => return self.waiting.push_back(request),
             Internal::Btw(update) => return self.on_btw(update),
@@ -2283,15 +2297,19 @@ impl Tui {
 
     // ------------------------------------------------------------ completion
 
-    /// The files `@` completes. Those of a session in another process were asked for when
-    /// the UI started; until they are there, there are none.
-    fn project_files(&mut self) -> &[String] {
-        let root = self.local_cwd();
-        let ignored = self.env.config.tui.complete_ignored;
-        self.files.get_or_insert_with(|| match root {
-            Some(root) => project_files(&root, ignored),
-            None => Vec::new(),
-        })
+    /// Starts listing the files `@` completes, away from the UI thread; they come back as
+    /// [`Internal::Files`]. Those of a session in another process are asked of it.
+    fn load_files(&mut self) {
+        self.files = None;
+        match self.local_cwd() {
+            Some(root) => spawn_file_index(
+                root,
+                self.env.config.tui.complete_ignored,
+                &self.files_walk,
+                self.internal_tx.clone(),
+            ),
+            None => self.backend.list_files(self.internal_tx.clone()),
+        }
     }
 
     fn refresh_completion(&mut self) {
@@ -2308,6 +2326,7 @@ impl Tui {
                 list,
                 slash: true,
                 dirs: false,
+                indexing: false,
             });
             return;
         }
@@ -2324,6 +2343,7 @@ impl Tui {
                 list,
                 slash: false,
                 dirs: true,
+                indexing: false,
             });
             return;
         }
@@ -2332,22 +2352,40 @@ impl Tui {
             self.completion = None;
             return;
         };
-        if !matches!(&self.completion, Some(c) if !c.slash && !c.dirs) {
+        let ready = self.files.is_some();
+        if !matches!(&self.completion, Some(c) if !c.slash && !c.dirs && c.indexing != ready) {
+            if !ready {
+                self.completion = Some(Completion {
+                    list: SelectList::new(vec![SelectItem::new(
+                        format!("indexing{}", self.theme.glyph(Glyph::Ellipsis)),
+                        "",
+                    )]),
+                    slash: false,
+                    dirs: false,
+                    indexing: true,
+                });
+                return;
+            }
             // At the start of a prompt `@` may name an agent: those come before the files.
             let mut items = match typed.len() == token.len() {
                 true => self.mention_items(),
                 false => Vec::new(),
             };
             items.extend(
-                self.project_files()
+                self.files
                     .iter()
+                    .flatten()
                     .map(|file| SelectItem::new(file.as_str(), "")),
             );
             self.completion = Some(Completion {
                 list: SelectList::new(items),
                 slash: false,
                 dirs: false,
+                indexing: false,
             });
+        }
+        if self.completion.as_ref().is_some_and(|c| c.indexing) {
+            return;
         }
         if let Some(completion) = &mut self.completion {
             completion.list.set_filter(partial);
@@ -2358,6 +2396,9 @@ impl Tui {
     }
 
     fn accept_completion(&mut self) {
+        if self.completion.as_ref().is_some_and(|c| c.indexing) {
+            return;
+        }
         let Some(completion) = self.completion.take() else {
             return;
         };
@@ -2774,6 +2815,25 @@ impl Tui {
 /// and dependencies, which would crowd the list out.
 const NEVER_COMPLETED: [&str; 3] = [".git", "target", "node_modules"];
 
+/// Lists `root`'s files on a blocking thread and sends them as [`Internal::Files`], unless a
+/// newer listing was started meanwhile (`walk` counts them).
+fn spawn_file_index(
+    root: std::path::PathBuf,
+    ignored: bool,
+    walk: &Arc<std::sync::atomic::AtomicU64>,
+    done: mpsc::UnboundedSender<Internal>,
+) {
+    use std::sync::atomic::Ordering;
+    let mine = walk.fetch_add(1, Ordering::SeqCst) + 1;
+    let walk = walk.clone();
+    tokio::task::spawn_blocking(move || {
+        let files = project_files(&root, ignored);
+        if walk.load(Ordering::SeqCst) == mine {
+            let _ = done.send(Internal::Files(files));
+        }
+    });
+}
+
 /// The files under `root`, as paths relative to it with forward slashes, cut at
 /// [`MAX_COMPLETION_FILES`]. Files `.gitignore` leaves out are left out too, unless `ignored`
 /// (`tui.complete_ignored`) asks for them.
@@ -2993,5 +3053,57 @@ mod completion_tests {
         let mut all = super::project_files(root, true);
         all.sort();
         assert_eq!(all, [".gitignore", "ref/notes.md", "src/main.rs"]);
+    }
+
+    #[tokio::test]
+    async fn a_newer_file_listing_replaces_one_still_running() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let walk = std::sync::Arc::default();
+        super::spawn_file_index(dir.path().to_path_buf(), false, &walk, tx.clone());
+        super::spawn_file_index(dir.path().to_path_buf(), false, &walk, tx);
+        // Both walks end; only the newer one reports, and the channel closes after it.
+        let Some(super::Internal::Files(files)) = rx.recv().await else {
+            panic!("no listing arrived");
+        };
+        assert_eq!(files, ["a.txt"]);
+        assert!(rx.recv().await.is_none(), "the older listing must stay silent");
+    }
+
+    /// What typing `@` costs the UI thread on a 50k-file project: the walk (what the UI did
+    /// itself before the walk moved to a background task) and the menu built from its result.
+    /// Run with `cargo test -p azazel-cli --lib at_completion_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing; makes 50k files"]
+    fn at_completion_cost_on_a_50k_file_project() {
+        use azazel_tui::components::select::{SelectItem, SelectList};
+        let dir = tempfile::tempdir().unwrap();
+        for d in 0..500 {
+            let folder = dir.path().join(format!("dir{d}"));
+            std::fs::create_dir_all(&folder).unwrap();
+            for f in 0..100 {
+                std::fs::write(folder.join(format!("file{f}.rs")), "").unwrap();
+            }
+        }
+        let started = std::time::Instant::now();
+        let files = super::project_files(dir.path(), false);
+        let walk = started.elapsed();
+        assert_eq!(files.len(), super::MAX_COMPLETION_FILES);
+        let started = std::time::Instant::now();
+        let mut list = SelectList::new(
+            files
+                .iter()
+                .map(|file| SelectItem::new(file.as_str(), ""))
+                .collect(),
+        );
+        let build = started.elapsed();
+        let started = std::time::Instant::now();
+        list.set_filter("dir4/file7");
+        let filter = started.elapsed();
+        eprintln!(
+            "walk {walk:?}, build menu of {} {build:?}, filter {filter:?}",
+            files.len()
+        );
     }
 }

@@ -681,8 +681,8 @@ impl Tui {
                 report.push(format!("theme: {}", self.theme_name));
             }
         }
-        // The file list of `@` completion is read again on its next use.
-        self.files = None;
+        // The file list of `@` completion is read again.
+        self.load_files();
 
         let mut out = format!("reloaded\n  {}", report.join("\n  "));
         if !problems.is_empty() {

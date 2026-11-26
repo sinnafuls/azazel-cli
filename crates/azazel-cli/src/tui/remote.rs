@@ -1459,9 +1459,11 @@ impl Backend for Remote {
     fn list_files(&mut self, done: mpsc::UnboundedSender<Internal>) {
         let client = self.client.clone();
         tokio::spawn(async move {
-            if let Ok(files) = ask::<Vec<String>>(&client, Command::ListFiles).await {
-                let _ = done.send(Internal::Files(files));
-            }
+            // A failed ask leaves `@` with no files rather than "indexing…" for good.
+            let files = ask::<Vec<String>>(&client, Command::ListFiles)
+                .await
+                .unwrap_or_default();
+            let _ = done.send(Internal::Files(files));
         });
     }
 
