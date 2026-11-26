@@ -203,7 +203,7 @@ jobs:
       matrix:
         include:
           - group: 1920x1080
-            grep: 'at (1920x1080|724x1360),'
+            grep: 'at 1920x1080,'
           - group: 1440x900-zoom200
             grep: 'at 1440x900-zoom200,'
           - group: 1440x900
@@ -211,11 +211,11 @@ jobs:
           - group: 390x844
             grep: 'at 390x844,'
           - group: 768x1024
-            grep: 'at (768x1024|1024x1360),'
+            grep: 'at 768x1024,'
           - group: 1024x768
             grep: 'at 1024x768,'
           - group: rest
-            grep-invert: 'at (1920x1080|724x1360|1440x900-zoom200|1440x900|390x844|768x1024|1024x1360|1024x768),'
+            grep-invert: 'at (1920x1080|1440x900-zoom200|1440x900|390x844|768x1024|1024x768),'
     name: e2e (${{ matrix.group }})
     defaults:
       run:

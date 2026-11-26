@@ -5,6 +5,9 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
 	testDir: 'tests/e2e',
 	fullyParallel: true,
+	// A CI runner has four cores and Playwright takes half by default; these tests mostly wait on
+	// the server and the browser, so every core runs one.
+	workers: process.env.CI ? 4 : undefined,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 1 : 0,
 	reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
