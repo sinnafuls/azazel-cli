@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `get_state` of `azazel rpc` sent right after `set_model` names the new model chain, instead of sometimes the one before it.
+
 ## [0.22.0] - 2026-11-26
 
 ### Added
