@@ -76,10 +76,17 @@ jobs:
     steps:
       # The Linux runner ships toolchains this build never uses; removing them frees about 20 GB.
       # That takes about two minutes, so it runs beside the steps below and the tests wait for it.
+      # The packages screen capture (the `screen` feature) links against are installed beside the
+      # steps below too, without recommended packages and without rebuilding the man page index,
+      # which made the install take over four minutes.
       - if: runner.os == 'Linux'
         run: |
           (sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
            touch "$RUNNER_TEMP/disk-freed") > /dev/null 2>&1 &
+          (echo 'set man-db/auto-update false' | sudo debconf-communicate
+           sudo dpkg-reconfigure man-db
+           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $LINUX_PACKAGES
+           echo $? > "$RUNNER_TEMP/apt-done") > "$RUNNER_TEMP/apt.log" 2>&1 &
       - uses: actions/checkout@v4
       # The page `azazel remote` serves is embedded when the crate is built: with it, the tests and
       # the binary below carry the real page, not the placeholder a checkout without it gets.
@@ -96,14 +103,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      # Screen capture (the `screen` feature) links against these on Linux. Cached: installing them
-      # from the archive took over four minutes.
-      - if: runner.os == 'Linux'
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: ${{ env.LINUX_PACKAGES }}
-          version: 1
       - run: cargo fmt --check
+      - if: runner.os == 'Linux'
+        run: |
+          while [ ! -f "$RUNNER_TEMP/apt-done" ]; do sleep 2; done
+          cat "$RUNNER_TEMP/apt.log" | tail -5
+          exit "$(cat "$RUNNER_TEMP/apt-done")"
       - run: cargo clippy --workspace --all-targets -- -D warnings
       # `azazel --ssh` through the real ssh: the runner logs in to itself with a key made for
       # this job, and the remote:: tests run through it beside the stand-in (AZAZEL_TEST_SSH).
@@ -166,10 +171,12 @@ jobs:
         with:
           shared-key: e2e-binary
           cache-on-failure: true
-      - uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: ${{ needs.web.outputs.linux_packages }}
-          version: 1
+      - run: |
+          echo 'set man-db/auto-update false' | sudo debconf-communicate > /dev/null
+          sudo dpkg-reconfigure man-db
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $LINUX_PACKAGES
+        env:
+          LINUX_PACKAGES: ${{ needs.web.outputs.linux_packages }}
       - run: cargo build -p azazel-cli --features test-support,remote
       - uses: actions/upload-artifact@v4
         with:
