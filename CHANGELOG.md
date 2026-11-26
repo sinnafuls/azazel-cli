@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- A running `shell` or `eval` call (Python, JavaScript or Luau) shows its newest 12 lines of output live in its card as they are printed, partial lines and `\r` progress bars included, instead of staying blank until it ends. `shell` sets `PYTHONUNBUFFERED=1` so Python programs print as they run. The `tool_update` frame of `azazel rpc` has a `replace` field for these updates, and the `azazel remote` page shows them too.
+
 ### Fixed
 
 - The rewind list (Esc twice, `/rewind`) opens at once in long sessions: it used to run one `git diff` per checkpoint before appearing, which took minutes. The rows come from the session alone, and what changed in the files since each checkpoint fills in a moment later, from a single git run in the background.

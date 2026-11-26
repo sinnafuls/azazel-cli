@@ -378,16 +378,17 @@ mod tests {
     #[test]
     fn running_card_shows_a_spinner_the_output_tail_and_the_clock() {
         let theme = Theme::dark();
-        let lines = running("shell", "make", &output(8), Duration::from_secs(65), 30, &theme);
+        let lines = running("shell", "make", &output(15), Duration::from_secs(65), 30, &theme);
         let shown = plain(&lines);
-        assert_eq!(shown.len(), 7);
+        // The newest MAX_OUTPUT_LINES lines between the header and the border.
+        assert_eq!(shown.len(), MAX_OUTPUT_LINES + 2);
         let header: Vec<char> = shown[0].chars().collect();
         assert_eq!(header[..5].iter().collect::<String>(), "╭─── ");
         assert!(('\u{2800}'..='\u{28ff}').contains(&header[5]), "{:?}", shown[0]);
         assert_eq!(header[6..].iter().collect::<String>(), " shell make ───────────╮");
         assert_eq!(shown[1], "│ line 4                     │");
-        assert_eq!(shown[5], "│ line 8                     │");
-        assert_eq!(shown[6], "╰── 1m05s ───────────────────╯");
+        assert_eq!(shown[12], "│ line 15                    │");
+        assert_eq!(shown[13], "╰── 1m05s ───────────────────╯");
         assert!(lines[0].starts_with(&theme.fg(Role::Accent)));
 
         let lines = running("shell", "make", &output(0), Duration::from_secs(1), 30, &theme);
