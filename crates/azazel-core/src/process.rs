@@ -922,6 +922,70 @@ mod tests {
         assert!(!result.timed_out && !result.cancelled);
     }
 
+    #[test]
+    fn the_live_tail_follows_a_terminal_in_bounded_memory() {
+        let mut tail = LiveTail::new(3);
+        tail.push("a\nb\nc\nd\npart");
+        assert_eq!(tail.render(), "c\nd\npart");
+        // A carriage return starts the line over; CRLF is only a line end.
+        let mut bar = LiveTail::new(3);
+        bar.push("10%\r50%\r100%\r\nnext\r\n");
+        assert_eq!(bar.render(), "100%\nnext");
+        let mut half = LiveTail::new(3);
+        half.push("one\r");
+        half.push("two");
+        assert_eq!(half.render(), "two");
+        // A line is cut at MAX_LINE_CHARS.
+        let mut long = LiveTail::new(2);
+        long.push(&"x".repeat(MAX_LINE_CHARS + 500));
+        assert_eq!(long.render().chars().count(), MAX_LINE_CHARS);
+    }
+
+    #[test]
+    fn a_character_cut_between_reads_is_kept_for_the_next_one() {
+        let bytes = "é→".as_bytes();
+        let mut pending = bytes[..3].to_vec();
+        assert_eq!(take_utf8(&mut pending), "é");
+        assert_eq!(pending.len(), 1);
+        pending.extend_from_slice(&bytes[3..]);
+        assert_eq!(take_utf8(&mut pending), "→");
+        assert!(pending.is_empty());
+        let mut broken = vec![b'a', 0xFF, b'b'];
+        assert_eq!(take_utf8(&mut broken), "a\u{FFFD}b");
+    }
+
+    /// A command that prints `first` without ending the line, waits until the file `go` exists
+    /// and then prints `second`.
+    fn stalls_after_first(shell: &Shell) -> &'static str {
+        if shell.is_posix() {
+            "printf first; while [ ! -f go ]; do sleep 0.05; done; echo; echo second"
+        } else {
+            "[Console]::Out.Write('first'); while (-not (Test-Path go)) { Start-Sleep -Milliseconds 50 }; Write-Output ''; Write-Output second"
+        }
+    }
+
+    #[tokio::test]
+    async fn the_live_view_shows_a_partial_line_while_the_command_waits_and_the_result_is_unchanged() {
+        let shell = Shell::resolve("");
+        let dir = tempfile::tempdir().unwrap();
+        let views = Arc::new(Mutex::new(Vec::new()));
+        let (seen, go) = (views.clone(), dir.path().join("go"));
+        let mut options = RunOptions::new(dir.path().to_path_buf());
+        options.timeout = Some(Duration::from_secs(30));
+        options.on_live = Some(Arc::new(move |view| {
+            // Only a view that arrived while the command still waits lets it go on.
+            if view.trim_end() == "first" {
+                let _ = std::fs::write(&go, "");
+            }
+            seen.lock().unwrap().push(view);
+        }));
+        let result = run(&shell, stalls_after_first(&shell), options).await.unwrap();
+        assert_eq!(result.code, Some(0));
+        assert_eq!(result.output.render(), "first\nsecond");
+        let views = views.lock().unwrap();
+        assert_eq!(views.first().map(|view| view.trim_end()), Some("first"));
+    }
+
     #[tokio::test]
     async fn timeout_and_cancel_kill_the_process_promptly() {
         let shell = Shell::resolve("");
