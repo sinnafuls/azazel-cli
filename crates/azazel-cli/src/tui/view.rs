@@ -1593,11 +1593,11 @@ mod tests {
         );
         // A call still running joins the tree with a spinner, its clock and what it printed;
         // while one runs, the tree shows that.
-        let tail: Vec<String> = (1..=7).map(|i| format!("line {i}")).collect();
+        let tail: Vec<String> = (1..=15).map(|i| format!("line {i}")).collect();
         let live = running_row("shell", &command, &tail, Duration::from_secs(65), true, &theme);
         let done = tool_row(calls[0], SHUT, 60, &theme);
         let tree = plain(&tool_rows([&done, &live], 60, &theme));
-        assert_eq!(tree.len(), 8, "{tree:?}");
+        assert_eq!(tree.len(), 3 + tool_card::MAX_OUTPUT_LINES, "{tree:?}");
         assert!(
             tree[0].ends_with(" 2 tool calls") && !tree[0].starts_with('✔'),
             "{tree:?}"
@@ -1609,7 +1609,7 @@ mod tests {
         );
         assert_eq!(
             tree[3..],
-            ["   line 3", "   line 4", "   line 5", "   line 6", "   line 7"]
+            (4..=15).map(|i| format!("   line {i}")).collect::<Vec<_>>()
         );
 
         // A diff under a call that stands alone is set in as far.
