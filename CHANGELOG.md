@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-26
+
 ### Added
 
 - A running `shell` or `eval` call (Python, JavaScript or Luau) shows its newest 12 lines of output live in its card as they are printed, partial lines and `\r` progress bars included, instead of staying blank until it ends. `shell` sets `PYTHONUNBUFFERED=1` so Python programs print as they run. The `tool_update` frame of `azazel rpc` has a `replace` field for these updates, and the `azazel remote` page shows them too.
