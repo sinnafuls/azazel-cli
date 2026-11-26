@@ -9,6 +9,7 @@ GitHub are its section here.
 
 - The rewind list (Esc twice, `/rewind`) opens at once in long sessions: it used to run one `git diff` per checkpoint before appearing, which took minutes. The rows come from the session alone, and what changed in the files since each checkpoint fills in a moment later, from a single git run in the background.
 - Rewinding to an earlier prompt, or jumping to it in `/tree`, puts back only what you typed: the `<memory>` block recalled for it and the files attached for `#<n>` mentions are no longer copied into the input.
+- Long text in popups (`ask_user` questions, their context and code, plans, permission prompts) no longer runs off the box: it wraps at the box width and scrolls with PageUp/PageDown, the mouse wheel, Home/End, and the arrows on a form's `Send` tab, with `↑ N more lines` / `↓ N more lines` rows, while the options stay in view and the selected option is shown in full.
 
 ### Changed
 

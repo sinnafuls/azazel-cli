@@ -69,21 +69,49 @@ fn numbered(number: Option<u64>, gutter: usize, content: &str, width: usize, the
 /// the language `path` names by its extension. Lines longer than `width` are cut, not wrapped.
 /// Text of an unknown kind, and text above [`MAX_HIGHLIGHT_BYTES`], is numbered and left plain.
 pub fn listing(text: &str, path: &str, first_line: usize, width: usize, theme: &Theme) -> Vec<Line> {
+    listing_rows(text, path, first_line, width, false, theme)
+}
+
+/// Like [`listing`], but a line longer than `width` continues on the next rows, behind an empty
+/// number column, as a diff does. For boxes that must show all of the text.
+pub fn listing_wrapped(text: &str, path: &str, first_line: usize, width: usize, theme: &Theme) -> Vec<Line> {
+    listing_rows(text, path, first_line, width, true, theme)
+}
+
+fn listing_rows(
+    text: &str,
+    path: &str,
+    first_line: usize,
+    width: usize,
+    wrap: bool,
+    theme: &Theme,
+) -> Vec<Line> {
     let clean = text::sanitize(text);
     let coloured = match text.len() > MAX_HIGHLIGHT_BYTES {
         true => None,
         false => markdown::highlight_file(path, &clean, theme),
     };
     let first = first_line as u64;
-    let row = |index: usize, content: &str, gutter: usize| {
-        numbered(Some(first + index as u64), gutter, content, width, theme)
+    let row = |index: usize, content: &str, gutter: usize| -> Vec<Line> {
+        let number = Some(first + index as u64);
+        if !wrap {
+            return vec![numbered(number, gutter, content, width, theme)];
+        }
+        // Past the number column; where not even that fits, the content stands alone.
+        let room = width.saturating_sub(gutter + 3).max(1);
+        let room = if width > gutter + 3 { room } else { width };
+        text::wrap_hard(content, room)
+            .iter()
+            .enumerate()
+            .map(|(piece, content)| numbered(number.filter(|_| piece == 0), gutter, content, width, theme))
+            .collect()
     };
     match coloured {
         Some(rows) => {
             let gutter = gutter(first + rows.len().saturating_sub(1) as u64);
             rows.iter()
                 .enumerate()
-                .map(|(index, content)| row(index, content, gutter))
+                .flat_map(|(index, content)| row(index, content, gutter))
                 .collect()
         }
         None => {
@@ -91,7 +119,7 @@ pub fn listing(text: &str, path: &str, first_line: usize, width: usize, theme: &
             clean
                 .split('\n')
                 .enumerate()
-                .map(|(index, content)| row(index, &theme.paint(Role::Text, content), gutter))
+                .flat_map(|(index, content)| row(index, &theme.paint(Role::Text, content), gutter))
                 .collect()
         }
     }

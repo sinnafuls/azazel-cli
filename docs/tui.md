@@ -197,9 +197,12 @@ manual · ⑂ main · ~/src/app                        ⬢ claude-opus-5-5
   none is open the `Send` tab shows every answer, and `Enter` there sends them. You can go to `Send` at any
   time: questions left open are sent without an answer, and the tab says how many are. `Esc` declines the
   whole form.
-- A plan review shows the plan in the box. Text that does not fit (a long plan, a long command) ends with
-  `… N more lines`; `Ctrl+O` opens all of it in the [full-screen viewer](#transcript-viewer) and `q` returns to
-  the box.
+- Text in a box (a question, its context and code, a plan, a long command) wraps at the box width. When it
+  does not fit, the body scrolls while the options and buttons stay in view: `↑ N more lines` and
+  `↓ N more lines` rows say what is hidden, `PageUp`/`PageDown` and the mouse wheel over the body scroll it,
+  `Home`/`End` go to its start and end where nothing is being typed, and the arrows scroll it on a form's
+  `Send` tab. The selected option is shown in full. `Ctrl+O` opens all of the text in the
+  [full-screen viewer](#transcript-viewer) and `q` returns to the box.
 - Where a box asks for text (feedback on a denied call, changes to a plan), `Shift+Enter` adds a line and
   `Ctrl+G` opens your editor for it. A secret (an API key) shows as dots.
 

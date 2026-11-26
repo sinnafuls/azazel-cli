@@ -323,6 +323,8 @@ struct Areas {
     widget: (usize, usize),
     /// The column the text inside the box starts at.
     left: usize,
+    /// The first row of the body and how many rows it takes: where the wheel scrolls it.
+    body: (usize, usize),
 }
 
 pub struct Overlay {
@@ -335,8 +337,13 @@ pub struct Overlay {
     pub warning: Option<String>,
     /// What is asked would destroy work: the box is drawn in the warning colour.
     pub destructive: bool,
-    /// The last render had to cut the body, so `ctrl+o` shows all of it.
+    /// The last render could not show all of the body: it scrolls, and `ctrl+o` shows all of it.
     cut: Cell<bool>,
+    /// The first line of the body in view, the lines a page moves it by, and the tab of a form
+    /// the body belongs to (another tab starts at the top).
+    body_top: Cell<usize>,
+    body_page: Cell<usize>,
+    body_tab: Cell<usize>,
     areas: Cell<Areas>,
     pub kind: Kind,
     pub action: Action,
@@ -400,8 +407,154 @@ pub fn inner_width(columns: usize) -> usize {
     Frame::inner_width(azazel_tui::modal::box_width(columns)).max(1)
 }
 
+/// Rows a body that does not fit keeps at the least: the two rows that count what is out of
+/// view and one line between them.
+const MIN_BODY: usize = 3;
+/// Rows of the list or the input that give way to a body, at the most, when the box is small.
+const MIN_KEPT: usize = 3;
+/// Rows inside a box from which the selected row of a list is written out when it is cut.
+const MIN_PEEK_ROOM: usize = 10;
+/// The most rows the selected row of a list is written out in.
+const PEEK_ROWS: usize = 2;
+/// Columns before a row of a list: the rail and a space.
+const PEEK_LEAD: usize = 2;
+/// Rows of body a box wants in view before the list beside it keeps all of its own.
+const BODY_WANT: usize = 5;
 /// The most rows of a list a box shows at once.
 const MAX_LIST_ROWS: usize = 16;
+
+/// The body of a box as far as it is in view.
+struct BodyWindow {
+    lines: Vec<Line>,
+    /// The first line in view, kept within the body.
+    top: usize,
+    /// The lines a page moves by.
+    page: usize,
+    /// Not all of the body is in view.
+    cut: bool,
+}
+
+/// The lines of `body` from `top` on that fit in `room` rows. When the body does not fit, a row
+/// above and a row below say how many lines are out of view; `top` stops where the last line
+/// is in view.
+fn body_window(body: Vec<Line>, room: usize, top: usize, theme: &Theme) -> BodyWindow {
+    let len = body.len();
+    if len <= room {
+        return BodyWindow {
+            lines: body,
+            top: 0,
+            page: room.max(1),
+            cut: false,
+        };
+    }
+    let more = |glyph: Glyph, count: usize| {
+        let lines = if count == 1 { "line" } else { "lines" };
+        theme.paint(
+            Role::Muted,
+            &format!("{} {count} more {lines}", theme.glyph(glyph)),
+        )
+    };
+    // One row: the line alone, and the hint line says it scrolls.
+    if room < 2 {
+        let top = top.min(len - room);
+        return BodyWindow {
+            lines: body.into_iter().skip(top).take(room).collect(),
+            top,
+            page: 1,
+            cut: true,
+        };
+    }
+    // Two rows: one line and one row that counts what is out of view, below it or, at the end,
+    // above it.
+    if room < MIN_BODY {
+        let top = top.min(len - 1);
+        let lines = if top + 1 < len {
+            vec![body[top].clone(), more(Glyph::MoreDown, len - top - 1)]
+        } else {
+            vec![more(Glyph::MoreUp, top), body[top].clone()]
+        };
+        return BodyWindow {
+            lines,
+            top,
+            page: 1,
+            cut: true,
+        };
+    }
+    let top = top.min(len - (room - 1));
+    let above = usize::from(top > 0);
+    let below = top + room - above < len;
+    let content = room - above - usize::from(below);
+    let mut lines = Vec::with_capacity(room);
+    if above == 1 {
+        lines.push(more(Glyph::MoreUp, top));
+    }
+    lines.extend(body.into_iter().skip(top).take(content));
+    if below {
+        lines.push(more(Glyph::MoreDown, len - top - content));
+    }
+    BodyWindow {
+        lines,
+        top,
+        page: room - 2,
+        cut: true,
+    }
+}
+
+/// Moves a body's first line for a key that scrolls: `page up` and `page down` always, the
+/// arrows and `home` and `end` where the box has no use for them. True when `key` was one.
+fn scroll_key(top: &Cell<usize>, page: usize, key: &KeyEvent, arrows: bool, ends: bool) -> bool {
+    let page = page.max(1) as isize;
+    let by = match key.code {
+        KeyCode::PageUp => -page,
+        KeyCode::PageDown => page,
+        KeyCode::Up if arrows => -1,
+        KeyCode::Down if arrows => 1,
+        KeyCode::Home if ends => isize::MIN,
+        KeyCode::End if ends => isize::MAX,
+        _ => return false,
+    };
+    top.set(top.get().saturating_add_signed(by));
+    true
+}
+
+/// The written-out row of the selection, when the list keeps `list_rows` of the `room` rows.
+fn shown_peek(peek: Vec<Line>, room: usize, list_rows: usize) -> Vec<Line> {
+    if room >= peek.len() + list_rows.clamp(1, MIN_KEPT) {
+        peek
+    } else {
+        Vec::new()
+    }
+}
+
+/// The selected row of a list written out in full, in at most [`PEEK_ROWS`] rows, when the row
+/// of the list had to cut it. Nothing when the row shows all of it.
+pub(super) fn choice_rows(list: &SelectList, width: usize, theme: &Theme) -> Vec<Line> {
+    let Some(item) = list.selected_item().filter(|item| !item.styled) else {
+        return Vec::new();
+    };
+    let flat = |s: &str| text::sanitize(s).replace('\n', " ");
+    let (label, detail) = (flat(&item.label), flat(&item.detail));
+    let full = if detail.is_empty() {
+        label
+    } else {
+        format!("{label}  {detail}")
+    };
+    let mark = item
+        .mark
+        .map_or(0, |_| text::width(&theme.glyphs().prefix(Glyph::CheckOn)));
+    if PEEK_LEAD + mark + text::width(&full) <= width {
+        return Vec::new();
+    }
+    let room = width.saturating_sub(PEEK_LEAD).max(1);
+    let mut rows = text::wrap(&full, room);
+    if rows.len() > PEEK_ROWS {
+        let rest = rows.split_off(PEEK_ROWS - 1).join(" ");
+        rows.push(text::truncate(&rest, room, theme.glyph(Glyph::Ellipsis)));
+    }
+    rows.iter()
+        .map(|row| format!("{}{}", " ".repeat(PEEK_LEAD), theme.paint(Role::Muted, row)))
+        .collect()
+}
 /// Rows kept for the list or the input when a long body competes with them.
 const KEPT_FOR_LIST: usize = 6;
 /// The most rows a box takes when it stands in place of the input instead of being a popup.
@@ -443,6 +596,9 @@ impl Overlay {
             warning: None,
             destructive: false,
             cut: Cell::new(false),
+            body_top: Cell::new(0),
+            body_page: Cell::new(1),
+            body_tab: Cell::new(0),
             areas: Cell::new(Areas::default()),
             kind,
             action,
@@ -608,6 +764,19 @@ impl Overlay {
                 if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
                     return Outcome::ReadBody;
                 }
+                // The arrows are the body's where there are no options to move in, and `home` and
+                // `end` where nothing is typed.
+                if self.cut.get()
+                    && scroll_key(
+                        &self.body_top,
+                        self.body_page.get(),
+                        key,
+                        form.on_send_tab(),
+                        !form.is_typing(),
+                    )
+                {
+                    return Outcome::Pending;
+                }
                 return match form.on_key(key) {
                     Step::Pending => Outcome::Pending,
                     Step::Cancelled => Outcome::Cancelled,
@@ -656,6 +825,20 @@ impl Overlay {
         }
         if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
             return Outcome::ReadBody;
+        }
+        // A list keeps the arrows and an input `home` and `end`; `page up` and `page down` scroll
+        // the body of both.
+        if self.cut.get()
+            && matches!(self.kind, Kind::Select { .. } | Kind::Input { .. })
+            && scroll_key(
+                &self.body_top,
+                self.body_page.get(),
+                key,
+                false,
+                matches!(self.kind, Kind::Select { .. }),
+            )
+        {
+            return Outcome::Pending;
         }
         match &mut self.kind {
             Kind::Select {
@@ -734,6 +917,19 @@ impl Overlay {
         let (first, count) = areas.widget;
         let row = mouse.row.checked_sub(first).filter(|row| *row < count);
         let column = mouse.column.checked_sub(areas.left);
+        // The wheel over a body that does not fit scrolls it.
+        let (body_first, body_rows) = areas.body;
+        if self.cut.get() && (body_first..body_first + body_rows).contains(&mouse.row) {
+            let by = match mouse.kind {
+                MouseKind::ScrollUp => -WHEEL_ROWS,
+                MouseKind::ScrollDown => WHEEL_ROWS,
+                MouseKind::Press | MouseKind::Drag | MouseKind::Move => 0,
+            };
+            if by != 0 {
+                self.body_top.set(self.body_top.get().saturating_add_signed(by));
+                return Outcome::Pending;
+            }
+        }
         match &mut self.kind {
             Kind::Select { list, .. } => match list.on_mouse(mouse.kind, row) {
                 ListMouse::Again(index) => Outcome::Chosen(index),
@@ -856,6 +1052,7 @@ impl Overlay {
             hints.push(Hint::new(key_label(combo), *what));
         }
         if self.cut.get() {
+            hints.push(Hint::new("pgup/pgdn", "scroll"));
             hints.push(Hint::new("ctrl+o", "read all"));
         }
         let leave = match self.kind {
@@ -868,8 +1065,9 @@ impl Overlay {
 
     /// The overlay as a box `width` columns wide and at most `max_rows` rows tall, and the cursor
     /// position within it when it has one. The title rides the top edge, the key hints the
-    /// bottom edge; the body comes first, then the list or the input. A body that does not fit
-    /// is cut, with a row that says how much is missing.
+    /// bottom edge; the body comes first, then the list or the input, which stay in view. A body
+    /// that does not fit scrolls, with a row above and below that say how many lines are out of
+    /// view.
     pub fn render(&self, width: usize, max_rows: usize, theme: &Theme) -> (Vec<Line>, Option<(u16, u16)>) {
         let mut frame = Frame::new(&self.title, width);
         if self.destructive {
@@ -890,6 +1088,7 @@ impl Overlay {
             tabs: (head_rows > 0).then_some(top),
             widget: (0, 0),
             left,
+            body: (0, 0),
         };
         let interior = total - head_rows;
 
@@ -921,48 +1120,65 @@ impl Overlay {
                     .map(|line| theme.paint(Role::Warning, line)),
             );
         }
+        // The selected row of a list, written out when its row had to cut it.
+        let peek = match &self.kind {
+            _ if interior < MIN_PEEK_ROOM => Vec::new(),
+            Kind::Select { list, .. } => choice_rows(list, inner, theme),
+            Kind::Form(form) => form.peek(inner, theme),
+            _ => Vec::new(),
+        };
         // The list or the input keeps some rows whatever the body needs, and one blank row
         // sets them apart from it.
         let kept = match &self.kind {
             Kind::Select { list, filterable, .. } => {
-                list.len().clamp(1, KEPT_FOR_LIST) + usize::from(*filterable)
+                list.len().clamp(1, KEPT_FOR_LIST) + usize::from(*filterable) + peek.len()
             }
             Kind::Input { secret: true, .. } => 1,
             Kind::Input { .. } => 3,
-            Kind::Form(form) => form.kept(),
+            Kind::Form(form) => form.kept() + peek.len(),
             Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) | Kind::Models(_) => {
                 interior
             }
         };
         let has_body = !body.is_empty() || !warning.is_empty();
-        let text_room = interior.saturating_sub(kept + usize::from(has_body));
-        // The warning stays as long as there is any room at all; the body is cut before it.
-        if warning.len() > text_room {
+        let lines = body.len() + warning.len();
+        // The blank row between the body and the list is the first thing a tiny box gives up.
+        let gap = usize::from(has_body && interior > kept.min(MIN_KEPT) + lines.min(2));
+        // In a small box the list gives up rows, down to a few, so that the body can be read.
+        let want = lines.min(BODY_WANT);
+        let kept = kept.min(interior.saturating_sub(gap + want).max(kept.min(MIN_KEPT)));
+        // However small the box, the body keeps two rows (a line and the count of the others) and
+        // the list at least one (and its filter row).
+        let floor = 1 + usize::from(matches!(self.kind, Kind::Select { filterable: true, .. }));
+        let kept = kept.min(interior.saturating_sub(gap + lines.min(2)).max(floor));
+        let text_room = interior.saturating_sub(kept + gap);
+        // A warning stays in view under the body. One that would leave the body no room to be
+        // read goes first in the body instead, where it scrolls with the rest.
+        if body.len() + warning.len() > text_room && warning.len() + MIN_BODY > text_room {
             if warning.first().is_some_and(String::is_empty) {
                 warning.remove(0);
             }
-            warning.truncate(text_room);
-        }
-        let room = text_room - warning.len();
-        let hidden = body.len().saturating_sub(room);
-        self.cut.set(hidden > 0);
-        if hidden > 0 {
-            // The row that says so takes the place of one more line.
-            let shown = room.saturating_sub(1);
-            let more = format!(
-                "{} {} more lines",
-                theme.glyph(Glyph::Ellipsis),
-                body.len() - shown
-            );
-            body.truncate(shown);
-            if room > 0 {
-                body.push(theme.paint(Role::Muted, &more));
+            if !body.is_empty() {
+                warning.push(String::new());
             }
+            body.splice(0..0, warning.drain(..));
         }
+        let tab = match &self.kind {
+            Kind::Form(form) => form.tab(),
+            _ => 0,
+        };
+        if self.body_tab.replace(tab) != tab {
+            self.body_top.set(0);
+        }
+        let window = body_window(body, text_room - warning.len(), self.body_top.get(), theme);
+        self.cut.set(window.cut);
+        self.body_top.set(window.top);
+        self.body_page.set(window.page);
+        areas.body = (top + head_rows, window.lines.len());
         let mut rows = head;
-        rows.append(&mut body);
+        rows.extend(window.lines);
         rows.append(&mut warning);
-        if has_body && rows.len() > head_rows {
+        if gap == 1 && rows.len() > head_rows {
             rows.push(String::new());
         }
 
@@ -976,10 +1192,12 @@ impl Overlay {
                     rows.push(line);
                 }
                 let room = total.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
-                let view = list.view(inner, room, theme);
+                let peek = shown_peek(peek, room, list.len());
+                let view = list.view(inner, room - peek.len(), theme);
                 frame.scrollbar = view.scroll.map(|scroll| (rows.len(), scroll));
                 areas.widget = (top + rows.len(), view.lines.len());
                 rows.extend(view.lines);
+                rows.extend(peek);
             }
             Kind::Input {
                 editor,
@@ -1003,11 +1221,13 @@ impl Overlay {
             }
             Kind::Form(form) => {
                 let room = total.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
-                let widget = form.widget(inner, room, &prompt, theme);
+                let peek = shown_peek(peek, room, form.list_len());
+                let widget = form.widget(inner, room - peek.len(), &prompt, theme);
                 cursor = widget.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
                 areas.widget = (top + rows.len(), widget.lines.len());
                 rows.extend(widget.lines);
+                rows.extend(peek);
             }
             Kind::Pane(pane) => {
                 let room = total.saturating_sub(rows.len()).max(1);
@@ -1347,16 +1567,106 @@ mod tests {
         // 18 rows inside at most: 3 kept for the input, a blank row, 13 lines of body and the
         // row that says how many more there are.
         assert_eq!(rows[13], format!("│ body 12{}│", " ".repeat(30)));
-        assert_eq!(rows[14], format!("│ … 27 more lines{}│", " ".repeat(22)));
+        assert_eq!(rows[14], format!("│ ↓ 27 more lines{}│", " ".repeat(22)));
         assert_eq!(rows[15], format!("│{}│", " ".repeat(38)));
         let (row, column) = cursor.unwrap();
         assert_eq!((row, column), (16, 4));
         assert!(rows[16].starts_with("│ ❯"), "{}", rows[16]);
         assert!(
-            rows[17].starts_with("╰─ enter confirm · ctrl+o read all ─"),
+            rows[17].starts_with("╰─ enter confirm · pgup/pgdn scroll ─"),
             "{}",
             rows[17]
         );
+    }
+
+    /// What a terminal `cols` by `rows` shows after the box is drawn into it.
+    fn on_screen(overlay: &Overlay, cols: u16, rows: u16, theme: &Theme) -> Vec<String> {
+        let nz = |n| std::num::NonZeroU16::new(n).unwrap();
+        let (lines, _) = overlay.render(usize::from(cols), usize::from(rows), theme);
+        let mut terminal = vt100::Parser::new(nz(rows), nz(cols), 0);
+        terminal.process(lines.join("\r\n").as_bytes());
+        terminal
+            .screen()
+            .rows(0, cols)
+            .map(|row| row.trim_end().to_string())
+            .collect()
+    }
+
+    fn long_question() -> Overlay {
+        let sentence = "Should the migration rewrite every table that still holds the old column, \
+                        or only the tables the service reads today, given that the rest are archived?";
+        let details = (1..=30)
+            .map(|n| format!("detail {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let question = Question {
+            kind: AskKind::Select,
+            options: vec!["rewrite all".to_string(), "only the used".to_string()],
+            ..Question::text(format!("{sentence}\n{details}"))
+        };
+        Overlay::form(Form::new(vec![question], "Other"), Action::Form { reply })
+    }
+
+    #[test]
+    fn a_long_question_wraps_scrolls_and_keeps_its_options_in_view() {
+        for (cols, rows) in [(40u16, 12u16), (80, 24)] {
+            for (theme, down) in [
+                (Theme::dark(), "\u{2193}"),
+                (Theme::dark().with_glyphs(GlyphLevel::Ascii), "v"),
+            ] {
+                let mut overlay = long_question();
+                let at = format!("{cols}x{rows} {down}");
+                let first = on_screen(&overlay, cols, rows, &theme);
+                let all = first.join("\n");
+                assert!(
+                    first.iter().all(|row| text::width(row) <= usize::from(cols)),
+                    "{at}"
+                );
+                // The sentence is wrapped, so its last word is in view; the end of the body is not.
+                assert!(all.contains("archived?"), "{at}\n{all}");
+                assert!(!all.contains("detail 30"), "{at}\n{all}");
+                // The count of what is below, the hint, and the options.
+                assert!(
+                    all.contains(&format!("{down} ")) && all.contains(" more line"),
+                    "{at}\n{all}"
+                );
+                // The hint needs the room of a wide box; the count row says it in a narrow one.
+                if cols >= 80 {
+                    assert!(all.contains("pgup/pgdn scroll"), "{at}\n{all}");
+                }
+                assert!(
+                    all.contains("rewrite all") && all.contains("only the used"),
+                    "{at}\n{all}"
+                );
+                // Page down until the last line shows; the options never leave.
+                let mut seen = false;
+                for _ in 0..30 {
+                    overlay.on_key(&key(KeyCode::PageDown));
+                    let screen = on_screen(&overlay, cols, rows, &theme).join("\n");
+                    assert!(
+                        screen.contains("rewrite all") && screen.contains("only the used"),
+                        "{at}\n{screen}"
+                    );
+                    if screen.contains("detail 30") {
+                        seen = true;
+                        // Nothing more below: no `↓ N more lines` row (the key hint has its own ↓).
+                        let below = screen
+                            .lines()
+                            .any(|row| row.contains(&format!("{down} ")) && row.contains(" more line"));
+                        assert!(!below, "{at}\n{screen}");
+                        break;
+                    }
+                }
+                assert!(seen, "{at}: page down never reached the last line");
+                // Page up goes back to the top.
+                for _ in 0..30 {
+                    overlay.on_key(&key(KeyCode::PageUp));
+                }
+                let top = on_screen(&overlay, cols, rows, &theme).join("\n");
+                assert!(top.contains("Should the"), "{at}\n{top}");
+            }
+        }
     }
 
     #[test]
@@ -1528,12 +1838,12 @@ mod tests {
         // subjects, the last of which says how many are missing.
         assert!(rows[1].starts_with("│ rm -rf /data/set-0 "), "{}", rows[1]);
         assert!(rows[5].starts_with("│ rm -rf /data/set-4 "), "{}", rows[5]);
-        assert!(rows[6].starts_with("│ … 25 more lines "), "{}", rows[6]);
+        assert!(rows[6].starts_with("│ ↓ 25 more lines "), "{}", rows[6]);
         assert!(rows[8].starts_with("│ this command deletes files outside the project"));
         assert!(rows[10].starts_with("│   Allow once"), "{}", rows[10]);
         assert!(rows[11].starts_with("│ ▌ Deny "), "{}", rows[11]);
         assert!(
-            rows[13].starts_with("╰─ ↑↓ move · enter pick · ctrl+o read all · esc cancel ─"),
+            rows[13].starts_with("╰─ ↑↓ move · enter pick · pgup/pgdn scroll ─"),
             "{}",
             rows[13]
         );

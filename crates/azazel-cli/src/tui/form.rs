@@ -201,7 +201,7 @@ impl Field {
         }
         match &question.excerpt {
             Some(Excerpt::Code(source)) => {
-                lines.extend(code::listing(source.trim_end(), "", 1, width, theme));
+                lines.extend(code::listing_wrapped(source.trim_end(), "", 1, width, theme));
                 lines.push(String::new());
             }
             Some(Excerpt::Diff(patch)) => {
@@ -251,6 +251,31 @@ impl Form {
 
     fn field(&self) -> Option<&Field> {
         self.fields.get(self.at)
+    }
+
+    /// The tab in view: a question, or the number of questions for the tab that sends.
+    pub fn tab(&self) -> usize {
+        self.at
+    }
+
+    /// Whether the tab in view is the one that sends the answers, which has no options.
+    pub fn on_send_tab(&self) -> bool {
+        self.field().is_none()
+    }
+
+    /// How many rows the options of the tab in view have.
+    pub fn list_len(&self) -> usize {
+        self.field().map_or(0, |field| field.list.len())
+    }
+
+    /// The selected option written out in full, when its row cut it.
+    pub fn peek(&self, width: usize, theme: &Theme) -> Vec<Line> {
+        match self.field() {
+            Some(field) if !field.types() && field.question.kind != AskKind::Text => {
+                super::overlay::choice_rows(&field.list, width, theme)
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Whether the tab in view takes typed text: the UI offers the user's own editor for it.
