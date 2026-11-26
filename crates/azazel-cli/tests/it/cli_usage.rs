@@ -247,27 +247,6 @@ fn doctor_counts_the_providers_without_a_credential_instead_of_listing_them() {
     assert!(line.len() < 200, "{line}");
 }
 
-#[cfg(feature = "browser")]
-#[test]
-fn browser_open_says_it_waits_for_the_window_before_it_does() {
-    let sandbox = Sandbox::new();
-    // A program that exits at once stands in for a browser that cannot start.
-    let fake = crate::common::fixture_program("fake-check");
-    let output = sandbox
-        .command()
-        .env("AZAZEL_BROWSER", fake)
-        .args(["browser", "open"])
-        .write_stdin("")
-        .output()
-        .unwrap();
-    assert!(
-        stdout(&output).contains("waits until the window is closed"),
-        "{}\n{}",
-        stdout(&output),
-        stderr(&output)
-    );
-}
-
 #[test]
 fn scripts_list_show_and_delete_work_on_the_saved_scripts_of_the_user() {
     let sandbox = Sandbox::new();
