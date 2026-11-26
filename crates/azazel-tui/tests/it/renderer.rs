@@ -2,7 +2,9 @@
 
 use std::num::NonZeroU16;
 
+use azazel_tui::components::tool_card;
 use azazel_tui::render::{Floor, Frame, HistoryItem, Renderer};
+use azazel_tui::{GlyphLevel, Theme};
 
 fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap()
@@ -1047,4 +1049,29 @@ fn a_transcript_re_wrapped_behind_a_popup_is_not_written_over_when_the_popup_clo
         let expected: Vec<&String> = expected.iter().filter(|row| !row.is_empty()).collect();
         assert_eq!(said, expected, "{cols}x{rows}");
     }
+}
+
+#[test]
+fn a_running_card_shows_the_last_live_lines_and_follows_them() {
+    let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+    let mut term = Harness::new(40, 24);
+    let card = |first: usize, last: usize| -> Frame {
+        let tail: Vec<String> = (first..=last).map(|n| format!("step {n}")).collect();
+        let lines = tool_card::running("shell", "make", &tail, std::time::Duration::from_secs(3), 40, &theme);
+        Frame {
+            history: Vec::new(),
+            viewport: lines,
+            cursor: None,
+        }
+    };
+    term.render(card(1, 3));
+    let rows = term.used_rows();
+    assert!(rows.iter().any(|row| row.contains("step 3")) && rows.iter().any(|row| row.contains("step 1")));
+    // More lines than the card keeps: the oldest go, the newest stay, and nothing is left behind.
+    let last = tool_card::MAX_OUTPUT_LINES + 8;
+    term.render(card(1, last));
+    let rows = term.used_rows();
+    assert_eq!(rows.len(), tool_card::MAX_OUTPUT_LINES + 2, "{rows:?}");
+    assert!(rows.iter().any(|row| row.contains(&format!("step {last}"))));
+    assert!(!rows.iter().any(|row| row.contains("step 1 ") || row.ends_with("step 1")));
 }

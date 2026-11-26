@@ -314,6 +314,32 @@ mod tests {
     }
 
     #[test]
+    fn a_live_view_takes_the_place_of_the_lines_shown_and_a_line_is_added() {
+        let mut tools = Vec::new();
+        let update = |text: &str, replace| AgentEvent::ToolUpdate {
+            call_id: "c1".to_string(),
+            text: text.to_string(),
+            replace,
+        };
+        track(
+            &mut tools,
+            &AgentEvent::ToolStart {
+                call_id: "c1".to_string(),
+                name: "shell".to_string(),
+                input: json!({"command": "make"}),
+            },
+        );
+        track(&mut tools, &update("a
+b", true));
+        track(&mut tools, &update("a
+b
+c", true));
+        assert_eq!(tools[0].tail, ["a", "b", "c"]);
+        track(&mut tools, &update("d", false));
+        assert_eq!(tools[0].tail, ["a", "b", "c", "d"]);
+    }
+
+    #[test]
     fn a_call_whose_end_was_lost_is_over_when_the_next_message_starts() {
         let mut tools = Vec::new();
         track(
