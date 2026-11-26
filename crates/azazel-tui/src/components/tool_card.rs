@@ -16,7 +16,7 @@ use crate::text;
 use crate::theme::{Role, Theme};
 
 /// How many trailing output lines the card of a running tool shows.
-pub const MAX_OUTPUT_LINES: usize = 5;
+pub const MAX_OUTPUT_LINES: usize = 12;
 
 /// Narrowest card that still gets a frame.
 const MIN_FRAMED_WIDTH: usize = 16;

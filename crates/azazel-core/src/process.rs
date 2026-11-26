@@ -450,7 +450,7 @@ pub type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
 pub type LiveSink = Arc<dyn Fn(String) + Send + Sync>;
 
 /// Lines of output the live view keeps; the card of a running call shows as many.
-pub const LIVE_LINES: usize = 10;
+pub const LIVE_LINES: usize = 12;
 
 /// The least time between two calls of a [`LiveSink`]: about twelve redraws a second.
 pub const LIVE_INTERVAL: Duration = Duration::from_millis(80);

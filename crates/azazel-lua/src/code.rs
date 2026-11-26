@@ -13,6 +13,7 @@ use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, U
 use azazel_core::Post;
 use azazel_core::config::CodeFirstListing;
 use azazel_core::hooks::Wake;
+use azazel_core::process::{LIVE_INTERVAL, LIVE_LINES, LiveTail};
 use azazel_core::scripts::{SavedScript, Scripts};
 use azazel_core::toolcall::{Background, Deferral, Luau, LuauEngine, deferring};
 use azazel_core::transcript::activity;
@@ -292,6 +293,21 @@ struct Limit {
     deadline: Option<Instant>,
 }
 
+/// The live view of a script that runs in the foreground.
+struct Live {
+    tail: LiveTail,
+    shown: Option<Instant>,
+}
+
+impl Default for Live {
+    fn default() -> Self {
+        Live {
+            tail: LiveTail::new(LIVE_LINES),
+            shown: None,
+        }
+    }
+}
+
 /// One run of a script.
 struct Run {
     ctx: ToolCtx,
@@ -299,6 +315,8 @@ struct Run {
     limits: CodeLimits,
     calls: AtomicUsize,
     printed: Mutex<String>,
+    /// What the card of the running call shows: the last lines printed and the calls made.
+    live: Mutex<Live>,
     /// Bytes `print` dropped because the output was already too long.
     dropped: AtomicUsize,
     limit: Mutex<Limit>,
@@ -385,6 +403,7 @@ impl Run {
             limits,
             calls: AtomicUsize::new(0),
             printed: Mutex::default(),
+            live: Mutex::default(),
             dropped: AtomicUsize::new(0),
             limit: Mutex::default(),
             width,
@@ -492,7 +511,20 @@ impl Run {
         } else {
             printed.push_str(&line);
         }
+        drop(printed);
+        self.show(&line, false);
         Ok(())
+    }
+
+    /// Adds `text` to the live view and, at most once per [`LIVE_INTERVAL`] unless `now`, sends
+    /// the view to the card of the call. A background script has no card: its sink ignores views.
+    fn show(&self, text: &str, now: bool) {
+        let mut live = locked(&self.live);
+        live.tail.push(text);
+        if now || live.shown.is_none_or(|at| at.elapsed() >= LIVE_INTERVAL) {
+            live.shown = Some(Instant::now());
+            self.ctx.update.replace(live.tail.render());
+        }
     }
 
     /// Calls tool `name` for the agent that runs the script, through the gate. `Err` is what
@@ -529,7 +561,10 @@ impl Run {
     /// may run beside others does; one that may not (an edit, a command) waits until no other
     /// call of the script is running.
     async fn gated(&self, name: &str, input: Value, site: &Site) -> Result<ToolOutput, String> {
-        self.ctx.update.send(activity(name, &input));
+        let line = activity(name, &input);
+        self.ctx.update.send(line.clone());
+        self.show(&format!("{line}
+"), true);
         let ctx = ToolCtx {
             call_id: format!("{}.{site}", self.ctx.call_id),
             ..self.ctx.clone()
