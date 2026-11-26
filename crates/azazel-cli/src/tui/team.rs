@@ -34,14 +34,14 @@ pub(super) async fn next_event(events: &mut Option<broadcast::Receiver<TeamEvent
 impl Tui {
     /// How many sub-agents are queued, working or waiting for an approval.
     pub(super) fn active_agents(&self) -> usize {
-        self.backend
-            .roster()
+        self.roster
             .iter()
             .filter(|member| member.id != LEAD && member.state.is_active())
             .count()
     }
 
-    /// Whether a sub-agent is at work, so that the roster's clocks need redrawing.
+    /// Whether a sub-agent is at work, so that the roster's clocks need redrawing. Reads the
+    /// roster of the last frame, which is drawn before every wait.
     pub(super) fn agents_active(&self) -> bool {
         self.active_agents() > 0
     }
@@ -51,7 +51,7 @@ impl Tui {
     /// While the keyboard is in the roster every row is shown, the selected one marked, and a
     /// line under the rows says what the keys do.
     pub(super) fn roster_lines(&mut self, width: usize) -> Vec<Line> {
-        let members = self.fleet_rows();
+        let members = active_members(&self.roster);
         if members.is_empty() {
             return Vec::new();
         }
@@ -407,6 +407,15 @@ impl Tui {
 
 /// The sub-agents of `members` in the hub's order: those at work (running, queued, waiting for
 /// an approval) first, in the order they started, then the finished ones, newest first.
+/// The sub-agents the roster shows: those queued, working or waiting for an approval.
+pub(super) fn active_members(roster: &[MemberInfo]) -> Vec<MemberInfo> {
+    roster
+        .iter()
+        .filter(|member| member.id != LEAD && member.state.is_active())
+        .cloned()
+        .collect()
+}
+
 fn hub_order(members: &[MemberInfo]) -> Vec<&MemberInfo> {
     let agents = members.iter().filter(|member| member.id != LEAD);
     let (mut active, mut finished): (Vec<_>, Vec<_>) = agents.partition(|member| member.state.is_active());

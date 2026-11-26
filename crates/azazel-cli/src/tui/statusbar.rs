@@ -149,7 +149,7 @@ impl Tui {
     /// whatever `[statusline]` asks for.
     pub(super) fn status_line(&self, width: usize) -> Line {
         let status = self.backend.status();
-        let facts = self.backend.facts();
+        let facts = &self.facts;
         let layout = &self.status.layout;
         let cwd = statusline::display_path(&self.backend.cwd(), std::env::home_dir().as_deref());
         let model = self.model_label();

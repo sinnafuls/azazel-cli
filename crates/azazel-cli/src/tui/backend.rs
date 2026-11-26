@@ -93,7 +93,7 @@ pub(crate) fn interrupted_notice(stopped: &str) -> String {
 }
 
 /// What the status line and the live region show beside the lead's own status.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Facts {
     pub coordinator: bool,
     pub tier: Option<Tier>,

@@ -16,7 +16,7 @@ use azazel_agent::{AgentEvent, ToolOutput};
 use azazel_ai::{Block, Role as MessageRole, StopReason, StreamEvent};
 use azazel_core::session::Entry;
 use azazel_core::{EntryKind, SessionStore};
-use azazel_team::{LEAD, MemberInfo};
+use azazel_team::MemberInfo;
 use azazel_tui::components::{format_elapsed, format_tokens, markdown};
 use azazel_tui::{Editor, Glyph, Hint, Line, Role, Scroll, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -622,11 +622,7 @@ pub(super) fn mention(typed: &str) -> Option<(&str, &str)> {
 impl Tui {
     /// The sub-agents the roster shows: those queued, working or waiting for an approval.
     pub(super) fn fleet_rows(&self) -> Vec<MemberInfo> {
-        self.backend
-            .roster()
-            .into_iter()
-            .filter(|member| member.id != LEAD && member.state.is_active())
-            .collect()
+        super::team::active_members(&self.backend.roster())
     }
 
     /// The row of the roster the keyboard is on, when it is in the roster and that row is

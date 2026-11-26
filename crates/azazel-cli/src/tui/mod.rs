@@ -435,6 +435,11 @@ pub struct Tui {
     predictor: ghost::Predictor,
     /// The files `@` completes; `None` until the listing started by [`Tui::load_files`] is in.
     files: Option<Vec<String>>,
+    /// The roster and the facts as they were when the frame was last started: read once per
+    /// frame, so that the status line, the roster, the todo list and the rule agree and the
+    /// backend is asked once.
+    roster: Vec<azazel_team::MemberInfo>,
+    facts: backend::Facts,
     /// The number of the listing in flight, so that one started before a settings change
     /// does not overwrite the one started after it.
     files_walk: Arc<std::sync::atomic::AtomicU64>,
@@ -726,6 +731,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         words_loaded: false,
         predictor: Default::default(),
         files: None,
+        roster: Vec::new(),
+        facts: Default::default(),
         files_walk: Arc::default(),
         busy: false,
         handoff_offered: None,
@@ -1087,6 +1094,8 @@ impl Tui {
     /// tall enough for the input to stay on the last rows of the screen; the transcript grows
     /// into them.
     fn draw(&mut self) -> io::Result<()> {
+        self.roster = self.backend.roster();
+        self.facts = self.backend.facts();
         self.tell_terminal();
         // A window that is still changing size is not drawn in: one frame follows at the size
         // it comes to rest at.
@@ -1149,7 +1158,7 @@ impl Tui {
         let since = self.busy_since.elapsed();
         let tick = shimmer::tick_at(since);
         // A run that waits for a usage window to reset says so, with the time that is left.
-        let running = match self.backend.facts().waiting {
+        let running = match &self.facts.waiting {
             Some((what, until)) => {
                 let left = until.saturating_sub(azazel_ai::credentials::now_ms() / 1000);
                 Some(format!(
@@ -1208,19 +1217,19 @@ impl Tui {
     }
 
     fn todo_lines(&self, width: usize) -> Vec<Line> {
-        let items = self.backend.facts().todo;
+        let items = &self.facts.todo;
         if items.iter().all(|item| item.status == TodoStatus::Done) {
             return Vec::new();
         }
         let rows: Vec<(String, TodoState)> = items
-            .into_iter()
+            .iter()
             .map(|item| {
                 let state = match item.status {
                     TodoStatus::Pending => TodoState::Pending,
                     TodoStatus::InProgress => TodoState::InProgress,
                     TodoStatus::Done => TodoState::Done,
                 };
-                (item.text, state)
+                (item.text.clone(), state)
             })
             .collect();
         let max = usize::try_from(self.env.config.tui.todo_max).unwrap_or(usize::MAX);
