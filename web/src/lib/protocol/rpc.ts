@@ -411,6 +411,11 @@ export type Frame =
 			agent: string;
 			call_id: string;
 			text: string;
+			/**
+			 * `text` is the last lines the tool printed and replaces what was shown; otherwise it
+			 * is one more line.
+			 */
+			replace?: boolean;
 	  }
 	| {
 			type: 'tool_end';
