@@ -18,6 +18,8 @@ GitHub are its section here.
 ### Changed
 
 - Release builds use a `dist` profile with thin LTO, and the release workflow caches dependencies and builds Intel macOS on its own runner, so a release takes much less time. The binary is about 4% larger.
+- `@` file completion lists the project's files in the background, so typing `@` in a large project no longer freezes the input; the menu shows `indexing…` until the list is ready.
+- `/tree` and the agent view open faster in long sessions (about 5 times faster for `/tree` at 30,000 entries), and the status line reads the agent list once per frame instead of up to three times.
 
 ## [0.21.4] - 2026-11-25
 
