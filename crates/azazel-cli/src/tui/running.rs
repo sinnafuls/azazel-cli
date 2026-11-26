@@ -176,7 +176,11 @@ pub(super) fn track(tools: &mut Vec<RunningTool>, event: &AgentEvent) -> Option<
                 None => tools.push(running),
             }
         }
-        AgentEvent::ToolUpdate { call_id, text, replace } => {
+        AgentEvent::ToolUpdate {
+            call_id,
+            text,
+            replace,
+        } => {
             if let Some(tool) = tools.iter_mut().find(|tool| tool.call_id == *call_id) {
                 if *replace {
                     tool.tail.clear();
@@ -329,11 +333,21 @@ mod tests {
                 input: json!({"command": "make"}),
             },
         );
-        track(&mut tools, &update("a
-b", true));
-        track(&mut tools, &update("a
+        track(
+            &mut tools,
+            &update(
+                "a
+b", true,
+            ),
+        );
+        track(
+            &mut tools,
+            &update(
+                "a
 b
-c", true));
+c", true,
+            ),
+        );
         assert_eq!(tools[0].tail, ["a", "b", "c"]);
         track(&mut tools, &update("d", false));
         assert_eq!(tools[0].tail, ["a", "b", "c", "d"]);

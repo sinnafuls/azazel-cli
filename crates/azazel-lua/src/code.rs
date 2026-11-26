@@ -563,8 +563,13 @@ impl Run {
     async fn gated(&self, name: &str, input: Value, site: &Site) -> Result<ToolOutput, String> {
         let line = activity(name, &input);
         self.ctx.update.send(line.clone());
-        self.show(&format!("{line}
-"), true);
+        self.show(
+            &format!(
+                "{line}
+"
+            ),
+            true,
+        );
         let ctx = ToolCtx {
             call_id: format!("{}.{site}", self.ctx.call_id),
             ..self.ctx.clone()

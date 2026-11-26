@@ -177,7 +177,14 @@ pub(crate) fn agent_event(frame: Frame) -> Option<(String, AgentEvent)> {
             call_id,
             text,
             replace,
-        } => (agent, AgentEvent::ToolUpdate { call_id, text, replace }),
+        } => (
+            agent,
+            AgentEvent::ToolUpdate {
+                call_id,
+                text,
+                replace,
+            },
+        ),
         Frame::ToolEnd {
             agent,
             call_id,

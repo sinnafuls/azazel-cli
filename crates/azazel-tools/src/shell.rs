@@ -799,9 +799,12 @@ mod tests {
                 &ctx(dir.path(), CancellationToken::new(), update),
             )
             .await;
-        assert_eq!(out.text_content(), "one
+        assert_eq!(
+            out.text_content(),
+            "one
 two
-exit code: 0");
+exit code: 0"
+        );
         let views = views.lock().unwrap();
         assert_eq!(views.first(), Some(&("one".to_string(), true)));
         assert!(views.iter().all(|(_, replace)| *replace));

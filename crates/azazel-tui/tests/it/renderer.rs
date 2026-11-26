@@ -1057,7 +1057,14 @@ fn a_running_card_shows_the_last_live_lines_and_follows_them() {
     let mut term = Harness::new(40, 24);
     let card = |first: usize, last: usize| -> Frame {
         let tail: Vec<String> = (first..=last).map(|n| format!("step {n}")).collect();
-        let lines = tool_card::running("shell", "make", &tail, std::time::Duration::from_secs(3), 40, &theme);
+        let lines = tool_card::running(
+            "shell",
+            "make",
+            &tail,
+            std::time::Duration::from_secs(3),
+            40,
+            &theme,
+        );
         Frame {
             history: Vec::new(),
             viewport: lines,
@@ -1073,5 +1080,9 @@ fn a_running_card_shows_the_last_live_lines_and_follows_them() {
     let rows = term.used_rows();
     assert_eq!(rows.len(), tool_card::MAX_OUTPUT_LINES + 2, "{rows:?}");
     assert!(rows.iter().any(|row| row.contains(&format!("step {last}"))));
-    assert!(!rows.iter().any(|row| row.contains("step 1 ") || row.ends_with("step 1")));
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.contains("step 1 ") || row.ends_with("step 1"))
+    );
 }
