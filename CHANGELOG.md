@@ -5,6 +5,14 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The rewind list (Esc twice, `/rewind`) opens at once in long sessions: it used to run one `git diff` per checkpoint before appearing, which took minutes. The rows come from the session alone, and what changed in the files since each checkpoint fills in a moment later, from a single git run in the background.
+
+### Changed
+
+- Release builds use a `dist` profile with thin LTO, and the release workflow caches dependencies and builds Intel macOS on its own runner, so a release takes much less time. The binary is about 4% larger.
+
 ## [0.21.4] - 2026-11-25
 
 ### Fixed

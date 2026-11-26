@@ -1,11 +1,14 @@
 //! Slash commands and the pickers that go with them.
 
+use std::collections::HashMap;
+
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
+use azazel_core::session::Entry;
 use azazel_core::{EntryKind, PermissionMode, SessionStore};
 use azazel_tui::{Glyph, GlyphLevel, Glyphs, Role, SelectItem, Theme};
 
 use super::backend::Go;
-use super::overlay::{Action, Overlay, RewindPoint};
+use super::overlay::{Action, Kind, Overlay, RewindPoint};
 use super::{SHELL_NOTE, Tui, extras, first_line, view};
 
 /// Matching lines listed per session by `/search`.
@@ -788,22 +791,17 @@ impl Tui {
             Ok(points) => points,
             Err(why) => return self.info(&why),
         };
-        let mut items = Vec::new();
-        for (point, changed) in &points {
-            let detail = if changed.is_empty() {
-                "no file changes since".to_string()
-            } else {
-                changed.clone()
-            };
-            let label = if point.prompt.is_empty() {
-                "(files as they were before a rewind)".to_string()
-            } else {
-                first_line(&point.prompt)
-            };
-            items.push(SelectItem::new(label, detail));
-        }
+        // The rows come from the session alone. What changed in the files since each arrives
+        // from git a moment later (`Internal::RewindChanges`); until then the detail is `…`.
+        let commits = points.iter().map(|point| point.commit.clone()).collect();
+        let waiting = self.backend.rewind_changes(commits, self.internal_tx.clone());
+        let none = HashMap::new();
+        let items = rewind_items(
+            &points,
+            (!waiting).then_some(&none),
+            self.theme.glyph(Glyph::Ellipsis),
+        );
         let body = vec!["Go back to before:".to_string()];
-        let points = points.into_iter().map(|(point, _)| point).collect();
         self.overlay = Some(Overlay::select(
             "Rewind",
             body,
@@ -811,6 +809,22 @@ impl Tui {
             false,
             Action::Rewind(points),
         ));
+    }
+
+    /// Fills in the details of the open rewind list with what git said changed.
+    pub(super) fn on_rewind_changes(&mut self, changes: &HashMap<String, String>) {
+        let ellipsis = self.theme.glyph(Glyph::Ellipsis);
+        let Some(overlay) = &mut self.overlay else {
+            return;
+        };
+        let (Action::Rewind(points), Kind::Select { list, .. }) = (&overlay.action, &mut overlay.kind) else {
+            return;
+        };
+        let selected = list.selected();
+        list.set_items(rewind_items(points, Some(changes), ellipsis));
+        if let Some(selected) = selected {
+            list.set_cursor(selected);
+        }
     }
 
     pub(super) async fn rewind(&mut self, point: RewindPoint, code: bool, conversation: bool) {
@@ -931,9 +945,42 @@ fn swatches(theme: &Theme, dot: &str) -> String {
         .join(" ")
 }
 
-/// The checkpoints on the current branch, newest first, each with the prompt it preceded.
+/// The rows of the rewind list. `changes` is what git said changed in the files since each
+/// checkpoint, by commit; `None` while git has not answered.
+fn rewind_items(
+    points: &[RewindPoint],
+    changes: Option<&HashMap<String, String>>,
+    ellipsis: &str,
+) -> Vec<SelectItem> {
+    points
+        .iter()
+        .map(|point| {
+            let detail = match changes {
+                None => ellipsis.to_string(),
+                Some(changes) => changes
+                    .get(&point.commit)
+                    .map(|changed| changed.trim())
+                    .filter(|changed| !changed.is_empty())
+                    .unwrap_or("no file changes since")
+                    .to_string(),
+            };
+            let label = if point.prompt.is_empty() {
+                "(files as they were before a rewind)".to_string()
+            } else {
+                first_line(&point.prompt)
+            };
+            SelectItem::new(label, detail)
+        })
+        .collect()
+}
+
+/// The checkpoints on the current branch, newest first, each with the prompt it preceded. The
+/// branch is read in place: copying every entry of a long session would hold the session up.
 pub(super) fn rewind_points(session: &SessionStore) -> Vec<RewindPoint> {
-    let branch = session.branch(None);
+    session.with_branch(points_of)
+}
+
+fn points_of(branch: &[&Entry]) -> Vec<RewindPoint> {
     let mut points = Vec::new();
     for (at, entry) in branch.iter().enumerate() {
         let EntryKind::Checkpoint { commit, .. } = &entry.kind else {
@@ -1107,5 +1154,187 @@ mod help_tests {
         assert!(narrow.lines().next().unwrap().ends_with('…'), "{narrow}");
         assert!(narrow.lines().all(|line| azazel_tui::text::width(line) <= 100));
         assert!(narrow.lines().next().unwrap().chars().count() <= 60);
+    }
+
+    use std::path::Path;
+    use std::time::Instant;
+
+    use super::rewind_points;
+    use crate::tui::REWIND_NOTE;
+    use azazel_ai::{AssistantMeta, Block, Message, StopReason, Usage, WireApi};
+    use azazel_core::checkpoint::Checkpoints;
+    use azazel_core::config::CheckpointsConfig;
+    use azazel_core::session::{EntryKind, SessionStore};
+
+    const TURN_ENTRIES: usize = 11;
+
+    /// A session of about `entries` entries, in turns of eleven: a checkpoint, a prompt (a note
+    /// of the UI before every tenth), and four tool calls with 4 kB results. The checkpoints
+    /// name `commits` in turn. Returns the session and the prompt of each turn.
+    fn long_session(dir: &Path, entries: usize, commits: &[String]) -> (SessionStore, Vec<String>) {
+        let session = SessionStore::create_at(&dir.join("s.jsonl"), "s", dir, None).unwrap();
+        let meta = || AssistantMeta {
+            provider: "mock".into(),
+            model: "lead".into(),
+            api: WireApi::AnthropicMessages,
+            usage: Usage::default(),
+            stop: StopReason::Stop,
+            response_id: None,
+            duration_ms: 0,
+            sources: Vec::new(),
+        };
+        let message = |message| EntryKind::Message { message };
+        let mut prompts = Vec::new();
+        for turn in 0..entries / TURN_ENTRIES {
+            let commit = commits[turn % commits.len()].clone();
+            session.append(EntryKind::Checkpoint {
+                turn_entry_id: session.leaf().unwrap_or_default(),
+                commit,
+            });
+            if turn % 10 == 9 {
+                session.append(message(Message::user(format!(
+                    "{REWIND_NOTE} to how they were before"
+                ))));
+            }
+            let prompt = format!(
+                "prompt {turn}
+with a second line"
+            );
+            prompts.push(prompt.clone());
+            // The first message after the checkpoint that is not a note is the prompt.
+            session.append(message(Message::user(prompt)));
+            for call in 0..4 {
+                let id = format!("c{turn}-{call}");
+                let input = serde_json::json!({ "path": format!("src/file{call}.rs") });
+                let call = Block::ToolCall {
+                    id: id.clone(),
+                    name: "read".into(),
+                    input,
+                    signature: None,
+                };
+                session.append(message(Message::assistant(vec![call], meta())));
+                let result = Message {
+                    role: azazel_ai::Role::Tool,
+                    content: vec![Block::tool_result(id, "x".repeat(4000), false)],
+                    meta: None,
+                };
+                session.append(message(result));
+            }
+        }
+        (session, prompts)
+    }
+
+    #[test]
+    fn the_rewind_rows_of_a_long_session_are_its_prompts_newest_first_and_resume_before_their_checkpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let commits: Vec<String> = (0..7).map(|i| format!("commit{i}")).collect();
+        let (session, prompts) = long_session(tmp.path(), 3_000, &commits);
+        let points = rewind_points(&session);
+        assert_eq!(points.len(), prompts.len());
+        for (point, prompt) in points.iter().zip(prompts.iter().rev()) {
+            assert_eq!(&point.prompt, prompt);
+        }
+        // Turn 9 had a note before its prompt: the row shows the prompt, not the note.
+        assert_eq!(
+            points[points.len() - 10].prompt,
+            "prompt 9
+with a second line"
+        );
+        for (at, point) in points.iter().enumerate() {
+            assert_eq!(point.commit, commits[(prompts.len() - 1 - at) % commits.len()]);
+        }
+
+        // Rewinding the conversation to a row resumes at the entry before its checkpoint.
+        let point = &points[points.len() / 2];
+        let resume_at = session.entry(&point.entry_id).and_then(|entry| entry.parent_id);
+        assert!(session.set_leaf(resume_at.as_deref()));
+        let branch = session.branch(None);
+        let turn = prompts.iter().position(|prompt| *prompt == point.prompt).unwrap();
+        // Ten entries a turn, and one more in every tenth turn for its note.
+        let before: usize = (0..turn).map(|t| 10 + usize::from(t % 10 == 9)).sum();
+        assert_eq!(branch.len(), before);
+        assert!(branch.iter().all(|entry| entry.id != point.entry_id));
+        assert!(!branch.iter().any(|entry| matches!(
+            &entry.kind,
+            EntryKind::Message { message } if message.text() == point.prompt
+        )));
+    }
+
+    #[test]
+    fn a_checkpoint_of_a_rewind_has_no_prompt_and_one_before_another_checkpoint_neither() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session = SessionStore::create_at(&tmp.path().join("s.jsonl"), "s", tmp.path(), None).unwrap();
+        let user = |text: &str| EntryKind::Message {
+            message: azazel_ai::Message::user(text),
+        };
+        let checkpoint = |commit: &str| EntryKind::Checkpoint {
+            turn_entry_id: String::new(),
+            commit: commit.into(),
+        };
+        session.append(checkpoint("a"));
+        session.append(user("first"));
+        session.append(checkpoint("b"));
+        session.append(checkpoint("c"));
+        session.append(user(&format!("{REWIND_NOTE} to how they were")));
+        session.append(checkpoint("d"));
+        session.append(user("last"));
+        let rows: Vec<(String, String)> = rewind_points(&session)
+            .into_iter()
+            .map(|point| (point.commit, point.prompt))
+            .collect();
+        let row = |commit: &str, prompt: &str| (commit.to_string(), prompt.to_string());
+        assert_eq!(
+            rows,
+            [row("d", "last"), row("c", ""), row("b", ""), row("a", "first")]
+        );
+    }
+
+    /// Timing of opening the picker on a long session; run with
+    /// `cargo test -p azazel-cli --lib opening_the_rewind_picker -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "a timing, not a test"]
+    async fn opening_the_rewind_picker_on_a_long_session() {
+        for entries in [300, 30_000] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("proj");
+            std::fs::create_dir_all(project.join(".azazel")).unwrap();
+            let paths =
+                azazel_core::Paths::discover(&project, Some(&tmp.path().join("home").to_string_lossy()));
+            let config = CheckpointsConfig {
+                timeout_ms: 300_000,
+                ..CheckpointsConfig::default()
+            };
+            let checkpoints = Checkpoints::new(&paths, "bench", &config);
+            let mut commits = Vec::new();
+            for i in 0..20 {
+                std::fs::write(project.join(format!("f{}.txt", i % 5)), format!("content {i}")).unwrap();
+                commits.push(checkpoints.snapshot("bench").await.unwrap().unwrap());
+            }
+            let (session, _) = long_session(tmp.path(), entries, &commits);
+            let size = std::fs::metadata(session.path()).unwrap().len();
+
+            let started = Instant::now();
+            let points = rewind_points(&session);
+            let rows = started.elapsed();
+
+            let started = Instant::now();
+            let now = checkpoints.snapshot("rewind list").await.unwrap().unwrap();
+            let now_took = started.elapsed();
+            let started = Instant::now();
+            let stat = checkpoints.shortstat(&points[0].commit, &now).await;
+            let one_stat = started.elapsed();
+            println!(
+                "{entries} entries, {} MB, {} rows: rows {rows:?}; snapshot {now_took:?}; one shortstat {one_stat:?} ({stat})",
+                size / 1_000_000,
+                points.len()
+            );
+            if std::env::var_os("BENCH_ALL_STATS").is_some() {
+                let started = Instant::now();
+                for point in &points {
+                    checkpoints.shortstat(&point.commit, &now).await;
+                }
+                println!("  a shortstat for every row: {:?}", started.elapsed());
+            }
+        }
     }
 }

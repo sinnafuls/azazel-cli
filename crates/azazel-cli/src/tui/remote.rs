@@ -1303,14 +1303,14 @@ impl Backend for Remote {
         Ok(self.moved_to(state, resumed))
     }
 
-    async fn rewind_points(&mut self) -> Result<Vec<(RewindPoint, String)>, String> {
+    async fn rewind_points(&mut self) -> Result<Vec<RewindPoint>, String> {
         let session = self.session().await;
         let points = slash::rewind_points(&session);
         if points.is_empty() {
             return Err("nothing to rewind to: this session has no checkpoint".to_string());
         }
         // What changed in the files since each is known where the files are.
-        Ok(points.into_iter().map(|point| (point, String::new())).collect())
+        Ok(points)
     }
 
     async fn rewind(

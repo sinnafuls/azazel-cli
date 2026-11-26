@@ -304,6 +304,8 @@ enum Internal {
     StatusCommand(statusbar::CommandLine),
     /// How many files differ from the last commit; none where git cannot say.
     ChangedFiles(Option<usize>),
+    /// What changed in the files since each checkpoint of the open `/rewind` list, by commit.
+    RewindChanges(std::collections::HashMap<String, String>),
     /// Something for the open `/models` screen.
     Models(models::Update),
     /// `/settings` opens `/models` and waits for it to close.
@@ -1615,6 +1617,7 @@ impl Tui {
             Internal::Migrate(step) => return self.on_migrate(step).await,
             Internal::StatusCommand(line) => return self.on_status_command(line),
             Internal::ChangedFiles(changed) => return self.on_changed_files(changed),
+            Internal::RewindChanges(changes) => return self.on_rewind_changes(&changes),
             Internal::Models(update) => return self.on_models(update).await,
             Internal::OpenModels(opening, done) => return self.models_waiting = Some((opening, done)),
             Internal::Command(outcome) => {

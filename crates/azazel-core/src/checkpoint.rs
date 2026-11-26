@@ -1,11 +1,13 @@
 //! Per-prompt checkpoints of the project tree, kept in a shadow git repository so that changes made
 //! by shell commands are captured as well as those made by the file tools.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
@@ -107,8 +109,14 @@ impl Checkpoints {
     /// Runs git against the shadow repository, insulated from the user's and the project's git
     /// configuration. A command that takes longer than the timeout is killed.
     async fn git(&self, args: &[&str]) -> Result<String, GitError> {
+        self.git_with(args, None).await
+    }
+
+    /// [`Checkpoints::git`] with `input` on its standard input.
+    async fn git_with(&self, args: &[&str], input: Option<String>) -> Result<String, GitError> {
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-        let run = Command::new(&self.program)
+        let mut command = Command::new(&self.program);
+        command
             .args(args)
             .current_dir(&self.root)
             .env("GIT_DIR", &self.shadow)
@@ -121,10 +129,26 @@ impl Checkpoints {
             .env("GIT_COMMITTER_NAME", "azazel")
             .env("GIT_COMMITTER_EMAIL", "azazel@localhost")
             .env_remove("GIT_CONFIG_COUNT")
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             // Dropping the command, which the timeout does, ends the process.
-            .kill_on_drop(true)
-            .output();
+            .kill_on_drop(true);
+        let mut child = command
+            .spawn()
+            .map_err(|e| GitError::Failed(format!("could not run git: {e}")))?;
+        let stdin = child.stdin.take();
+        // Fed while its output is read, so a long list cannot fill both pipes.
+        let feed = async move {
+            if let (Some(mut stdin), Some(input)) = (stdin, input) {
+                let _ = stdin.write_all(input.as_bytes()).await;
+            }
+        };
+        let run = async { tokio::join!(feed, child.wait_with_output()).1 };
         let output = match tokio::time::timeout(self.timeout, run).await {
             Ok(output) => output.map_err(|e| GitError::Failed(format!("could not run git: {e}")))?,
             Err(_) => {
@@ -320,6 +344,28 @@ impl Checkpoints {
         self.git(&["diff", "--shortstat", from, to])
             .await
             .unwrap_or_default()
+    }
+
+    /// [`Checkpoints::shortstat`] of each of `from` against `to` in one git run, by snapshot.
+    /// A snapshot identical to `to`, or one git cannot compare, has no entry.
+    pub async fn shortstats(&self, from: &[String], to: &str) -> HashMap<String, String> {
+        let input: String = from.iter().map(|commit| format!("{commit} {to}\n")).collect();
+        let output = self
+            .git_with(&["diff-tree", "--stdin", "-r", "-M", "--shortstat"], Some(input))
+            .await
+            .unwrap_or_default();
+        // Each non-empty comparison prints the commit it started from, then its stat line.
+        let mut stats = HashMap::new();
+        let mut commit = None;
+        for line in output.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            match commit.take() {
+                None => commit = Some(line.to_string()),
+                Some(commit) => {
+                    stats.insert(commit, line.to_string());
+                }
+            }
+        }
+        stats
     }
 
     /// What changed between two snapshots: the diffstat, then the diff itself cut at `max_bytes`.

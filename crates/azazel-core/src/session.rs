@@ -777,6 +777,24 @@ impl SessionStore {
         path
     }
 
+    /// Runs `read` on the entries of the branch ending at the current leaf, root first, without
+    /// copying them. The store stays locked meanwhile, so `read` must be quick.
+    pub fn with_branch<T>(&self, read: impl FnOnce(&[&Entry]) -> T) -> T {
+        let inner = self.lock();
+        let mut path = Vec::new();
+        let mut cursor = inner.leaf.as_deref();
+        while let Some(&i) = cursor.and_then(|id| inner.index.get(id)) {
+            let entry = &inner.entries[i];
+            path.push(entry);
+            if path.len() > inner.entries.len() {
+                break; // a parent cycle in a damaged file
+            }
+            cursor = entry.parent_id.as_deref();
+        }
+        path.reverse();
+        read(&path)
+    }
+
     /// The first value `pick` finds in an entry of the branch ending at `leaf` (default: the
     /// current leaf), looking from the leaf up: the newest entry of a kind, without copying
     /// the branch.

@@ -347,8 +347,16 @@ pub(crate) trait Backend: Send {
     /// Leaves the open session, or the place in it, for another.
     async fn go(&mut self, to: Go) -> Result<Moved, String>;
 
-    /// The checkpoints to go back to, newest first, each with what changed in the files since.
-    async fn rewind_points(&mut self) -> Result<Vec<(RewindPoint, String)>, String>;
+    /// The checkpoints to go back to, newest first. Built from the session alone, so the list
+    /// opens at once; what changed in the files since each comes from [`Backend::rewind_changes`].
+    async fn rewind_points(&mut self) -> Result<Vec<RewindPoint>, String>;
+
+    /// Starts working out, in the background, what changed in the files since each of `commits`.
+    /// The answer comes back as [`Internal::RewindChanges`]. False when there is nothing to wait
+    /// for: the files are not here to be compared.
+    fn rewind_changes(&mut self, _commits: Vec<String>, _done: mpsc::UnboundedSender<Internal>) -> bool {
+        false
+    }
 
     /// Goes back to a checkpoint: the files, the conversation, or both. `Some` when the
     /// conversation moved.
@@ -1068,7 +1076,7 @@ impl Backend for Local {
         }
     }
 
-    async fn rewind_points(&mut self) -> Result<Vec<(RewindPoint, String)>, String> {
+    async fn rewind_points(&mut self) -> Result<Vec<RewindPoint>, String> {
         let points = slash::rewind_points(&self.active.session);
         if points.is_empty() {
             return Err(match self.active.checkpoints.disabled().await {
@@ -1076,17 +1084,22 @@ impl Backend for Local {
                 None => "nothing to rewind to: no prompt has been sent in this session".to_string(),
             });
         }
+        Ok(points)
+    }
+
+    fn rewind_changes(&mut self, mut commits: Vec<String>, done: mpsc::UnboundedSender<Internal>) -> bool {
         let checkpoints = self.active.checkpoints.clone();
-        let now = checkpoints.snapshot("rewind list").await.ok().flatten();
-        let mut listed = Vec::new();
-        for point in points {
-            let changed = match &now {
-                Some(now) => checkpoints.shortstat(&point.commit, now).await,
-                None => String::new(),
+        commits.sort_unstable();
+        commits.dedup();
+        tokio::spawn(async move {
+            let now = checkpoints.snapshot("rewind list").await.ok().flatten();
+            let changes = match now {
+                Some(now) => checkpoints.shortstats(&commits, &now).await,
+                None => Default::default(),
             };
-            listed.push((point, changed.trim().to_string()));
-        }
-        Ok(listed)
+            let _ = done.send(Internal::RewindChanges(changes));
+        });
+        true
     }
 
     async fn rewind(
