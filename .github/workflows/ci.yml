@@ -19,18 +19,19 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# The Linux packages screen capture (the `screen` feature) links against; every Rust job on Linux
+# installs them.
+env:
+  LINUX_PACKAGES: >-
+    pkg-config libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev
+    libwayland-dev libegl-dev libgbm-dev
+
 jobs:
-  # The web page of `azazel remote`. Its build is embedded into the Rust build below (the check job)
-  # and is what the end-to-end tests of the e2e job open in a browser.
+  # The web page of `azazel remote`: its checks and its unit tests. The jobs that need the built page
+  # build it themselves, so none of them waits for this one.
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # The Linux packages screen capture (the `screen` feature) links against; the Rust jobs install
-    # them from this one list.
-    outputs:
-      linux_packages: >-
-        pkg-config libclang-dev libxcb1-dev libxrandr-dev libdbus-1-dev libpipewire-0.3-dev
-        libwayland-dev libegl-dev libgbm-dev
     defaults:
       run:
         shell: bash
@@ -49,26 +50,22 @@ jobs:
       - run: bun run lint
       - run: bun run test
       - run: bun run build
-      - uses: actions/upload-artifact@v4
-        with:
-          name: web-build
-          path: web/build
-          if-no-files-found: error
-          retention-days: 7
 
+  # On Linux, clippy and the tests run on runners of their own, beside each other; on Windows and
+  # macOS (runs started by hand) one job does both. The Rust tests need no built web page: without
+  # it the placeholder page is embedded, which is all the tests of `azazel-remote` ask for.
   check:
-    needs: web
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","task":"clippy"},{"os":"ubuntu-latest","task":"test"},{"os":"windows-latest","task":"all"},{"os":"macos-latest","task":"all"}]' || '[{"os":"ubuntu-latest","task":"clippy"},{"os":"ubuntu-latest","task":"test"}]') }}
+    name: check (${{ matrix.os }}, ${{ matrix.task }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
       run:
         shell: bash
     env:
-      LINUX_PACKAGES: ${{ needs.web.outputs.linux_packages }}
       # Debug info for every test binary of the workspace does not fit on the Linux runner's
       # disk; failures still name the test and the line.
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -88,13 +85,6 @@ jobs:
            sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $LINUX_PACKAGES
            echo $? > "$RUNNER_TEMP/apt-done") > "$RUNNER_TEMP/apt.log" 2>&1 &
       - uses: actions/checkout@v4
-      # The page `azazel remote` serves is embedded when the crate is built: with it, the tests and
-      # the binary below carry the real page, not the placeholder a checkout without it gets.
-      - if: runner.os == 'Linux'
-        uses: actions/download-artifact@v4
-        with:
-          name: web-build
-          path: web/build
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - run: rustup show
       # mold links the many test binaries in a fraction of the time ld takes.
@@ -102,18 +92,21 @@ jobs:
         uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
+          key: ${{ matrix.task }}
           cache-on-failure: true
-      - run: cargo fmt --check
+      - if: matrix.task != 'test'
+        run: cargo fmt --check
       - if: runner.os == 'Linux'
         run: |
           while [ ! -f "$RUNNER_TEMP/apt-done" ]; do sleep 2; done
           cat "$RUNNER_TEMP/apt.log" | tail -5
           exit "$(cat "$RUNNER_TEMP/apt-done")"
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - if: matrix.task != 'test'
+        run: cargo clippy --workspace --all-targets -- -D warnings
       # `azazel --ssh` through the real ssh: the runner logs in to itself with a key made for
       # this job, and the remote:: tests run through it beside the stand-in (AZAZEL_TEST_SSH).
       # Set up before the tests, so they run in the one test build instead of a second one.
-      - if: runner.os == 'Linux'
+      - if: matrix.task == 'test'
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519
@@ -122,19 +115,19 @@ jobs:
           sudo systemctl start ssh
           ssh-keyscan localhost >> ~/.ssh/known_hosts
           ssh -o BatchMode=yes localhost true
-      - if: runner.os == 'Linux'
+      - if: matrix.task == 'test'
         uses: taiki-e/install-action@v2
         with:
           tool: nextest
       # nextest runs every test in a process of its own, many at once. The docs check is one of
       # them (docs-check's the_docs_of_this_repository_agree_with_the_code), so it needs no build
       # of its own. nextest leaves doc examples out; `--doc` runs those.
-      - if: runner.os == 'Linux'
+      - if: matrix.task == 'test'
         run: |
           while [ ! -f "$RUNNER_TEMP/disk-freed" ]; do sleep 2; done
           AZAZEL_TEST_SSH=1 cargo nextest run --workspace --no-fail-fast
           cargo test --workspace --doc
-      - if: runner.os != 'Linux'
+      - if: matrix.task == 'all'
         run: cargo test --workspace --no-fail-fast
 
   # Builds without any optional feature, beside the other jobs.
@@ -152,19 +145,20 @@ jobs:
       - run: cargo build --no-default-features -p azazel-cli
 
   # The binary the end-to-end tests drive: a build with the scripted provider (`test-support`) and
-  # `remote`, made beside the check job so the browser tests need not wait for all of it.
+  # `remote`, made beside the check job so the browser tests need not wait for all of it. It builds
+  # the page it embeds itself (about 20 seconds) rather than wait for the checks of the web job.
   e2e-binary:
-    needs: web
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          name: web-build
-          path: web/build
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile && bun run build
+        working-directory: web
       - run: rustup show
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
@@ -175,8 +169,6 @@ jobs:
           echo 'set man-db/auto-update false' | sudo debconf-communicate > /dev/null
           sudo dpkg-reconfigure man-db
           sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends $LINUX_PACKAGES
-        env:
-          LINUX_PACKAGES: ${{ needs.web.outputs.linux_packages }}
       - run: cargo build -p azazel-cli --features test-support,remote
       - uses: actions/upload-artifact@v4
         with:
@@ -188,7 +180,7 @@ jobs:
   # The browser tests: Chromium on Linux against a real `azazel remote` in front of a scripted
   # background session (tests/fixtures/scripts/web_session.json), split over four runners.
   e2e:
-    needs: [web, e2e-binary]
+    needs: e2e-binary
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Split by screen size: each size of the layout tests takes about as long as all the other
