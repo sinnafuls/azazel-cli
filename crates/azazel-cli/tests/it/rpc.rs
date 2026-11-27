@@ -895,14 +895,16 @@ fn browser_open_refuses_an_address_that_is_not_http() {
 #[cfg(feature = "lua")]
 #[test]
 fn a_background_script_asks_with_its_job_and_runs_on_once_approved() {
-    let mut client = Client::start("script_approval.json");
+    // The session is not named: the name would be asked of the lead's model and take the reply
+    // of the run the script's wake starts.
+    let mut client = Client::start_with("script_approval.json", "[session]\nauto_name = false\n");
     client.ask(
         1,
         json!({ "type": "prompt", "text": "write out.txt in the background" }),
     );
 
     // The script pauses at the write: the request names the job, and nothing was written.
-    let (_, request) = client.until(|line| line["type"] == "approval_request");
+    let (before, request) = client.until(|line| line["type"] == "approval_request");
     assert_eq!(request["tool"], "write", "{request}");
     assert_eq!(request["job"], "lua-1", "{request}");
     assert!(
@@ -914,6 +916,13 @@ fn a_background_script_asks_with_its_job_and_runs_on_once_approved() {
     );
     assert!(!client.project().join("out.txt").exists());
 
+    // The lead's first run ends before the answer, so the script's wake starts a run of its own:
+    // always, not only when the answer happens to come late.
+    let idle = |line: &Value| line["type"] == "idle" && line["agent"] == "lead";
+    if !before.iter().any(idle) {
+        client.until(idle);
+    }
+
     let request_id = request["request_id"].clone();
     let (_, answered) = client.ask(
         2,
@@ -922,7 +931,10 @@ fn a_background_script_asks_with_its_job_and_runs_on_once_approved() {
     assert_eq!(answered["success"], true, "{answered}");
 
     // The script ran again, made the write once approved, and woke the lead, who ends the run.
-    let (_, idle) = client.until(|line| line["type"] == "idle" && line["stop"] == "stop");
+    let (_, idle) = client.until(|line| {
+        assert_ne!(line["type"], "failed", "the lead's run failed: {line}");
+        line["type"] == "idle" && line["stop"] == "stop"
+    });
     assert_eq!(idle["agent"], "lead");
     for _ in 0..100 {
         if client.project().join("out.txt").exists() {
